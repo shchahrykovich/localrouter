@@ -1,0 +1,14 @@
+{
+  "id": 11,
+  "result": {
+    "config": {
+      "version": 1,
+      "http_port": 80,
+      "https_port": 443,
+      "fallback": true,
+      "allow_lan": true,
+      "log_size": 1000
+    },
+    "restart_needed": false
+  }
+}

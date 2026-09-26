@@ -1,0 +1,7 @@
+{
+  "id": 11,
+  "method": "set_config",
+  "params": {
+    "allow_lan": true
+  }
+}

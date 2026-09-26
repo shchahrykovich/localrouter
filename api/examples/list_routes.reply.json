@@ -1,0 +1,32 @@
+{
+  "id": 6,
+  "result": {
+    "routes": [
+      {
+        "host": "feat-login.shop",
+        "protocol": "http",
+        "target": "http://127.0.0.1:5174",
+        "note": "worktree for branch feat/login",
+        "owner_pid": 48121,
+        "urls": [
+          "https://feat-login.shop.localhost",
+          "http://feat-login.shop.localhost"
+        ],
+        "upstream_up": true
+      },
+      {
+        "host": "db.shop",
+        "protocol": "tcp",
+        "target": "tcp://127.0.0.1:55001",
+        "listen_port": 15432,
+        "note": "Postgres in Docker",
+        "persistent": true,
+        "urls": [
+          "db.shop.localhost:15432"
+        ],
+        "upstream_up": false,
+        "listen_failed": true
+      }
+    ]
+  }
+}

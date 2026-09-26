@@ -1,0 +1,18 @@
+{
+  "id": 3,
+  "result": {
+    "route": {
+      "host": "feat-login.shop",
+      "protocol": "http",
+      "target": "http://127.0.0.1:5174",
+      "note": "worktree for branch feat/login",
+      "owner_pid": 48121,
+      "urls": [
+        "https://feat-login.shop.localhost",
+        "http://feat-login.shop.localhost"
+      ]
+    },
+    "replaced": true,
+    "old_target": "http://127.0.0.1:5173"
+  }
+}

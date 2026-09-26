@@ -1,0 +1,11 @@
+{
+  "id": 3,
+  "method": "register_route",
+  "params": {
+    "host": "feat-login.shop",
+    "protocol": "http",
+    "target": "http://127.0.0.1:5174",
+    "note": "worktree for branch feat/login",
+    "owner_pid": 48121
+  }
+}

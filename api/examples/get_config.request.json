@@ -1,0 +1,5 @@
+{
+  "id": 10,
+  "method": "get_config",
+  "params": {}
+}

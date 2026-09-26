@@ -1,0 +1,12 @@
+{
+  "id": 4,
+  "method": "register_route",
+  "params": {
+    "host": "db.shop",
+    "protocol": "tcp",
+    "target": "tcp://127.0.0.1:55001",
+    "listen_port": 0,
+    "note": "Postgres in Docker",
+    "persistent": true
+  }
+}

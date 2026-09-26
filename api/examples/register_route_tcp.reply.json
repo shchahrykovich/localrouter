@@ -1,0 +1,17 @@
+{
+  "id": 4,
+  "result": {
+    "route": {
+      "host": "db.shop",
+      "protocol": "tcp",
+      "target": "tcp://127.0.0.1:55001",
+      "listen_port": 15432,
+      "note": "Postgres in Docker",
+      "persistent": true,
+      "urls": [
+        "db.shop.localhost:15432"
+      ]
+    },
+    "replaced": false
+  }
+}

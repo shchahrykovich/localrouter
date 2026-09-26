@@ -1,0 +1,7 @@
+{
+  "id": 12,
+  "result": {
+    "pem_path": "/Users/me/Library/Application Support/LocalRouter/ca/ca.pem",
+    "common_name": "LocalRouter CA 9f8e7d6c"
+  }
+}

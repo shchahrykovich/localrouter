@@ -298,19 +298,20 @@ impl Daemon {
     // ---- API methods
 
     pub fn hello(&self, p: HelloParams) -> Result<HelloResult, ApiError> {
-        if api::api_major(&p.api_version) != api::api_major(api::API_VERSION) {
+        let ours = api_version();
+        if api::api_major(&p.api_version) != api::api_major(&ours) {
             return Err(err(
                 ErrorCode::VersionMismatch,
                 format!(
                     "the {} speaks API {} but this daemon speaks {}; update the older one",
                     p.client,
                     p.api_version,
-                    api::API_VERSION
+                    ours
                 ),
             ));
         }
         tracing::debug!("hello from {}", p.client);
-        Ok(HelloResult { api_version: api::API_VERSION.into(), daemon_version: DAEMON_VERSION.into() })
+        Ok(HelloResult { api_version: ours, daemon_version: DAEMON_VERSION.into() })
     }
 
     pub async fn status(&self) -> StatusResult {
@@ -329,7 +330,7 @@ impl Daemon {
         drop(problems);
         StatusResult {
             daemon_version: DAEMON_VERSION.into(),
-            api_version: api::API_VERSION.into(),
+            api_version: api_version(),
             pid: std::process::id(),
             data_dir: self.paths.data.display().to_string(),
             http,
@@ -572,6 +573,16 @@ impl Daemon {
         tracing::warn!("CA reset: new CA {common_name}");
         Ok(ResetCaResult { pem_path: self.paths.ca_pem().display().to_string(), common_name })
     }
+}
+
+/// The API version this daemon speaks. Debug builds accept
+/// `LOCALROUTER_TEST_API_VERSION`, so tests can play a newer daemon.
+fn api_version() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("LOCALROUTER_TEST_API_VERSION") {
+        return v;
+    }
+    api::API_VERSION.to_string()
 }
 
 fn reserved(config: &Config) -> Reserved {

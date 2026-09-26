@@ -1,0 +1,34 @@
+{
+  "id": 2,
+  "result": {
+    "daemon_version": "0.1.0",
+    "api_version": "1.0",
+    "pid": 812,
+    "data_dir": "/Users/me/Library/Application Support/LocalRouter",
+    "http": {
+      "configured": 80,
+      "port": 80,
+      "bound": [
+        "0.0.0.0:80",
+        "[::]:80"
+      ],
+      "errors": []
+    },
+    "https": {
+      "configured": 443,
+      "port": null,
+      "bound": [],
+      "errors": [
+        "0.0.0.0:443: port 443 is in use by another program"
+      ]
+    },
+    "ca": {
+      "state": "ok",
+      "pem_path": "/Users/me/Library/Application Support/LocalRouter/ca/ca.pem",
+      "common_name": "LocalRouter CA 1a2b3c4d",
+      "trusted": true
+    },
+    "routes": 2,
+    "listen_failed": []
+  }
+}

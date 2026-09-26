@@ -1,0 +1,11 @@
+{
+  "id": 10,
+  "result": {
+    "version": 1,
+    "http_port": 80,
+    "https_port": 443,
+    "fallback": true,
+    "allow_lan": false,
+    "log_size": 1000
+  }
+}

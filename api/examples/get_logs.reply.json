@@ -1,0 +1,26 @@
+{
+  "id": 8,
+  "result": {
+    "entries": [
+      {
+        "kind": "http",
+        "time_ms": 1790000000000,
+        "method": "GET",
+        "host": "feat-login.shop.localhost",
+        "path": "/api/users",
+        "status": 200,
+        "duration_ms": 12
+      },
+      {
+        "kind": "tcp",
+        "time_ms": 1790000001000,
+        "host": "db.shop",
+        "listen_port": 15432,
+        "bytes_in": 512,
+        "bytes_out": 2048,
+        "duration_ms": 950,
+        "failed": false
+      }
+    ]
+  }
+}

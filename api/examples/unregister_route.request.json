@@ -1,0 +1,7 @@
+{
+  "id": 5,
+  "method": "unregister_route",
+  "params": {
+    "host": "feat-login.shop"
+  }
+}
