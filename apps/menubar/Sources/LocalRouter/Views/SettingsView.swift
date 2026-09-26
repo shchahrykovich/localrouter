@@ -27,8 +27,13 @@ struct SettingsView: View {
                     LabeledContent("Trusted", value: ca.trusted == true ? "yes" : ca.trusted == false ? "no" : "unknown")
                     if let problem = ca.problem { Text(problem).foregroundStyle(.red).font(.caption) }
                     HStack {
-                        Button("Trust…") { Task { await model.trustCA() } }.disabled(model.busy)
-                        Button("Untrust") { Task { await model.untrustCA() } }.disabled(model.busy)
+                        let actions = TrustActions.for(trusted: ca.trusted)
+                        if actions.contains(.trust) {
+                            Button("Trust…") { Task { await model.trustCA() } }.disabled(model.busy)
+                        }
+                        if actions.contains(.untrust) {
+                            Button("Untrust") { Task { await model.untrustCA() } }.disabled(model.busy)
+                        }
                         Button("Show ca.pem") { model.revealCA() }
                     }
                 } else {
