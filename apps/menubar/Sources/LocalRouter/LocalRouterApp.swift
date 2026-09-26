@@ -1,20 +1,29 @@
 import LocalRouterKit
 import SwiftUI
 
+/// An AppKit entry point, not a SwiftUI App: the app has no windows of its
+/// own, only the menu bar icon and its popover (StatusItemController), and a
+/// SwiftUI App with no scene to show opens an empty Settings window.
 @main
-struct LocalRouterApp: App {
-    @State private var model = AppModel()
+enum LocalRouterApp {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        // No Dock icon, as LSUIElement does for the bundle; also for `swift run`.
+        app.setActivationPolicy(.accessory)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
 
-    var body: some Scene {
-        MenuBarExtra {
-            MainView()
-                .environment(model)
-                .frame(width: 480, height: 540)
-        } label: {
-            Image(systemName: model.running ? "point.3.filled.connected.trianglepath.dotted" : "point.3.connected.trianglepath.dotted")
-                .task { model.start() }
-        }
-        .menuBarExtraStyle(.window)
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let model = AppModel()
+    private var statusItem: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItem = StatusItemController(model: model)
+        model.start()
     }
 }
 

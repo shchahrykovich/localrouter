@@ -27,7 +27,6 @@ final class AppModel {
     var message: String?
     var busy = false
 
-    @ObservationIgnored private var statusItemMenu: StatusItemMenu?
     private var logSubscription: LogSubscription?
     private var refreshTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
@@ -50,8 +49,6 @@ final class AppModel {
     func start() {
         guard !started else { return }
         started = true
-        statusItemMenu = StatusItemMenu(model: self)
-        statusItemMenu?.install()
         registerDaemon()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {

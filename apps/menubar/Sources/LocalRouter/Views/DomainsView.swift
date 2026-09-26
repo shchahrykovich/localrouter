@@ -53,6 +53,7 @@ struct RouteRow: View {
                     if view.route.protocol == .http {
                         Button(primaryURL) { model.open(primaryURL) }
                             .buttonStyle(.link)
+                            .pointingHandCursor()
                     } else {
                         Text(primaryURL).font(.body.monospaced())
                     }
@@ -115,5 +116,15 @@ struct NotRunningView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+extension View {
+    /// The hand cursor over a link, as in a browser. `.pointerStyle(.link)`
+    /// needs macOS 15; the app supports 14.
+    func pointingHandCursor() -> some View {
+        onHover { inside in
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 }

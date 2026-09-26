@@ -65,9 +65,12 @@ browser :80/:443 (by name), TCP clients :<listen_port> (by port) ─────
   starts a daemon. `apps/cli` must not depend on `apps/daemon` (a test checks
   `cargo metadata`).
 - `apps/menubar`: Swift package. `LocalRouterKit` holds the Swift copy of the
-  API types, the socket client, the GitHub self-updater and the CLI installer;
-  `LocalRouter` is the SwiftUI `MenuBarExtra` app, which registers the daemon as
-  an `SMAppService` LaunchAgent.
+  API types, the socket client, the GitHub self-updater, and the CLI and Claude
+  Code installers; `LocalRouter` is the menu bar app, which registers the daemon
+  as an `SMAppService` LaunchAgent. It is an AppKit `NSStatusItem` with an
+  `NSPopover` of SwiftUI views (`StatusItemController`), not a `MenuBarExtra`:
+  `MenuBarExtra` cannot open its window from code, and the right-click menu
+  commands open it to show their result.
 
 ### Changing the socket API
 
