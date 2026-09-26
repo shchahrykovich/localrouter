@@ -21,7 +21,8 @@ Databases and other TCP services get <name>.localhost:<listen_port> (one loopbac
 Typical flow: call find_free_port, start the dev server on that port, then register_route with a note \
 that says what the route is for. For a git branch or worktree use one label in front of the project: \
 feat-login.shop (labels are a-z, 0-9 and '-'). Set owner_pid to the dev server's process id to remove the \
-route automatically when it exits. Tell the user the URL from the reply.";
+route automatically when it exits. Tell the user the URL from the reply.\n\
+Step-by-step setup for a project, the current routes and the HTTP/HTTPS status: curl -s http://router.localhost";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RegisterArgs {

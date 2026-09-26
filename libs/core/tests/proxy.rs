@@ -9,6 +9,7 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode, Version};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use localrouter_core::api::{CaState, CaStatus, PortStatus, StatusResult};
 use localrouter_core::logs::{LogEntry, RequestLog};
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
@@ -136,6 +137,22 @@ struct Harness {
     ca_der: rustls::pki_types::CertificateDer<'static>,
 }
 
+fn fixed_status() -> StatusResult {
+    let port = |p: u16| PortStatus { configured: p, port: Some(p), bound: vec![], errors: vec![] };
+    StatusResult {
+        daemon_version: "test".into(),
+        api_version: "1.0".into(),
+        pid: 1,
+        data_dir: "/tmp".into(),
+        http: port(80),
+        https: port(443),
+        ca: CaStatus { state: CaState::Ok, problem: None, pem_path: "ca.pem".into(), common_name: None, trusted: Some(true) },
+        routes: 1,
+        routes_file_problem: None,
+        listen_failed: vec![],
+    }
+}
+
 async fn harness(routes: Vec<Route>) -> Harness {
     let mut table = RouteTable::new();
     for r in routes {
@@ -149,6 +166,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
         routes: source.clone(),
         log: log.clone(),
         tls_client: tls::insecure_loopback_client_config(),
+        status: Some(Arc::new(|| Box::pin(async { Some(fixed_status()) }))),
     });
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -306,4 +324,39 @@ async fn https_client_offering_h2_gets_http2_and_a_trusted_cert() {
 async fn tls_handshake_is_refused_for_names_without_route() {
     let h = harness(vec![route("shop", "http://127.0.0.1:9".into())]).await;
     assert!(tls_client(&h, "blog.localhost", &[b"http/1.1"]).await.is_err());
+}
+
+// router.localhost: instructions for coding agents, built into the daemon.
+
+#[tokio::test]
+async fn router_name_serves_agent_instructions_as_plain_text() {
+    let h = harness(vec![route("shop", "http://127.0.0.1:9".into())]).await;
+    let (status, headers, body) = get(h.http, "router.localhost", "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
+    assert!(body.starts_with("# LocalRouter"), "{body}");
+    assert!(body.contains("register_route"), "{body}");
+    assert!(body.contains("shop.localhost"), "the page lists current routes: {body}");
+    assert!(body.contains("| HTTP | on, port 80 |"), "the page shows the daemon status: {body}");
+}
+
+#[tokio::test]
+async fn router_name_wins_over_a_route_with_the_same_host_key() {
+    let h = harness(vec![route("router", "http://127.0.0.1:9".into())]).await;
+    let (status, _, body) = get(h.http, "Router.localhost:80", "/anything").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("# LocalRouter"), "{body}");
+}
+
+#[tokio::test]
+async fn router_name_is_served_over_https_without_a_route() {
+    let h = harness(vec![]).await;
+    let tls = tls_client(&h, "router.localhost", &[b"http/1.1"]).await.expect("router.localhost gets a certificate");
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.unwrap();
+    tokio::spawn(conn);
+    let req = Request::get("/").header("host", "router.localhost").body(Empty::<Bytes>::new()).unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).starts_with("# LocalRouter"));
 }

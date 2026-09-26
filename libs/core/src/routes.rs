@@ -13,6 +13,9 @@ pub const MAX_NOTE_CHARS: usize = 500;
 pub const MAX_LABEL_LEN: usize = 63;
 /// A full DNS name is at most 253 characters; the key leaves room for `.localhost`.
 pub const MAX_HOST_LEN: usize = 253 - TLD.len() - 1;
+/// Host key of the help page the daemon serves itself (`router.localhost`).
+/// No route can take it.
+pub const HELP_HOST: &str = "router";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -137,6 +140,8 @@ pub enum RouteError {
     BadLabel { label: String, suggestion: String },
     #[error("host must not end in .{TLD}: write \"{0}\"")]
     HasTld(String),
+    #[error("\"{0}\" is reserved: {0}.{TLD} is LocalRouter's help page. Use another name")]
+    ReservedHost(String),
     #[error("target \"{0}\" is not valid: use http://, https:// or tcp:// plus 127.0.0.1, localhost or [::1] and a port")]
     BadTarget(String),
     #[error("target \"{0}\" is not a loopback address: only 127.0.0.1, localhost and [::1] are allowed")]
@@ -275,6 +280,9 @@ impl RouteTable {
     /// host is ignored in the uniqueness checks, because it will be replaced.
     pub fn validate(&self, route: &mut Route, reserved: Reserved) -> Result<(), RouteError> {
         route.host = normalize_host(&route.host)?;
+        if route.host == HELP_HOST {
+            return Err(RouteError::ReservedHost(route.host.clone()));
+        }
         let target = route.target_addr()?;
         if route.note.chars().count() > MAX_NOTE_CHARS {
             return Err(RouteError::NoteTooLong);
@@ -421,6 +429,16 @@ mod tests {
             RouteTable::new().validate(&mut r, RES).unwrap_err(),
             RouteError::HasTld("shop".into())
         );
+    }
+
+    #[test]
+    fn router_host_is_reserved_for_the_help_page() {
+        for host in ["router", "Router"] {
+            let mut r = http(host, 5173);
+            assert_eq!(RouteTable::new().validate(&mut r, RES).unwrap_err(), RouteError::ReservedHost("router".into()));
+        }
+        let mut sub = http("feat.router", 5173);
+        RouteTable::new().validate(&mut sub, RES).unwrap();
     }
 
     #[test]

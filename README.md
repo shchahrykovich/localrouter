@@ -141,6 +141,18 @@ running daemon over a Unix socket.
 | `get_logs` | Last N requests and TCP connections, optionally for one host. Paths never include the query string. |
 | `status` | Daemon version, ports bound or failed, CA state and trust. |
 
+To set up a project, tell the agent in the project folder:
+
+```
+Run curl -s http://router.localhost and follow it to add LocalRouter to this project.
+```
+
+`router.localhost` is a page the daemon serves itself. It is Markdown for
+agents: setup steps, the status of HTTP, HTTPS and the local CA, how to turn
+each on in the app, and the current routes. The host key `router` is reserved
+for it. The app copies this prompt from the Domains and Help tabs, and from
+the menu that opens on a right-click of the menu bar icon.
+
 Example of what an agent does when it starts a worktree:
 
 1. Call `find_free_port` and get `5174`.

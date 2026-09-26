@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use localrouter_core::api::{
@@ -107,11 +107,6 @@ impl Daemon {
         let log = Arc::new(RequestLog::new(config.value.log_size));
         let lookup = shared.clone();
         let certs = Arc::new(CertStore::new(ca, Arc::new(move |name: &str| lookup.lookup(name).is_some())));
-        let proxy = Arc::new(Proxy {
-            routes: shared.clone(),
-            log: log.clone(),
-            tls_client: localrouter_core::tls::insecure_loopback_client_config(),
-        });
 
         let loaded = store::load_routes(&paths.routes());
         let mut problems = Problems { ca: ca_problem, routes_file: loaded.problem, ..Default::default() };
@@ -136,19 +131,32 @@ impl Daemon {
                 }
             }
         }
-        Arc::new(Self {
-            paths,
-            shared,
-            log,
-            certs,
-            proxy,
-            shutdown: CancellationToken::new(),
-            pids,
-            tcp: Mutex::new(HashMap::new()),
-            problems: Mutex::new(problems),
-            trust_cache: Mutex::new(None),
-            write: tokio::sync::Mutex::new(()),
-            refusals: RefusalLog::new(),
+        Arc::new_cyclic(|this: &Weak<Self>| {
+            let this = this.clone();
+            let proxy = Arc::new(Proxy {
+                routes: shared.clone(),
+                log: log.clone(),
+                tls_client: localrouter_core::tls::insecure_loopback_client_config(),
+                // router.localhost shows the same status as `localrouter status`.
+                status: Some(Arc::new(move || {
+                    let this = this.clone();
+                    Box::pin(async move { Some(this.upgrade()?.status().await) })
+                })),
+            });
+            Self {
+                paths,
+                shared,
+                log,
+                certs,
+                proxy,
+                shutdown: CancellationToken::new(),
+                pids,
+                tcp: Mutex::new(HashMap::new()),
+                problems: Mutex::new(problems),
+                trust_cache: Mutex::new(None),
+                write: tokio::sync::Mutex::new(()),
+                refusals: RefusalLog::new(),
+            }
         })
     }
 

@@ -14,6 +14,8 @@ struct DomainsView: View {
                 CopyLine(text: "localrouter add shop 5173")
                 Text("Or let a coding agent do it:")
                 CopyLine(text: model.mcpCommand)
+                Text("Then paste this into the agent in your project folder:")
+                CopyLine(text: model.agentPrompt)
                 Spacer()
             }
             .padding(16)

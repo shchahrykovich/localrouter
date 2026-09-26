@@ -27,6 +27,7 @@ final class AppModel {
     var message: String?
     var busy = false
 
+    @ObservationIgnored private var statusItemMenu: StatusItemMenu?
     private var logSubscription: LogSubscription?
     private var refreshTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
@@ -49,6 +50,8 @@ final class AppModel {
     func start() {
         guard !started else { return }
         started = true
+        statusItemMenu = StatusItemMenu(model: self)
+        statusItemMenu?.install()
         registerDaemon()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -231,6 +234,15 @@ final class AppModel {
         let installed = (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil
         return "claude mcp add localrouter -- \(installed ? link.path : "localrouter") mcp"
     }
+
+    // MARK: Agent instructions
+
+    /// router.localhost, served by the daemon.
+    var agentHelpURL: String {
+        AgentHelp.url(httpPort: status?.http.port, httpsPort: status?.https.port)
+    }
+
+    var agentPrompt: String { AgentHelp.prompt(url: agentHelpURL) }
 
     // MARK: Updates
 

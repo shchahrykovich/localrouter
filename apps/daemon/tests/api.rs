@@ -345,3 +345,42 @@ fn broken_routes_file_is_reported_in_status() {
     let s = c.call("status", json!({}));
     assert!(s["routes_file_problem"].as_str().unwrap().contains("moved"));
 }
+
+#[test]
+fn router_host_is_refused_because_the_help_page_owns_it() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let v = c.raw("register_route", http_route("router", 5173));
+    assert_eq!(v["error"]["code"], "invalid_route", "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("help page"), "{v}");
+    c.call("register_route", http_route("feat.router", 5173));
+}
+
+#[test]
+fn saved_router_route_is_skipped_and_reported() {
+    let d = Daemon::start_with(|dir| {
+        let routes = json!({"version": 1, "routes": [
+            {"host": "router", "target": "http://127.0.0.1:5173", "persistent": true},
+            {"host": "shop", "target": "http://127.0.0.1:5174", "persistent": true}
+        ]});
+        std::fs::write(dir.join("routes.json"), routes.to_string()).unwrap();
+    });
+    let mut c = d.client();
+    let s = c.call("status", json!({}));
+    assert_eq!(s["routes"], 1);
+    assert!(s["routes_file_problem"].as_str().unwrap().contains("skipped router"), "{s}");
+}
+
+#[test]
+fn router_localhost_shows_the_daemon_status() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let port = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
+    let mut s = TcpStream::connect(("127.0.0.1", port as u16)).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: router.localhost\r\nConnection: close\r\n\r\n").unwrap();
+    let mut page = String::new();
+    s.read_to_string(&mut page).unwrap();
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert!(page.contains(&format!("| HTTP | on, port {port} |")), "{page}");
+    assert!(page.contains("| Local CA | ready, "), "{page}");
+}

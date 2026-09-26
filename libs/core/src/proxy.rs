@@ -5,7 +5,9 @@
 //! upgrades are passed through. See ADR 01, changes 6 and 7.
 
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,8 +20,9 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
+use crate::api::StatusResult;
 use crate::logs::{LogEntry, RequestLog};
-use crate::routes::{Route, Scheme, host_key};
+use crate::routes::{HELP_HOST, Route, Scheme, host_key};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -35,10 +38,14 @@ pub trait RouteSource: Send + Sync {
     fn https_port(&self) -> Option<u16>;
 }
 
+/// The daemon status, for the help page. `None` when it is not available.
+pub type StatusFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<StatusResult>> + Send>> + Send + Sync>;
+
 pub struct Proxy {
     pub routes: Arc<dyn RouteSource>,
     pub log: Arc<RequestLog>,
     pub tls_client: Arc<rustls::ClientConfig>,
+    pub status: Option<StatusFn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,15 +85,23 @@ impl Proxy {
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
 
-        let response = match self.routes.lookup(&host) {
-            None => not_found(&host, &self.routes.all()),
-            Some(route) if scheme == ClientScheme::Http && route.https_only => {
-                redirect_to_https(&host, &path, self.routes.https_port())
+        let response = if host_key(&host).as_deref() == Some(HELP_HOST) {
+            let status = match &self.status {
+                Some(status) => status().await,
+                None => None,
+            };
+            help(&self.routes.all(), self.routes.https_port(), status.as_ref())
+        } else {
+            match self.routes.lookup(&host) {
+                None => not_found(&host, &self.routes.all()),
+                Some(route) if scheme == ClientScheme::Http && route.https_only => {
+                    redirect_to_https(&host, &path, self.routes.https_port())
+                }
+                Some(route) => match self.forward(req, &route, &host, scheme, peer).await {
+                    Ok(resp) => resp,
+                    Err(e) => bad_gateway(&host, &route, &e),
+                },
             }
-            Some(route) => match self.forward(req, &route, &host, scheme, peer).await {
-                Ok(resp) => resp,
-                Err(e) => bad_gateway(&host, &route, &e),
-            },
         };
         let millis = start.elapsed().as_millis() as u64;
         self.log.push(LogEntry::http(&method, &host, &path, response.status().as_u16(), millis));
@@ -257,6 +272,16 @@ fn page(status: StatusCode, title: &str, body_html: String) -> Response<Body> {
         .expect("static response parts are valid")
 }
 
+/// `router.localhost`: Markdown for coding agents, sent as plain text so a
+/// browser shows it instead of downloading it.
+fn help(routes: &[Route], https_port: Option<u16>, status: Option<&StatusResult>) -> Response<Body> {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::from(crate::help::render(routes, https_port, status))).map_err(|never| match never {}).boxed())
+        .expect("static response parts are valid")
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
@@ -278,7 +303,11 @@ fn not_found(host: &str, routes: &[Route]) -> Response<Body> {
     page(
         StatusCode::NOT_FOUND,
         "No route for this name",
-        format!("<p>No route matches <code>{}</code>.{known}</p><h2>Routes</h2><ul>{list}</ul>", escape(host)),
+        format!(
+            "<p>No route matches <code>{}</code>.{known}</p><h2>Routes</h2><ul>{list}</ul>\
+             <p>Instructions for coding agents: <a href=\"//{HELP_HOST}.localhost/\">{HELP_HOST}.localhost</a></p>",
+            escape(host)
+        ),
     )
 }
 

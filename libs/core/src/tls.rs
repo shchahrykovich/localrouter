@@ -22,7 +22,7 @@ use rustls::sign::CertifiedKey;
 use time::OffsetDateTime;
 
 use crate::paths::Paths;
-use crate::routes::host_key;
+use crate::routes::{HELP_HOST, host_key};
 
 pub const CA_VALIDITY_DAYS: i64 = 3650;
 pub const LEAF_VALIDITY_DAYS: i64 = 90;
@@ -206,6 +206,7 @@ fn remove_leftover_tmp_dirs(data: &Path) {
 }
 
 /// Decides whether a TLS name may get a certificate (it must have a route).
+/// `router.localhost` (the help page) always gets one.
 pub type AllowName = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Holds the current CA and the leaf cache; answers SNI lookups.
@@ -242,8 +243,7 @@ impl CertStore {
 
     /// A certificate for `name`, or `None` when the name must be refused (I5).
     pub fn cert_for(&self, name: &str) -> Option<Arc<CertifiedKey>> {
-        host_key(name)?;
-        if !(self.allow)(name) {
+        if host_key(name)? != HELP_HOST && !(self.allow)(name) {
             return None;
         }
         let name = name.trim_end_matches('.').to_ascii_lowercase();

@@ -212,6 +212,7 @@ the password. The daemon never sets it.
 | **forward** | Send the request to the route's target, with the `Host` header unchanged and `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` added. |
 | **peer check** | On each new connection, the daemon checks the address of the other side before it reads any byte. It closes the connection unless the address is loopback or `allow_lan` is on. |
 | **upstream up** | The target port accepts a TCP connection within 200 ms. Shown as the status dot in the app and `upstream_up` in `list_routes`. |
+| **help page** | The page at `router.localhost`, served by the daemon itself. Markdown sent as plain text, for coding agents: setup steps, the status of HTTP, HTTPS and the local CA, and the current routes. No route can use the host key `router`. |
 | **404 page** | The daemon's answer when no route matches. It lists all routes. |
 | **502 page** | The daemon's answer when the target of an HTTP route does not answer within 2 seconds. It shows the target and the note. |
 | **308 redirect** | The answer on port 80 for an HTTP route with `https_only`. It sends the client to the same URL with `https://`. |

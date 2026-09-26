@@ -13,9 +13,9 @@ port, owned/session/persistent route) in code, docs and UI text.
 ## Commands
 
 ```
-cargo test --workspace                                   # all Rust tests (86)
+cargo test --workspace                                   # all Rust tests
 cargo clippy --workspace --all-targets                   # expected: no warnings
-swift test --package-path apps/menubar                   # Swift tests (13)
+swift test --package-path apps/menubar                   # Swift tests
 swift build --package-path apps/menubar                  # build the menu bar app only
 scripts/build-app.sh                                     # build/LocalRouter.app, ad-hoc signed
 scripts/install.sh --user --launch                       # build and install to ~/Applications
@@ -95,6 +95,10 @@ list, so a new tool needs that test changed on purpose.
   `127.0.0.1:80` silently win.
 - **TCP routes are chosen by port only**; the host name is for people. Their
   listeners bind 127.0.0.1 and ::1 only, both or neither.
+- **`router.localhost` is built in**: the proxy answers it before the route
+  lookup with `libs/core/src/help.md` (status and routes filled in by
+  `help.rs`), and `CertStore` always issues its certificate. Validation refuses
+  the host key `router`. Keep `help.md` in step with the CLI and MCP tools.
 - **Owned routes (`owner_pid`) are never saved**; persistent + owner_pid is
   refused.
 - **The daemon never replaces an existing CA**; only `reset_ca` (user action,

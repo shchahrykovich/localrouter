@@ -10,6 +10,12 @@ struct HelpView: View {
                 Text("Give a coding agent access").font(.headline)
                 Text("Install the command line tool from the ⋯ menu, then run:")
                 CopyLine(text: model.mcpCommand)
+                Text("Then ask the agent, in your project folder, to set up LocalRouter:")
+                CopyLine(text: model.agentPrompt)
+                Button("Open \(model.agentHelpURL)") { model.open(model.agentHelpURL) }
+                    .buttonStyle(.link)
+                Text("The page lists the steps, the current routes and whether HTTP, HTTPS and the CA work.")
+                    .font(.caption).foregroundStyle(.secondary)
 
                 Text("Add routes from a terminal").font(.headline).padding(.top, 6)
                 CopyLine(text: "localrouter add shop 5173")
