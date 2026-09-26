@@ -1,5 +1,9 @@
 # 9. Tasks
 
+**Status on 2026-09-26:** tasks 1 to 8 done. Task 9: E1b, M1 (Next.js) and M2
+done; M3, M4, M5 and the Vite and Turbopack parts of M1 open. Task 10: the ADR
+status is flipped with the Actual Change Manifest; the release and M6 are open.
+
 | # | Task | Depends on |
 |---|---|---|
 | 1 | Route key and path rules in core | - |

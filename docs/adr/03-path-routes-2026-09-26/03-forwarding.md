@@ -138,3 +138,17 @@ fix.
 - `T5`: the log entry carries `route`.
 - `M1`, `M2`: real Next.js and Vite apps, with and without a base path, and a
   Next.js app with `assetPrefix` behind a stripped file prefix (pattern B).
+
+## As built: what manual tests M1 and M2 found
+
+Run on 2026-09-26 with Next.js 16.3.5 (`next dev --webpack`; Turbopack refused
+the test setup's symlinked `node_modules`, so Turbopack is not tested), three
+small apps, and the new daemon on random ports. The planned text above is kept;
+these results correct it.
+
+| Planned | Found | Change made |
+|---|---|---|
+| Pattern B routes the file prefix with `strip_path` | `next dev` serves files both with and without the prefix, but its hot reload socket answers only at `/shop-assets/_next/hmr`, with the prefix. With `strip_path` the socket never opens. | Pattern B for `next dev` uses plain path routes, no strip. Help page Step 4b says so. `strip_path` stays for servers that answer at `/`. |
+| Next.js hot reload socket at `/blog/_next/webpack-hmr` | Next.js 16 uses `/_next/hmr`, under the base path: `/blog/_next/hmr`. Through the daemon: `101`, route `shop/blog`. | None needed: the route matches any path under `/blog`. |
+| Without a base path the page has no scripts or styles (404) | Every file answers `200` from the main app, because dev file names (`webpack.js`, `main-app.js`, `layout.css`) are the same in every Next.js app. The blog page gets the main app's CSS. | Help page Step 6 describes the real symptom. The log's `route shop` and `localrouter which` found the cause at once. |
+| A plain `<img src="/logo.png">` is missing under a base path | The main app answered `/hello.txt` with `200` and its own file. | Help page Step 6 says "wrong or missing image". |

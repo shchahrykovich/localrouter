@@ -1,6 +1,7 @@
 //! Routes: validation, the route table and name lookup.
 //!
-//! See ADR 01, changes 6 (route model) and 7 (protocols).
+//! See ADR 01, changes 6 (route model) and 7 (protocols), and ADR 03 (path
+//! routes: the route key is host plus path).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,6 +14,7 @@ pub const MAX_NOTE_CHARS: usize = 500;
 pub const MAX_LABEL_LEN: usize = 63;
 /// A full DNS name is at most 253 characters; the key leaves room for `.localhost`.
 pub const MAX_HOST_LEN: usize = 253 - TLD.len() - 1;
+pub const MAX_PATH_LEN: usize = 200;
 /// Host key of the help page the daemon serves itself (`router.localhost`).
 /// No route can take it.
 pub const HELP_HOST: &str = "router";
@@ -40,6 +42,11 @@ impl fmt::Display for Protocol {
 pub struct Route {
     /// Host key: the name without `.localhost`, for example `feat-login.shop`.
     pub host: String,
+    /// HTTP routes only: the path prefix this route answers, for example
+    /// `/blog` (it answers `/blog` and `/blog/...`). `None` is the default
+    /// route of the host: every path no other route of the host matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(default)]
     pub protocol: Protocol,
     /// `http://`, `https://` or `tcp://` plus a loopback host and a port.
@@ -50,6 +57,9 @@ pub struct Route {
     /// HTTP routes only: plain HTTP is redirected to HTTPS.
     #[serde(default, skip_serializing_if = "is_false")]
     pub https_only: bool,
+    /// Path routes only: remove the path before the request reaches the target.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_path: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
     /// The route is removed when this process exits. Never saved to disk.
@@ -72,6 +82,45 @@ impl Route {
     /// The full name clients use, for example `feat-login.shop.localhost`.
     pub fn full_name(&self) -> String {
         format!("{}.{TLD}", self.host)
+    }
+
+    /// The name plus the path, for example `shop.localhost/blog`.
+    pub fn full_name_and_path(&self) -> String {
+        format!("{}{}", self.full_name(), self.path.as_deref().unwrap_or(""))
+    }
+
+    pub fn key(&self) -> RouteKey {
+        RouteKey { host: self.host.clone(), path: self.path.clone().unwrap_or_default() }
+    }
+}
+
+/// Identity of a route: host plus path. `path` is empty for the default route.
+/// Written as the two joined: `shop`, `shop/blog`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RouteKey {
+    pub host: String,
+    pub path: String,
+}
+
+impl RouteKey {
+    pub fn new(host: &str, path: Option<&str>) -> Self {
+        Self { host: host.to_string(), path: path.unwrap_or("").to_string() }
+    }
+}
+
+impl fmt::Display for RouteKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.host, self.path)
+    }
+}
+
+/// Whether a route with `route_path` answers `request_path`: equal, or
+/// followed by `/`. `/blog` matches `/blog/x`, never `/blogger`. A route
+/// without a path matches every path.
+pub fn path_matches(route_path: Option<&str>, request_path: &str) -> bool {
+    match route_path {
+        None => true,
+        Some(p) => request_path.strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')),
     }
 }
 
@@ -138,6 +187,18 @@ pub enum RouteError {
     HostTooLong,
     #[error("\"{label}\" is not a valid label: use a-z, 0-9 and '-', 1 to 63 characters, no '-' at the start or end. Try \"{suggestion}\"")]
     BadLabel { label: String, suggestion: String },
+    #[error("\"{given}\" is not a valid host: a label cannot contain '/'. Try \"{suggestion}\", or host \"{host}\" with path \"{path}\"")]
+    HostLooksLikePath { given: String, suggestion: String, host: String, path: String },
+    #[error("path \"{path}\" is not valid: {reason}")]
+    BadPath { path: String, reason: &'static str },
+    #[error("path and strip_path are only for http routes")]
+    PathOnlyForHttp,
+    #[error("strip_path needs a path")]
+    StripPathNeedsPath,
+    #[error("host \"{0}\" has a tcp route; a path route needs a host without one")]
+    HostHasTcpRoute(String),
+    #[error("host \"{0}\" has path routes; remove them before adding a tcp route")]
+    HostHasPathRoutes(String),
     #[error("host must not end in .{TLD}: write \"{0}\"")]
     HasTld(String),
     #[error("\"{0}\" is reserved: {0}.{TLD} is LocalRouter's help page. Use another name")]
@@ -211,10 +272,70 @@ pub fn normalize_host(host: &str) -> Result<String, RouteError> {
     for label in host.split('.') {
         if !valid_label(label) {
             let suggestion = host.split('.').map(slugify).collect::<Vec<_>>().join(".");
+            // `shop/blog` may be a host plus a path (ADR 03). The slash is in
+            // the last label only then; `feat/login.shop` is a branch name.
+            if let Some((h, rest)) = host.split_once('/')
+                && host.rsplit('.').next().is_some_and(|last| last.contains('/'))
+                && h.split('.').all(valid_label)
+                && let Ok(Some(path)) = normalize_path(&format!("/{rest}"))
+            {
+                return Err(RouteError::HostLooksLikePath { given: host.clone(), suggestion, host: h.to_string(), path });
+            }
             return Err(RouteError::BadLabel { label: label.to_string(), suggestion });
         }
     }
     Ok(host)
+}
+
+fn valid_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && segment.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+}
+
+/// Check a route path and remove a trailing `/`. `/` and the empty string
+/// mean "no path" (the default route), so they return `None`.
+pub fn normalize_path(path: &str) -> Result<Option<String>, RouteError> {
+    let bad = |reason| RouteError::BadPath { path: path.to_string(), reason };
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return Ok(None);
+    }
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return Err(bad("it must start with /"));
+    };
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.len() + 1 > MAX_PATH_LEN {
+        return Err(bad("it is longer than 200 characters"));
+    }
+    if !rest.split('/').all(valid_segment) {
+        return Err(bad(
+            "use segments of A-Z, a-z, 0-9, '-', '.', '_' and '~' separated by one '/', and no '.' or '..' segment",
+        ));
+    }
+    Ok(Some(format!("/{rest}")))
+}
+
+/// One step of a lookup, for `explain`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// The name does not end in `.localhost`.
+    NotLocalhost,
+    /// The HTTP routes of this host key (by path, `None` = default route) and
+    /// the one whose path matched, if any.
+    Key { host: String, paths: Vec<Option<String>>, matched: Option<Option<String>> },
+    /// Nothing matched; fallback is on, so the parent host key is tried next.
+    Fallback { parent: String },
+    /// Nothing matched and fallback is off.
+    FallbackOff,
+}
+
+/// The route a name and path lead to, and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Explanation {
+    pub route: Option<Route>,
+    pub steps: Vec<Step>,
 }
 
 /// Facts about the running daemon that validation needs.
@@ -226,7 +347,8 @@ pub struct Reserved {
 
 #[derive(Debug, Clone, Default)]
 pub struct RouteTable {
-    routes: BTreeMap<String, Route>,
+    /// Sorted by host, then path, so the routes of one host are one range.
+    routes: BTreeMap<RouteKey, Route>,
 }
 
 impl RouteTable {
@@ -234,8 +356,17 @@ impl RouteTable {
         Self::default()
     }
 
-    pub fn get(&self, host: &str) -> Option<&Route> {
-        self.routes.get(host)
+    pub fn get(&self, key: &RouteKey) -> Option<&Route> {
+        self.routes.get(key)
+    }
+
+    /// All routes of one host key, default route first, then by path.
+    pub fn routes_of<'a>(&'a self, host: &str) -> impl Iterator<Item = &'a Route> + use<'a> {
+        let host = host.to_string();
+        self.routes
+            .range(RouteKey { host: host.clone(), path: String::new() }..)
+            .take_while(move |(k, _)| k.host == host)
+            .map(|(_, r)| r)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Route> {
@@ -250,18 +381,18 @@ impl RouteTable {
         self.routes.is_empty()
     }
 
-    /// Insert or replace. Returns the old route with the same host.
+    /// Insert or replace. Returns the old route with the same key.
     pub fn insert(&mut self, route: Route) -> Option<Route> {
-        self.routes.insert(route.host.clone(), route)
+        self.routes.insert(route.key(), route)
     }
 
-    pub fn remove(&mut self, host: &str) -> Option<Route> {
-        self.routes.remove(host)
+    pub fn remove(&mut self, key: &RouteKey) -> Option<Route> {
+        self.routes.remove(key)
     }
 
-    /// Hosts of routes owned by `pid`.
-    pub fn owned_by(&self, pid: u32) -> Vec<String> {
-        self.routes.values().filter(|r| r.owner_pid == Some(pid)).map(|r| r.host.clone()).collect()
+    /// Keys of routes owned by `pid`.
+    pub fn owned_by(&self, pid: u32) -> Vec<RouteKey> {
+        self.routes.iter().filter(|(_, r)| r.owner_pid == Some(pid)).map(|(k, _)| k.clone()).collect()
     }
 
     /// The TCP route listening on `port`.
@@ -271,7 +402,7 @@ impl RouteTable {
             .find(|r| r.protocol == Protocol::Tcp && r.listen_port == Some(port))
     }
 
-    /// Persistent routes, sorted by host (what `routes.json` holds).
+    /// Persistent routes, sorted by host and path (what `routes.json` holds).
     pub fn persistent(&self) -> Vec<Route> {
         self.routes.values().filter(|r| r.persistent).cloned().collect()
     }
@@ -283,6 +414,10 @@ impl RouteTable {
         if route.host == HELP_HOST {
             return Err(RouteError::ReservedHost(route.host.clone()));
         }
+        route.path = match route.path.take() {
+            Some(p) => normalize_path(&p)?,
+            None => None,
+        };
         let target = route.target_addr()?;
         if route.note.chars().count() > MAX_NOTE_CHARS {
             return Err(RouteError::NoteTooLong);
@@ -298,6 +433,14 @@ impl RouteTable {
                 if route.listen_port.is_some() {
                     return Err(RouteError::ListenPortOnlyForTcp);
                 }
+                if route.strip_path && route.path.is_none() {
+                    return Err(RouteError::StripPathNeedsPath);
+                }
+                // A TCP route keeps its host to itself (I22). Its key is the
+                // default key, so a default HTTP route simply replaces it.
+                if route.path.is_some() && self.routes_of(&route.host).any(|r| r.protocol == Protocol::Tcp) {
+                    return Err(RouteError::HostHasTcpRoute(route.host.clone()));
+                }
             }
             Protocol::Tcp => {
                 if target.scheme != Scheme::Tcp {
@@ -305,6 +448,12 @@ impl RouteTable {
                 }
                 if route.https_only {
                     return Err(RouteError::HttpsOnlyOnlyForHttp);
+                }
+                if route.path.is_some() || route.strip_path {
+                    return Err(RouteError::PathOnlyForHttp);
+                }
+                if self.routes_of(&route.host).any(|r| r.path.is_some()) {
+                    return Err(RouteError::HostHasPathRoutes(route.host.clone()));
                 }
                 let port = route.listen_port.ok_or(RouteError::TcpNeedsListenPort)?;
                 if port != 0 {
@@ -326,20 +475,79 @@ impl RouteTable {
         Ok(())
     }
 
-    /// Find the HTTP route for a `Host` header or TLS SNI name.
+    /// Find the HTTP route for a `Host` header and a request path (ADR 03).
     ///
-    /// Longest match: `feat-x.shop` falls back to `shop` when `fallback` is on.
-    pub fn lookup(&self, name: &str, fallback: bool) -> Option<&Route> {
-        let full = host_key(name)?;
+    /// The nearest host key with a matching route wins, then the longest path
+    /// on it. `feat-x.shop` falls back to `shop` when `fallback` is on and no
+    /// route of `feat-x.shop` matches the path.
+    pub fn lookup(&self, name: &str, path: &str, fallback: bool) -> Option<&Route> {
+        self.walk(name, path, fallback, None)
+    }
+
+    /// `lookup`, with each step recorded. The two share one walk, so they
+    /// always choose the same route (I33).
+    pub fn explain(&self, name: &str, path: &str, fallback: bool) -> Explanation {
+        let mut steps = Vec::new();
+        let route = self.walk(name, path, fallback, Some(&mut steps)).cloned();
+        Explanation { route, steps }
+    }
+
+    /// Whether some HTTP route serves this name, whatever the path. Decides
+    /// whether the name gets a TLS certificate (I27).
+    pub fn serves(&self, name: &str, fallback: bool) -> bool {
+        let Some(full) = host_key(name) else { return false };
         let mut key = full.as_str();
         loop {
-            if let Some(route) = self.routes.get(key).filter(|r| r.protocol == Protocol::Http) {
-                return Some(route);
+            if self.routes_of(key).any(|r| r.protocol == Protocol::Http) {
+                return true;
             }
             if !fallback {
+                return false;
+            }
+            match key.split_once('.') {
+                Some((_, parent)) => key = parent,
+                None => return false,
+            }
+        }
+    }
+
+    fn walk(&self, name: &str, path: &str, fallback: bool, mut steps: Option<&mut Vec<Step>>) -> Option<&Route> {
+        let Some(full) = host_key(name) else {
+            if let Some(steps) = steps.as_mut() {
+                steps.push(Step::NotLocalhost);
+            }
+            return None;
+        };
+        let mut key = full.as_str();
+        loop {
+            let mut best: Option<&Route> = None;
+            for route in self.routes_of(key).filter(|r| r.protocol == Protocol::Http) {
+                if path_matches(route.path.as_deref(), path)
+                    && best.is_none_or(|b| route.path.as_ref().map_or(0, String::len) > b.path.as_ref().map_or(0, String::len))
+                {
+                    best = Some(route);
+                }
+            }
+            if let Some(steps) = steps.as_mut() {
+                steps.push(Step::Key {
+                    host: key.to_string(),
+                    paths: self.routes_of(key).filter(|r| r.protocol == Protocol::Http).map(|r| r.path.clone()).collect(),
+                    matched: best.map(|r| r.path.clone()),
+                });
+            }
+            if best.is_some() {
+                return best;
+            }
+            if !fallback {
+                if let Some(steps) = steps.as_mut() {
+                    steps.push(Step::FallbackOff);
+                }
                 return None;
             }
             key = key.split_once('.')?.1;
+            if let Some(steps) = steps.as_mut() {
+                steps.push(Step::Fallback { parent: key.to_string() });
+            }
         }
     }
 }
@@ -367,14 +575,20 @@ mod tests {
     fn http(host: &str, port: u16) -> Route {
         Route {
             host: host.into(),
+            path: None,
             protocol: Protocol::Http,
             target: format!("http://127.0.0.1:{port}"),
             listen_port: None,
             https_only: false,
+            strip_path: false,
             note: String::new(),
             owner_pid: None,
             persistent: false,
         }
+    }
+
+    fn at(host: &str, path: &str, port: u16) -> Route {
+        Route { path: Some(path.into()), ..http(host, port) }
     }
 
     fn tcp(host: &str, listen: u16, target: u16) -> Route {
@@ -551,7 +765,7 @@ mod tests {
     #[test]
     fn lookup_exact_fallback_and_none() {
         let t = table(&[http("shop", 5173), http("feat-login.shop", 5174)]);
-        let port = |name: &str, fb| t.lookup(name, fb).map(|r| r.target_addr().unwrap().port);
+        let port = |name: &str, fb| t.lookup(name, "/", fb).map(|r| r.target_addr().unwrap().port);
         assert_eq!(port("shop.localhost", true), Some(5173));
         assert_eq!(port("feat-login.shop.localhost", true), Some(5174));
         assert_eq!(port("feat-other.shop.localhost", true), Some(5173));
@@ -567,7 +781,8 @@ mod tests {
     #[test]
     fn lookup_ignores_tcp_routes() {
         let t = table(&[tcp("db.shop", 15432, 5432)]);
-        assert!(t.lookup("db.shop.localhost", true).is_none());
+        assert!(t.lookup("db.shop.localhost", "/", true).is_none());
+        assert!(!t.serves("db.shop.localhost", true));
         assert_eq!(t.by_listen_port(15432).unwrap().host, "db.shop");
     }
 
@@ -581,4 +796,219 @@ mod tests {
         let hosts: Vec<_> = t.persistent().into_iter().map(|r| r.host).collect();
         assert_eq!(hosts, ["a", "b"]);
     }
+
+    // ADR 03, T1: path rules and the route key (I20, I21)
+
+    #[test]
+    fn valid_paths_are_normalized() {
+        for (given, want) in [
+            ("/blog", Some("/blog")),
+            ("/blog/", Some("/blog")),
+            ("/docs/v2", Some("/docs/v2")),
+            ("/api_v2", Some("/api_v2")),
+            ("/~me", Some("/~me")),
+            ("/Blog", Some("/Blog")),
+            ("/", None),
+            ("", None),
+        ] {
+            assert_eq!(normalize_path(given).unwrap().as_deref(), want, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn bad_paths_are_refused_with_the_rule() {
+        let long = format!("/{}", "a".repeat(MAX_PATH_LEN));
+        for (given, reason) in [
+            ("blog", "start with /"),
+            ("/a//b", "segments"),
+            ("/a/../b", "segments"),
+            ("/a/./b", "segments"),
+            ("/a%20b", "segments"),
+            ("/a?b", "segments"),
+            ("/a#b", "segments"),
+            ("/a*", "segments"),
+            (long.as_str(), "200 characters"),
+        ] {
+            let err = normalize_path(given).unwrap_err();
+            assert!(matches!(err, RouteError::BadPath { .. }), "{given:?}: {err}");
+            assert!(err.to_string().contains(reason), "{given:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn slash_path_and_no_path_are_one_key() {
+        let mut slash = at("shop", "/", 1);
+        RouteTable::new().validate(&mut slash, RES).unwrap();
+        assert_eq!(slash.path, None);
+        let mut t = table(&[http("shop", 5173)]);
+        assert!(t.insert(slash).is_some(), "the default route was not replaced");
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn path_routes_have_their_own_keys() {
+        let mut t = table(&[http("shop", 1), at("shop", "/blog", 2), at("shop", "/Blog", 3)]);
+        assert_eq!(t.len(), 3);
+        assert_eq!(t.get(&RouteKey::new("shop", Some("/blog"))).unwrap().target, "http://127.0.0.1:2");
+        assert_eq!(RouteKey::new("shop", Some("/blog")).to_string(), "shop/blog");
+        assert_eq!(RouteKey::new("shop", None).to_string(), "shop");
+        let old = t.insert(at("shop", "/blog", 4)).unwrap();
+        assert_eq!(old.target, "http://127.0.0.1:2");
+        assert_eq!(t.remove(&RouteKey::new("shop", None)).unwrap().target, "http://127.0.0.1:1");
+        let left: Vec<_> = t.routes_of("shop").map(|r| r.key().to_string()).collect();
+        assert_eq!(left, ["shop/Blog", "shop/blog"]);
+    }
+
+    #[test]
+    fn host_with_a_path_gets_a_path_hint() {
+        let err = normalize_host("shop/blog").unwrap_err();
+        assert_eq!(
+            err,
+            RouteError::HostLooksLikePath {
+                given: "shop/blog".into(),
+                suggestion: "shop-blog".into(),
+                host: "shop".into(),
+                path: "/blog".into()
+            }
+        );
+        let text = err.to_string();
+        assert!(text.contains("\"shop-blog\"") && text.contains("path \"/blog\""), "{text}");
+        // One label, so it may be a branch name too: both hints.
+        assert!(matches!(normalize_host("feat/login"), Err(RouteError::HostLooksLikePath { .. })));
+        // The slash is not in the last label: a branch name, the old hint.
+        assert!(matches!(normalize_host("feat/login.shop"), Err(RouteError::BadLabel { .. })));
+    }
+
+    // ADR 03, T2: protocol rules (I22)
+
+    #[test]
+    fn path_is_only_for_http_routes() {
+        let mut t = tcp("db", 15432, 5432);
+        t.path = Some("/x".into());
+        assert_eq!(RouteTable::new().validate(&mut t, RES), Err(RouteError::PathOnlyForHttp));
+        let mut t = tcp("db", 15432, 5432);
+        t.strip_path = true;
+        assert_eq!(RouteTable::new().validate(&mut t, RES), Err(RouteError::PathOnlyForHttp));
+        let mut r = http("shop", 1);
+        r.strip_path = true;
+        assert_eq!(RouteTable::new().validate(&mut r, RES), Err(RouteError::StripPathNeedsPath));
+    }
+
+    #[test]
+    fn tcp_routes_do_not_share_a_host_with_path_routes() {
+        let with_tcp = table(&[tcp("db", 15432, 5432)]);
+        let mut p = at("db", "/x", 1);
+        assert_eq!(with_tcp.validate(&mut p, RES), Err(RouteError::HostHasTcpRoute("db".into())));
+
+        let with_path = table(&[at("shop", "/blog", 1)]);
+        let mut t = tcp("shop", 15432, 5432);
+        assert_eq!(with_path.validate(&mut t, RES), Err(RouteError::HostHasPathRoutes("shop".into())));
+
+        // ADR 01 behaviour stays: a TCP route may replace a default HTTP route.
+        let with_default = table(&[http("shop", 1)]);
+        let mut t = tcp("shop", 15432, 5432);
+        with_default.validate(&mut t, RES).unwrap();
+    }
+
+    // ADR 03, T3: the match rule, the lookup order and explain (I23, I24, I33)
+
+    #[test]
+    fn match_rule_table() {
+        for (req, blog, default) in [
+            ("/blog", true, true),
+            ("/blog/post-1", true, true),
+            ("/blogger", false, true),
+            ("/Blog", false, true),
+            ("/", false, true),
+            ("/blog%2Fx", false, true),
+        ] {
+            assert_eq!(path_matches(Some("/blog"), req), blog, "/blog vs {req}");
+            assert_eq!(path_matches(None, req), default, "default vs {req}");
+        }
+    }
+
+    fn answer(t: &RouteTable, name: &str, path: &str, fallback: bool) -> Option<String> {
+        let got = t.lookup(name, path, fallback).map(|r| r.key().to_string());
+        let explained = t.explain(name, path, fallback).route.map(|r| r.key().to_string());
+        assert_eq!(got, explained, "explain and lookup disagree on {name}{path}");
+        got
+    }
+
+    #[test]
+    fn longest_path_wins_on_one_host() {
+        let t = table(&[http("shop", 1), at("shop", "/blog", 2), at("shop", "/blog/admin", 3)]);
+        assert_eq!(answer(&t, "shop.localhost", "/blog/admin/x", true).as_deref(), Some("shop/blog/admin"));
+        assert_eq!(answer(&t, "shop.localhost", "/blog/x", true).as_deref(), Some("shop/blog"));
+        assert_eq!(answer(&t, "shop.localhost", "/blogger", true).as_deref(), Some("shop"));
+        assert_eq!(answer(&t, "shop.localhost", "/", true).as_deref(), Some("shop"));
+    }
+
+    #[test]
+    fn nearest_host_key_wins_over_a_longer_path() {
+        let t = table(&[http("shop", 1), at("shop", "/blog", 2), http("feat-x.shop", 3)]);
+        assert_eq!(answer(&t, "feat-x.shop.localhost", "/blog", true).as_deref(), Some("feat-x.shop"));
+    }
+
+    #[test]
+    fn branch_path_route_falls_back_for_other_paths() {
+        // Scenario A and B of ADR 03, change 2.
+        let t = table(&[http("shop", 5173), at("shop", "/blog", 3001), at("feat-x.shop", "/blog", 3002)]);
+        assert_eq!(answer(&t, "feat-x.shop.localhost", "/blog/post-1", true).as_deref(), Some("feat-x.shop/blog"));
+        assert_eq!(answer(&t, "feat-x.shop.localhost", "/products", true).as_deref(), Some("shop"));
+        assert_eq!(answer(&t, "feat-x.shop.localhost", "/products", false), None);
+        assert_eq!(answer(&t, "feat-x.shop.localhost", "/blog", false).as_deref(), Some("feat-x.shop/blog"));
+    }
+
+    #[test]
+    fn host_with_only_path_routes() {
+        let t = table(&[at("shop", "/blog", 1)]);
+        assert_eq!(answer(&t, "shop.localhost", "/", true), None);
+        assert!(t.serves("shop.localhost", true), "a path route must still get a certificate");
+        assert!(t.serves("x.shop.localhost", true));
+        assert!(!t.serves("x.shop.localhost", false));
+        assert!(!t.serves("blog.localhost", true));
+    }
+
+    #[test]
+    fn without_path_routes_the_lookup_is_the_old_one() {
+        // I24 regression: every case of lookup_exact_fallback_and_none, with
+        // several request paths, gives the route the old lookup gave.
+        let t = table(&[http("shop", 5173), http("feat-login.shop", 5174)]);
+        let cases = [
+            ("shop.localhost", true, Some(5173)),
+            ("feat-login.shop.localhost", true, Some(5174)),
+            ("feat-other.shop.localhost", true, Some(5173)),
+            ("feat-other.shop.localhost", false, None),
+            ("blog.localhost", true, None),
+            ("shop.localhost:8443", true, Some(5173)),
+            ("Shop.LocalHost", true, Some(5173)),
+            ("shop.example.com", true, None),
+        ];
+        for (name, fb, want) in cases {
+            for path in ["/", "/blog", "/a/b?c", "*"] {
+                let port = t.lookup(name, path, fb).map(|r| r.target_addr().unwrap().port);
+                assert_eq!(port, want, "{name} {path} fallback={fb}");
+                assert_eq!(t.serves(name, fb), want.is_some(), "serves {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn explain_records_each_step() {
+        let t = table(&[http("shop", 5173), at("feat-x.shop", "/blog", 3002)]);
+        let e = t.explain("feat-x.shop.localhost", "/products", true);
+        assert_eq!(e.route.unwrap().key().to_string(), "shop");
+        assert_eq!(
+            e.steps,
+            [
+                Step::Key { host: "feat-x.shop".into(), paths: vec![Some("/blog".into())], matched: None },
+                Step::Fallback { parent: "shop".into() },
+                Step::Key { host: "shop".into(), paths: vec![None], matched: Some(None) },
+            ]
+        );
+        let off = t.explain("feat-x.shop.localhost", "/products", false);
+        assert_eq!(off.steps.last(), Some(&Step::FallbackOff));
+        assert_eq!(t.explain("shop.example.com", "/", true).steps, [Step::NotLocalhost]);
+    }
+
 }

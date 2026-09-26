@@ -22,6 +22,10 @@ pub enum LogEntry {
         path: String,
         status: u16,
         duration_ms: u64,
+        /// Key of the route that answered, for example `shop/blog`. Absent for
+        /// the 404 page and the help page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        route: Option<String>,
     },
     /// One TCP connection, written when it closes.
     Tcp {
@@ -49,7 +53,16 @@ impl LogEntry {
             path: if path.is_empty() { "/".into() } else { path.to_string() },
             status,
             duration_ms,
+            route: None,
         }
+    }
+
+    /// Set the key of the route that answered (HTTP entries only).
+    pub fn with_route(mut self, key: Option<String>) -> Self {
+        if let LogEntry::Http { route, .. } = &mut self {
+            *route = key;
+        }
+        self
     }
 
     /// The route host key (TCP) or the full name (HTTP).

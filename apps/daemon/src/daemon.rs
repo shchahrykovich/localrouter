@@ -18,7 +18,7 @@ use localrouter_core::config::Config;
 use localrouter_core::logs::RequestLog;
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
-use localrouter_core::routes::{Protocol, Reserved, Route, RouteError, RouteTable};
+use localrouter_core::routes::{Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
 use localrouter_core::tcp::{self, TcpRouteInfo};
 use localrouter_core::tls::{CertStore, LocalCa};
 use tokio::net::TcpListener;
@@ -39,9 +39,9 @@ pub struct Shared {
 }
 
 impl RouteSource for Shared {
-    fn lookup(&self, host: &str) -> Option<Route> {
+    fn lookup(&self, host: &str, path: &str) -> Option<Route> {
         let fallback = self.config.read().unwrap().fallback;
-        self.routes.read().unwrap().lookup(host, fallback).cloned()
+        self.routes.read().unwrap().lookup(host, path, fallback).cloned()
     }
     fn all(&self) -> Vec<Route> {
         self.routes.read().unwrap().iter().cloned().collect()
@@ -106,7 +106,15 @@ impl Daemon {
         }
         let log = Arc::new(RequestLog::new(config.value.log_size));
         let lookup = shared.clone();
-        let certs = Arc::new(CertStore::new(ca, Arc::new(move |name: &str| lookup.lookup(name).is_some())));
+        // A name gets a certificate when any HTTP route serves it, with or
+        // without a path: TLS comes before the path is known (I27).
+        let certs = Arc::new(CertStore::new(
+            ca,
+            Arc::new(move |name: &str| {
+                let fallback = lookup.config.read().unwrap().fallback;
+                lookup.routes.read().unwrap().serves(name, fallback)
+            }),
+        ));
 
         let loaded = store::load_routes(&paths.routes());
         let mut problems = Problems { ca: ca_problem, routes_file: loaded.problem, ..Default::default() };
@@ -125,8 +133,9 @@ impl Daemon {
                         table.insert(route);
                     }
                     Err(e) => {
-                        tracing::warn!("skipped saved route {}: {e}", route.host);
-                        problems.routes_file.get_or_insert_with(String::new).push_str(&format!("skipped {}: {e}. ", route.host));
+                        let key = route.key();
+                        tracing::warn!("skipped saved route {key}: {e}");
+                        problems.routes_file.get_or_insert_with(String::new).push_str(&format!("skipped {key}: {e}. "));
                     }
                 }
             }
@@ -295,11 +304,15 @@ impl Daemon {
 
     pub async fn remove_owned_by(self: &Arc<Self>, pid: u32) {
         let _guard = self.write.lock().await;
-        let hosts = self.shared.routes.read().unwrap().owned_by(pid);
-        for host in hosts {
-            self.shared.routes.write().unwrap().remove(&host);
-            self.stop_tcp(&host);
-            tracing::info!("removed route {host}: owner process {pid} exited");
+        // Exactly the keys this process owns (I28): an owned shop/blog goes,
+        // a persistent shop stays.
+        let keys = self.shared.routes.read().unwrap().owned_by(pid);
+        for key in keys {
+            self.shared.routes.write().unwrap().remove(&key);
+            if key.path.is_empty() {
+                self.stop_tcp(&key.host);
+            }
+            tracing::info!("removed route {key}: owner process {pid} exited");
         }
     }
 
@@ -382,15 +395,16 @@ impl Daemon {
         let http = self.shared.http_port.load(Ordering::Relaxed);
         let https = self.shared.https_port.load(Ordering::Relaxed);
         let name = route.full_name();
+        let path = route.path.as_deref().unwrap_or("");
         let urls = match route.protocol {
             Protocol::Tcp => vec![format!("{name}:{}", route.listen_port.unwrap_or(0))],
             Protocol::Http => {
                 let mut urls = vec![];
                 if https != 0 {
-                    urls.push(if https == 443 { format!("https://{name}") } else { format!("https://{name}:{https}") });
+                    urls.push(if https == 443 { format!("https://{name}{path}") } else { format!("https://{name}:{https}{path}") });
                 }
                 if http != 0 && !route.https_only {
-                    urls.push(if http == 80 { format!("http://{name}") } else { format!("http://{name}:{http}") });
+                    urls.push(if http == 80 { format!("http://{name}{path}") } else { format!("http://{name}:{http}{path}") });
                 }
                 urls
             }
@@ -408,7 +422,8 @@ impl Daemon {
         {
             return Err(err(ErrorCode::ProcessNotFound, format!("process {pid} is not running")));
         }
-        let old = self.shared.routes.read().unwrap().get(&route.host).cloned();
+        let key = route.key();
+        let old = self.shared.routes.read().unwrap().get(&key).cloned();
 
         // TCP: keep the listener when the port stays, else bind first (I16).
         let mut new_listener = None;
@@ -437,7 +452,7 @@ impl Daemon {
             let mut table = this.shared.routes.write().unwrap();
             match &old {
                 Some(o) => table.insert(o.clone()),
-                None => table.remove(&route.host),
+                None => table.remove(&key),
             };
         };
         if route.persistent || old.as_ref().is_some_and(|o| o.persistent) {
@@ -458,17 +473,24 @@ impl Daemon {
         if let Some((listeners, port)) = new_listener {
             self.stop_tcp(&route.host);
             self.start_tcp(&route.host, listeners, port);
-        } else if route.protocol == Protocol::Http {
+        } else if route.protocol == Protocol::Http && route.path.is_none() {
+            // A default HTTP route replaced a TCP route of the same host.
             self.stop_tcp(&route.host);
         }
-        tracing::info!("registered {} -> {}", route.host, route.target);
+        tracing::info!("registered {key} -> {}", route.target);
         Ok(RegisterRouteResult { route: self.view(&route), replaced, old_target })
     }
 
     pub async fn unregister_route(&self, p: HostParams) -> Result<UnregisterRouteResult, ApiError> {
         let _guard = self.write.lock().await;
         let host = p.host.trim().trim_end_matches(".localhost").to_ascii_lowercase();
-        let Some(old) = self.shared.routes.write().unwrap().remove(&host) else {
+        let path = match p.path.as_deref().map(normalize_path).transpose() {
+            Ok(path) => path.flatten(),
+            Err(e) => return Err(route_err(e)),
+        };
+        // Exactly one key; without a path, the default route only (I28).
+        let key = RouteKey { host: host.clone(), path: path.unwrap_or_default() };
+        let Some(old) = self.shared.routes.write().unwrap().remove(&key) else {
             return Ok(UnregisterRouteResult { removed: false });
         };
         if old.persistent {
@@ -478,8 +500,10 @@ impl Daemon {
                 return Err(err(ErrorCode::Io, format!("could not save routes.json: {e}")));
             }
         }
-        self.stop_tcp(&host);
-        tracing::info!("unregistered {host}");
+        if key.path.is_empty() {
+            self.stop_tcp(&host);
+        }
+        tracing::info!("unregistered {key}");
         Ok(UnregisterRouteResult { removed: true })
     }
 

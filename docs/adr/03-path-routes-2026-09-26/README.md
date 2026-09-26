@@ -1,8 +1,11 @@
 # ADR 03. Path routes: several dev servers on one name, chosen by path
 
-**Status:** Proposed, 2026-09-26. Nothing is built. Changes
-[ADR 01, change 6](../01-project-setup-2026-09-26/06-route-model.md): the host
-is no longer unique across routes; the route key (host plus path) is.
+**Status:** Built on 2026-09-26 with drift (see the manifest's
+[Actual Change Manifest](07-semantic-change-manifest.md#actual-change-manifest)).
+Automated tests pass (143 Rust, 50 Swift). Manual tests M1 and M2 are done and
+changed the help text; M3 to M6 are open, and the change is not released yet.
+Changes [ADR 01, change 6](../01-project-setup-2026-09-26/06-route-model.md):
+the host is no longer unique across routes; the route key (host plus path) is.
 
 ## Summary
 

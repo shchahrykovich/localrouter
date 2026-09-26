@@ -1,0 +1,13 @@
+{
+  "id": 9,
+  "method": "register_route",
+  "params": {
+    "host": "shop",
+    "path": "/api",
+    "protocol": "http",
+    "target": "http://127.0.0.1:8000",
+    "strip_path": true,
+    "note": "API server, answers at /",
+    "persistent": true
+  }
+}

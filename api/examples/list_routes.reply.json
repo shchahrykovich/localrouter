@@ -15,6 +15,31 @@
         "upstream_up": true
       },
       {
+        "host": "shop",
+        "path": "/blog",
+        "protocol": "http",
+        "target": "http://127.0.0.1:3001",
+        "note": "blog app, Next.js basePath /blog",
+        "persistent": true,
+        "urls": [
+          "https://shop.localhost/blog",
+          "http://shop.localhost/blog"
+        ],
+        "upstream_up": true
+      },
+      {
+        "host": "shop",
+        "path": "/api",
+        "protocol": "http",
+        "target": "http://127.0.0.1:8000",
+        "strip_path": true,
+        "urls": [
+          "https://shop.localhost/api",
+          "http://shop.localhost/api"
+        ],
+        "upstream_up": false
+      },
+      {
         "host": "db.shop",
         "protocol": "tcp",
         "target": "tcp://127.0.0.1:55001",

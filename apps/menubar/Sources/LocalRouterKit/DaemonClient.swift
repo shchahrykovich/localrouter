@@ -176,8 +176,11 @@ public final class DaemonClient: Sendable {
 
     public func status() async throws -> StatusResult { try await call("status", Empty()) }
     public func listRoutes() async throws -> [RouteView] { try await call("list_routes", Empty(), as: ListRoutesResult.self).routes }
-    public func unregister(host: String) async throws -> Bool {
-        try await call("unregister_route", HostParams(host: host), as: UnregisterRouteResult.self).removed
+    /// Removes exactly this route: its host and, for a path route, its path.
+    /// Sending the host alone would remove the route without a path instead
+    /// (ADR 03, manifest B1).
+    public func unregister(_ route: Route) async throws -> Bool {
+        try await call("unregister_route", HostParams(route: route), as: UnregisterRouteResult.self).removed
     }
     public func register(_ route: Route) async throws -> RegisterRouteResult { try await call("register_route", route) }
     public func logs(limit: Int = 500) async throws -> [LogEntry] {

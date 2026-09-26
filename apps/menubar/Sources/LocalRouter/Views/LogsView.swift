@@ -44,13 +44,14 @@ struct LogRow: View {
 
     var body: some View {
         switch entry {
-        case let .http(t, method, host, path, status, duration):
+        case let .http(t, method, host, path, status, duration, route):
             HStack(spacing: 6) {
                 Text(time(t)).foregroundStyle(.secondary)
                 Text("\(status)").foregroundStyle(status >= 500 ? .red : status >= 400 ? .orange : .green)
                 Text(method).frame(width: 52, alignment: .leading)
                 Text(host + path).lineLimit(1).truncationMode(.middle)
                 Spacer()
+                if let route { Text(route).foregroundStyle(.secondary).lineLimit(1).help("The route that answered") }
                 Text("\(duration) ms").foregroundStyle(.secondary)
             }
             .font(.caption.monospaced())

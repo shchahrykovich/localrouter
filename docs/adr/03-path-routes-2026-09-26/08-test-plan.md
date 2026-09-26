@@ -268,3 +268,32 @@ Free, no data written outside the test route.
   Next.js and Vite apps. It would turn the only real-framework coverage into a
   repeatable test, at the cost of a Node.js toolchain in the test setup and
   minutes per run.
+
+## Results on 2026-09-26
+
+**Automated.** `cargo test --workspace`: 143 passed in 12 test binaries.
+`cargo clippy --workspace --all-targets`: no warnings. `swift test --package-path
+apps/menubar`: 50 passed. New test files: `libs/core/tests/agent_texts.rs`,
+`apps/menubar/Tests/LocalRouterKitTests/RouteKeyTests.swift`; new tests in
+`routes.rs`, `help.rs`, `proxy.rs` (the `strip_prefix` unit test and six
+integration tests), `store.rs`, `apps/daemon/tests/api.rs`,
+`apps/cli/tests/cli.rs`, `apps/cli/tests/mcp.rs`, and E1b as `path_journey` in
+`apps/cli/tests/e2e.rs`.
+
+**M1 and M2.** Done with Next.js 16.3.5 (`next dev --webpack`), three small
+apps, and the new daemon in a temp folder on random ports; checked with `curl`
+and Node's WebSocket client, not a browser.
+
+| Check | Result |
+|---|---|
+| Pattern A (`basePath: "/blog"`): page, 5 script and style files, CSS content | all `200` from route `shop/blog` |
+| Pattern A hot reload socket `/blog/_next/hmr` | `101`, messages received, route `shop/blog` |
+| Pattern B (`assetPrefix: "/shop-assets"`) with `--strip-path` on the file prefix | files `200`; hot reload socket never opens: **fails** |
+| Pattern B without `--strip-path` | files `200`, hot reload `101`: **works** (drift D1) |
+| Plain `<img src="/hello.txt">` in the base-path app | answered `200` by the main app with its own file |
+| M2: blog app without a base path | every file `200` from route `shop`; the blog page gets the main app's CSS (drift D2) |
+| M2: could the log find the cause? | yes: `localrouter logs shop` shows `route shop` on the `/_next/` files, and `localrouter which` names it before any request |
+| Vite (`base: "/admin/"`) | not run: no Vite install available offline |
+| Turbopack | not run: it refused the symlinked `node_modules` of the test setup |
+
+**Open.** M3, M4, M5, M6, and the Vite and Turbopack rows of M1.

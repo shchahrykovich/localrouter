@@ -12,9 +12,10 @@ use localrouter_core::api::{
     self, GetLogsParams, GetLogsResult, HostParams, ListRoutesResult, RegisterRouteResult, ResetCaResult,
     StatusResult, SubscribeLogsParams, UnregisterRouteResult,
 };
+use localrouter_core::config::Config;
 use localrouter_core::logs::LogEntry;
 use localrouter_core::paths::Paths;
-use localrouter_core::routes::{Protocol, Route};
+use localrouter_core::routes::{Explanation, Protocol, Route, RouteTable, Step};
 
 use crate::client::{Client, ClientError};
 
@@ -31,6 +32,12 @@ enum Command {
     Add {
         /// Name without .localhost, for example shop or feat-login.shop.
         host: String,
+        /// HTTP only: the path prefix this route answers, for example /blog. Other paths of the name go to its route without a path.
+        #[arg(long)]
+        path: Option<String>,
+        /// With --path: remove the path before the request reaches the server (for servers that answer at /).
+        #[arg(long)]
+        strip_path: bool,
         /// Local port of the server (127.0.0.1). Use --target for anything else.
         port: Option<u16>,
         /// Full target URL: http://, https:// or tcp:// plus a loopback host and a port.
@@ -55,8 +62,18 @@ enum Command {
         #[arg(long)]
         owner_pid: Option<u32>,
     },
-    /// Remove a route.
-    Rm { host: String },
+    /// Remove a route. Without --path, only the route without a path.
+    Rm {
+        host: String,
+        /// The path of a path route, for example /blog.
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Show which route answers a URL, and why. Makes no request.
+    Which {
+        /// A URL or a name and path: https://feat-x.shop.localhost/blog, shop.localhost/blog, shop/blog.
+        url: String,
+    },
     /// List routes.
     List {
         #[arg(long)]
@@ -126,7 +143,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             println!("{}", paths.ca_pem().display());
             Ok(())
         }
-        Command::Add { host, port, target, tcp, listen, https_only, note, session, owner_pid } => {
+        Command::Add { host, path, strip_path, port, target, tcp, listen, https_only, note, session, owner_pid } => {
             let protocol = if tcp { Protocol::Tcp } else { Protocol::Http };
             let target = match (target, port) {
                 (Some(t), _) => t,
@@ -137,19 +154,27 @@ async fn run(command: Command) -> anyhow::Result<()> {
             if listen.is_some() && !tcp {
                 bail!("--listen is only for TCP routes; add --tcp");
             }
+            if path.is_some() && tcp {
+                bail!("--path is only for HTTP routes; remove --tcp");
+            }
+            if strip_path && path.is_none() {
+                bail!("--strip-path needs --path");
+            }
             let route = Route {
                 host,
+                path,
                 protocol,
                 target,
                 listen_port: tcp.then_some(listen.unwrap_or(0)),
                 https_only,
+                strip_path,
                 note,
                 owner_pid,
                 persistent: !session && owner_pid.is_none(),
             };
             let r: RegisterRouteResult = connect(&paths).await?.call("register_route", route).await?;
             let rt = &r.route.route;
-            println!("{} -> {}", rt.full_name(), rt.target);
+            println!("{} -> {}", rt.full_name_and_path(), rt.target);
             for url in &r.route.urls {
                 println!("  {url}");
             }
@@ -158,12 +183,35 @@ async fn run(command: Command) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Rm { host } => {
-            let r: UnregisterRouteResult = connect(&paths).await?.call("unregister_route", HostParams { host: host.clone() }).await?;
+        Command::Rm { host, path } => {
+            let mut c = connect(&paths).await?;
+            let r: UnregisterRouteResult =
+                c.call("unregister_route", HostParams { host: host.clone(), path: path.clone() }).await?;
+            let key = format!("{host}{}", path.as_deref().unwrap_or(""));
             if !r.removed {
-                bail!("no route named {host}");
+                bail!("no route named {key}");
             }
-            println!("removed {host}");
+            // Removing the route without a path leaves the path routes (I28); say so.
+            let left: Vec<String> = if path.is_none() {
+                let list: ListRoutesResult = c.call("list_routes", api::Empty {}).await?;
+                let host_key = host.trim().trim_end_matches(".localhost").to_ascii_lowercase();
+                list.routes.iter().filter(|v| v.route.host == host_key).map(|v| v.route.key().to_string()).collect()
+            } else {
+                vec![]
+            };
+            match left.as_slice() {
+                [] => println!("removed {key}"),
+                [one] => println!("removed {key}; {one} remains"),
+                many => println!("removed {key}; {} remain", many.join(", ")),
+            }
+            Ok(())
+        }
+        Command::Which { url } => {
+            let mut c = connect(&paths).await?;
+            let list: ListRoutesResult = c.call("list_routes", api::Empty {}).await?;
+            let config: Config = c.call("get_config", api::Empty {}).await?;
+            let routes: Vec<Route> = list.routes.into_iter().map(|v| v.route).collect();
+            print!("{}", which(&routes, config.fallback, &url));
             Ok(())
         }
         Command::List { json } => {
@@ -183,7 +231,9 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 };
                 let failed = if v.listen_failed { "  [listen failed]" } else { "" };
                 let kind = if v.route.persistent { "" } else if v.route.owner_pid.is_some() { "  (owned)" } else { "  (session)" };
-                println!("{up}  {:<32} -> {}{kind}{failed}", v.urls.first().cloned().unwrap_or_else(|| v.route.full_name()), v.route.target);
+                let strip = if v.route.strip_path { "  (strip)" } else { "" };
+                let name = v.urls.first().cloned().unwrap_or_else(|| v.route.full_name_and_path());
+                println!("{up}  {name:<32} -> {}{strip}{kind}{failed}", v.route.target);
                 if !v.route.note.is_empty() {
                     println!("      {}", v.route.note);
                 }
@@ -273,8 +323,9 @@ fn print_status(s: &StatusResult) {
 
 fn format_entry(e: &LogEntry) -> String {
     match e {
-        LogEntry::Http { time_ms, method, host, path, status, duration_ms } => {
-            format!("{} {status} {method:<6} {host}{path} {duration_ms} ms", clock(*time_ms))
+        LogEntry::Http { time_ms, method, host, path, status, duration_ms, route } => {
+            let route = route.as_deref().map(|r| format!(" route {r}")).unwrap_or_default();
+            format!("{} {status} {method:<6} {host}{path} {duration_ms} ms{route}", clock(*time_ms))
         }
         LogEntry::Tcp { time_ms, host, listen_port, bytes_in, bytes_out, duration_ms, failed } => {
             let state = if *failed { "FAILED" } else { "tcp" };
@@ -283,8 +334,141 @@ fn format_entry(e: &LogEntry) -> String {
     }
 }
 
+/// Split `https://shop.localhost:8443/blog/x?y=1`, `shop.localhost/blog` or
+/// `shop/blog` into a name under `.localhost` (with its port, if any) and a path
+/// without the query.
+fn split_url(url: &str) -> (String, String) {
+    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, r)| r);
+    let (name, path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    let path = path.split(['?', '#']).next().unwrap_or("/");
+    let bare = name.rsplit_once(':').map_or(name, |(h, p)| if p.bytes().all(|b| b.is_ascii_digit()) { h } else { name });
+    let name = if bare.to_ascii_lowercase().ends_with(".localhost") || bare.eq_ignore_ascii_case("localhost") {
+        name.to_string()
+    } else {
+        name.replacen(bare, &format!("{bare}.localhost"), 1)
+    };
+    (name, if path.is_empty() { "/".into() } else { path.to_string() })
+}
+
+/// The `localrouter which` report: the same lookup the proxy runs (I33),
+/// with each step.
+fn which(routes: &[Route], fallback: bool, url: &str) -> String {
+    let (name, path) = split_url(url);
+    let mut out = String::new();
+    if let Some((_, port)) = name.rsplit_once(':')
+        && let Ok(port) = port.parse::<u16>()
+        && let Some(r) = routes.iter().find(|r| r.protocol == Protocol::Tcp && r.listen_port == Some(port))
+    {
+        out.push_str(&format!("{name} -> tcp route {} -> {}\n", r.host, r.target));
+        out.push_str("  TCP routes are chosen by listen port; the name is not checked.\n");
+        return out;
+    }
+    let mut table = RouteTable::new();
+    for r in routes {
+        table.insert(r.clone());
+    }
+    let Explanation { route, steps } = table.explain(&name, &path, fallback);
+    let asked = format!("{name}{path}");
+    match &route {
+        Some(r) => out.push_str(&format!("{asked} -> {} -> {}\n", r.key(), r.target)),
+        None => out.push_str(&format!("{asked} -> no route (the 404 page)\n")),
+    }
+    let show = |p: &Option<String>| p.clone().unwrap_or_else(|| "(no path)".into());
+    for (i, step) in steps.iter().enumerate() {
+        let line = match step {
+            Step::NotLocalhost => "not a .localhost name".to_string(),
+            Step::Key { host, paths, matched: _ } if paths.is_empty() => format!("{host}: no routes"),
+            Step::Key { host, paths, matched: None } => {
+                let list: Vec<String> = paths.iter().map(show).collect();
+                format!("{host}: routes {}; none matches {path}", list.join(", "))
+            }
+            Step::Key { host, matched: Some(None), .. } => format!("{host}: the route without a path matches"),
+            Step::Key { host, paths, matched: Some(Some(p)) } if paths.len() > 1 => {
+                let list: Vec<String> = paths.iter().map(show).collect();
+                format!("{host}: {p} matches, the longest of {}", list.join(", "))
+            }
+            Step::Key { host, matched: Some(Some(p)), .. } => format!("{host}: {p} matches"),
+            Step::Fallback { parent } => format!("fallback is on: try {parent}"),
+            Step::FallbackOff => "fallback is off: stop".to_string(),
+        };
+        out.push_str(&format!("  {}. {line}\n", i + 1));
+    }
+    out
+}
+
 fn clock(time_ms: u64) -> String {
     let secs = time_ms / 1000;
     // UTC HH:MM:SS; enough for a live log.
     format!("{:02}:{:02}:{:02}", secs / 3600 % 24, secs / 60 % 60, secs % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(host: &str, path: Option<&str>, port: u16) -> Route {
+        Route {
+            host: host.into(),
+            path: path.map(str::to_string),
+            protocol: Protocol::Http,
+            target: format!("http://127.0.0.1:{port}"),
+            listen_port: None,
+            https_only: false,
+            strip_path: false,
+            note: String::new(),
+            owner_pid: None,
+            persistent: false,
+        }
+    }
+
+    #[test]
+    fn urls_are_split_into_name_and_path() {
+        for (url, name, path) in [
+            ("https://feat-x.shop.localhost/blog/1?x=2", "feat-x.shop.localhost", "/blog/1"),
+            ("http://shop.localhost:8080/", "shop.localhost:8080", "/"),
+            ("shop.localhost/blog", "shop.localhost", "/blog"),
+            ("shop/blog", "shop.localhost", "/blog"),
+            ("shop", "shop.localhost", "/"),
+            ("db.shop.localhost:15432", "db.shop.localhost:15432", "/"),
+        ] {
+            assert_eq!(split_url(url), (name.to_string(), path.to_string()), "{url}");
+        }
+    }
+
+    #[test]
+    fn which_explains_a_fallback() {
+        let routes = [route("shop", None, 5173), route("feat-x.shop", Some("/blog"), 3002)];
+        let out = which(&routes, true, "https://feat-x.shop.localhost/products");
+        assert_eq!(
+            out,
+            "feat-x.shop.localhost/products -> shop -> http://127.0.0.1:5173\n  \
+             1. feat-x.shop: routes /blog; none matches /products\n  \
+             2. fallback is on: try shop\n  \
+             3. shop: the route without a path matches\n"
+        );
+    }
+
+    #[test]
+    fn which_names_the_longest_path_and_the_missing_route() {
+        let routes = [route("shop", None, 1), route("shop", Some("/blog"), 2), route("shop", Some("/blog/admin"), 3)];
+        let out = which(&routes, true, "shop.localhost/blog/admin/x");
+        assert!(out.starts_with("shop.localhost/blog/admin/x -> shop/blog/admin -> http://127.0.0.1:3\n"), "{out}");
+        assert!(out.contains("/blog/admin matches, the longest of (no path), /blog, /blog/admin"), "{out}");
+        let out = which(&routes, false, "blog.localhost/");
+        assert!(out.starts_with("blog.localhost/ -> no route (the 404 page)"), "{out}");
+        assert!(out.contains("fallback is off"), "{out}");
+    }
+
+    #[test]
+    fn which_on_a_tcp_listen_port_names_the_tcp_route() {
+        let mut db = route("db.shop", None, 1);
+        db.protocol = Protocol::Tcp;
+        db.target = "tcp://127.0.0.1:5432".into();
+        db.listen_port = Some(15432);
+        let out = which(&[db], true, "db.shop.localhost:15432");
+        assert!(out.starts_with("db.shop.localhost:15432 -> tcp route db.shop -> tcp://127.0.0.1:5432"), "{out}");
+    }
 }

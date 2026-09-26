@@ -137,7 +137,7 @@ final class AppModel {
 
     func remove(_ route: RouteView) async {
         do {
-            _ = try await client.unregister(host: route.route.host)
+            _ = try await client.unregister(route.route)
             await refresh()
         } catch {
             message = error.localizedDescription

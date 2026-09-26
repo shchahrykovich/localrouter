@@ -13,6 +13,8 @@ the code exists, each entry also points to the file that defines it.
 | Use | Do not use | Why |
 |---|---|---|
 | **route** | router, mapping, domain, binding | A route is one name-to-port entry. "Router" is the whole app. |
+| **path route** | subroute, mount, prefix route | A route with a `path`. |
+| **default route** | root route, catch-all, fallback route | The route of a host without a `path`. "Fallback" means something else (see Behaviour). |
 | **host** (of a route) | domain, subdomain, name | The route field is `host`. "Domain" is fine in UI text for users. |
 | **target** | upstream, backend, port | The route field is `target`. "Upstream" is fine when talking about the proxy. |
 | **daemon** | server, service, backend | "Server" is ambiguous: we also talk about dev servers. |
@@ -35,15 +37,34 @@ Defined in `libs/core/src/routes.rs` (planned). Decided in
 | Field | Type | Meaning |
 |---|---|---|
 | `host` | string | The host key, see below. Example: `feat-login.shop`. |
+| `path` | string, optional | HTTP routes only. A path prefix: the route answers this path and every path under it. Example: `/blog`. Absent: the default route of the host. See Path route. |
 | `protocol` | `http` or `tcp` | Default `http`. See Route protocol. |
 | `target` | URL | Where requests go, always a loopback address. `http://` or `https://` for HTTP routes, `tcp://` for TCP routes. Example: `http://127.0.0.1:5174`. |
 | `listen_port` | integer | TCP routes only. The loopback port clients connect to. `0` means "pick a free one". |
 | `https_only` | boolean, default `false` | HTTP routes only. Plain HTTP gets a `308` redirect to `https://`. |
+| `strip_path` | boolean, default `false` | Path routes only. Remove the path before the request reaches the target, and send it as `X-Forwarded-Prefix`. |
 | `note` | string, up to 500 characters | Free text. Agents write why the route exists. Example: "worktree for branch feat/login". |
 | `owner_pid` | integer, optional | Process ID. The route is removed when this process exits. |
 | `persistent` | boolean, default `false` | Save the route in `routes.json` so it survives a restart. |
 
 A route cannot be both `persistent` and have an `owner_pid`.
+
+### Route key
+
+The identity of a route: its host plus its path. Written joined: `shop` (the
+default route), `shop/blog`. At most one route exists per key; registering a key
+again replaces that route. A host can have many routes, one per path. Defined in
+`libs/core/src/routes.rs` (`RouteKey`). Decided in
+[ADR 03, change 1](adr/03-path-routes-2026-09-26/01-route-key.md).
+
+### Path route and default route
+
+| Term | Example | Meaning |
+|---|---|---|
+| **path route** | `shop` + `/blog` | answers `/blog` and `/blog/...` on its host |
+| **default route** | `shop` | the route of a host without a path; answers every path that no path route of the host matches |
+
+A path is for HTTP routes only. A host with a TCP route has no other route.
 
 ### Route protocol
 
@@ -124,6 +145,7 @@ One line in the request log. There are two kinds.
 | status | HTTP status code |
 | duration | time to the response headers |
 | bytes | response size |
+| route | the key of the route that answered, for example `shop/blog`; absent for the 404 page and the help page |
 
 Headers and bodies are never stored.
 
@@ -196,7 +218,7 @@ the password. The daemon never sets it.
 |---|---|
 | **socket API** | The only way clients talk to the daemon. Newline-delimited JSON over the Unix socket `daemon.sock`. Shaped like JSON-RPC 2.0. Has 11 methods. |
 | **method** | One call of the socket API, for example `register_route`. |
-| **`api_version`** | Version of the socket API, returned by `hello`. Starts at `1.0`. A client stops when the major number differs from its own. |
+| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes. A client stops when the major number differs from its own. |
 | **MCP tool** | One function an agent can call through the MCP shim. There are six: `register_route`, `unregister_route`, `list_routes`, `find_free_port`, `get_logs`, `status`. |
 | **API example** | One JSON file in `api/examples/`. Both the Rust and the Swift tests decode every example, so the two type sets stay equal. |
 
@@ -206,10 +228,13 @@ the password. The daemon never sets it.
 |---|---|
 | **byte copy** | What the daemon does for a TCP route: pass bytes both ways without reading them. No TLS, no parsing. |
 | **`listen_failed`** | Status of a persistent TCP route whose listen port was taken when the daemon started. The route stays, but serves nothing until the port is free. |
-| **lookup** | Finding the HTTP route for a request: take the `Host` header, remove `.localhost` and the port, then look for the host key. |
-| **longest match** | If several routes could serve a host, the one with the most labels wins. `feat-login.shop` beats `shop`. |
-| **fallback** | If the host key has no route, drop the left label and try again. `feat-other.shop` falls back to `shop`. Can be turned off in the config. |
-| **forward** | Send the request to the route's target, with the `Host` header unchanged and `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` added. |
+| **lookup** | Finding the HTTP route for a request: take the `Host` header, remove `.localhost` and the port, find the host key, then the longest matching path on it. |
+| **longest match** | If several routes could serve a host, the one with the most labels wins. `feat-login.shop` beats `shop`. On one host key, the longest matching path wins: `/blog/admin` beats `/blog`, which beats the default route. The host key is decided first. |
+| **path match** | A route path matches a request path when they are equal, or the request path continues with `/`. `/blog` matches `/blog/x`, never `/blogger`. Case matters. |
+| **fallback** | If no route of the host key matches the path, drop the left label and try again. `feat-other.shop` falls back to `shop`. Can be turned off in the config. |
+| **`localrouter which`** | The CLI command that shows which route answers a URL, and each step of the lookup, without a request. It runs the same code as the proxy. |
+| **forward** | Send the request to the route's target, with the `Host` header unchanged and `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` added. The path is sent unchanged, except on a `strip_path` route. |
+| **`X-Forwarded-Prefix`** | The header a `strip_path` route adds: the path it removed, for example `/api`. A value sent by the client is replaced. |
 | **peer check** | On each new connection, the daemon checks the address of the other side before it reads any byte. It closes the connection unless the address is loopback or `allow_lan` is on. |
 | **upstream up** | The target port accepts a TCP connection within 200 ms. Shown as the status dot in the app and `upstream_up` in `list_routes`. |
 | **help page** | The page at `router.localhost`, served by the daemon itself. Markdown sent as plain text, for coding agents: setup steps, the status of HTTP, HTTPS and the local CA, and the current routes. No route can use the host key `router`. |

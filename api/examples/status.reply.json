@@ -2,7 +2,7 @@
   "id": 2,
   "result": {
     "daemon_version": "0.1.0",
-    "api_version": "1.0",
+    "api_version": "1.1",
     "pid": 812,
     "data_dir": "/Users/me/Library/Application Support/LocalRouter",
     "http": {

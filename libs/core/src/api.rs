@@ -16,7 +16,7 @@ use crate::logs::LogEntry;
 use crate::routes::Route;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.0";
+pub const API_VERSION: &str = "1.1";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
@@ -198,6 +198,10 @@ pub struct RegisterRouteResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HostParams {
     pub host: String,
+    /// The path of a path route. Without it, `unregister_route` removes only
+    /// the route without a path (ADR 03, I28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

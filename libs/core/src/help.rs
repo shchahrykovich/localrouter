@@ -52,13 +52,15 @@ fn route_list(routes: &[Route], https_port: Option<u16>) -> String {
         .iter()
         .map(|r| {
             let name = r.full_name();
+            let path = r.path.as_deref().unwrap_or("");
             let (address, kind) = match (r.protocol, r.listen_port, https_port) {
                 (Protocol::Tcp, Some(port), _) => (format!("{name}:{port}"), "tcp, "),
                 (Protocol::Tcp, None, _) => (name, "tcp, "),
-                (Protocol::Http, _, Some(443)) => (format!("https://{name}"), ""),
-                (Protocol::Http, _, Some(port)) => (format!("https://{name}:{port}"), ""),
-                (Protocol::Http, _, None) => (name, ""),
+                (Protocol::Http, _, Some(443)) => (format!("https://{name}{path}"), ""),
+                (Protocol::Http, _, Some(port)) => (format!("https://{name}:{port}{path}"), ""),
+                (Protocol::Http, _, None) => (format!("{name}{path}"), ""),
             };
+            let kind = if r.strip_path { "strip, " } else { kind };
             let life = if r.owner_pid.is_some() {
                 "owned"
             } else if r.persistent {
@@ -81,10 +83,12 @@ mod tests {
     fn route(host: &str, protocol: Protocol, target: &str, listen_port: Option<u16>) -> Route {
         Route {
             host: host.into(),
+            path: None,
             protocol,
             target: target.into(),
             listen_port,
             https_only: false,
+            strip_path: false,
             note: String::new(),
             owner_pid: None,
             persistent: true,
@@ -170,6 +174,18 @@ mod tests {
         assert!(page.contains("- `https://shop.localhost` goes to `http://127.0.0.1:5173` (persistent) - main dev server"), "{page}");
         assert!(page.contains("- `db.shop.localhost:15432` goes to `tcp://127.0.0.1:5432` (tcp, session)"), "{page}");
         assert!(page.contains("- `https://feat.shop.localhost` goes to `http://127.0.0.1:5174` (owned)"), "{page}");
+    }
+
+    #[test]
+    fn path_routes_are_listed_with_their_path() {
+        let mut blog = route("shop", Protocol::Http, "http://127.0.0.1:3001", None);
+        blog.path = Some("/blog".into());
+        let mut api = route("shop", Protocol::Http, "http://127.0.0.1:8000", None);
+        api.path = Some("/api".into());
+        api.strip_path = true;
+        let page = render(&[blog, api], Some(443), None);
+        assert!(page.contains("- `https://shop.localhost/blog` goes to `http://127.0.0.1:3001` (persistent)"), "{page}");
+        assert!(page.contains("- `https://shop.localhost/api` goes to `http://127.0.0.1:8000` (strip, persistent)"), "{page}");
     }
 
     #[test]

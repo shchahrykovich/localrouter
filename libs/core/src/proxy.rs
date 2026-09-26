@@ -2,7 +2,9 @@
 //!
 //! One incoming connection may be HTTP/1.1 or HTTP/2. Each request is sent to
 //! the target over a new HTTP/1.1 connection (plain or TLS). WebSocket
-//! upgrades are passed through. See ADR 01, changes 6 and 7.
+//! upgrades are passed through. See ADR 01, changes 6 and 7. The route is
+//! chosen by name and path, and a `strip_path` route removes its path before
+//! forwarding (ADR 03).
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -30,8 +32,9 @@ type Body = BoxBody<Bytes, hyper::Error>;
 
 /// What the proxy needs from the daemon.
 pub trait RouteSource: Send + Sync {
-    /// The HTTP route for a `Host` header (longest match, fallback as configured).
-    fn lookup(&self, host: &str) -> Option<Route>;
+    /// The HTTP route for a `Host` header and a request path: nearest host
+    /// key, then longest path, fallback as configured.
+    fn lookup(&self, host: &str, path: &str) -> Option<Route>;
     /// All routes, for the 404 page.
     fn all(&self) -> Vec<Route>;
     /// The HTTPS port actually bound, for `https_only` redirects.
@@ -85,6 +88,7 @@ impl Proxy {
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
 
+        let mut answered_by = None;
         let response = if host_key(&host).as_deref() == Some(HELP_HOST) {
             let status = match &self.status {
                 Some(status) => status().await,
@@ -92,19 +96,25 @@ impl Proxy {
             };
             help(&self.routes.all(), self.routes.https_port(), status.as_ref())
         } else {
-            match self.routes.lookup(&host) {
+            match self.routes.lookup(&host, req.uri().path()) {
                 None => not_found(&host, &self.routes.all()),
-                Some(route) if scheme == ClientScheme::Http && route.https_only => {
-                    redirect_to_https(&host, &path, self.routes.https_port())
+                Some(route) => {
+                    answered_by = Some(route.key().to_string());
+                    if scheme == ClientScheme::Http && route.https_only {
+                        redirect_to_https(&host, &path, self.routes.https_port())
+                    } else {
+                        // A target that fails gives this route's 502; the
+                        // request never goes to another route (I25).
+                        match self.forward(req, &route, &host, scheme, peer).await {
+                            Ok(resp) => resp,
+                            Err(e) => bad_gateway(&host, &route, &e),
+                        }
+                    }
                 }
-                Some(route) => match self.forward(req, &route, &host, scheme, peer).await {
-                    Ok(resp) => resp,
-                    Err(e) => bad_gateway(&host, &route, &e),
-                },
             }
         };
         let millis = start.elapsed().as_millis() as u64;
-        self.log.push(LogEntry::http(&method, &host, &path, response.status().as_u16(), millis));
+        self.log.push(LogEntry::http(&method, &host, &path, response.status().as_u16(), millis).with_route(answered_by));
         response
     }
 
@@ -126,7 +136,8 @@ impl Proxy {
 
         let wants_upgrade = is_upgrade(req.headers());
         let client_upgrade = wants_upgrade.then(|| hyper::upgrade::on(&mut req));
-        let out = outgoing_request(req, host, scheme, peer, wants_upgrade)?;
+        let strip = route.path.as_deref().filter(|_| route.strip_path);
+        let out = outgoing_request(req, host, scheme, peer, wants_upgrade, strip)?;
 
         let mut resp = if target.scheme == Scheme::Https {
             let connector = tokio_rustls::TlsConnector::from(self.tls_client.clone());
@@ -185,16 +196,23 @@ where
 }
 
 /// The request as the dev server sees it: HTTP/1.1, origin-form URI, `Host`
-/// unchanged (I12), `X-Forwarded-*` added.
+/// unchanged (I12), `X-Forwarded-*` added. With `strip` (the route path of a
+/// `strip_path` route) that path is removed and sent as `X-Forwarded-Prefix`
+/// instead (I26).
 fn outgoing_request(
     req: Request<Incoming>,
     host: &str,
     scheme: ClientScheme,
     peer: SocketAddr,
     keep_upgrade: bool,
+    strip: Option<&str>,
 ) -> Result<Request<Incoming>, String> {
     let (mut parts, body) = req.into_parts();
     let path = parts.uri.path_and_query().map_or("/", |p| p.as_str()).to_string();
+    let path = match strip {
+        Some(prefix) => strip_prefix(prefix, &path),
+        None => path,
+    };
     parts.uri = path.parse::<Uri>().map_err(|e| e.to_string())?;
     parts.version = Version::HTTP_11;
     remove_hop_headers(&mut parts.headers, keep_upgrade);
@@ -209,7 +227,18 @@ fn outgoing_request(
     h.insert(HeaderName::from_static("x-forwarded-for"), HeaderValue::from_str(&xff).map_err(|e| e.to_string())?);
     h.insert(HeaderName::from_static("x-forwarded-proto"), HeaderValue::from_static(scheme.as_str()));
     h.insert(HeaderName::from_static("x-forwarded-host"), HeaderValue::from_str(host).map_err(|e| e.to_string())?);
+    if let Some(prefix) = strip {
+        // insert replaces every value the client sent.
+        h.insert(HeaderName::from_static("x-forwarded-prefix"), HeaderValue::from_str(prefix).map_err(|e| e.to_string())?);
+    }
     Ok(Request::from_parts(parts, body))
+}
+
+/// `/api/users?x=1` without `/api` is `/users?x=1`; `/api` alone is `/`.
+/// The route matched, so `path_and_query` starts with `prefix`.
+fn strip_prefix(prefix: &str, path_and_query: &str) -> String {
+    let rest = path_and_query.strip_prefix(prefix).unwrap_or(path_and_query);
+    if rest.starts_with('/') { rest.to_string() } else { format!("/{rest}") }
 }
 
 fn is_upgrade(headers: &HeaderMap) -> bool {
@@ -292,7 +321,10 @@ fn not_found(host: &str, routes: &[Route]) -> Response<Body> {
         let name = escape(&r.full_name());
         let item = match r.listen_port {
             Some(port) => format!("<li><code>{name}:{port}</code> (tcp) → <code>{}</code></li>", escape(&r.target)),
-            None => format!("<li><a href=\"//{name}/\">{name}</a> → <code>{}</code></li>", escape(&r.target)),
+            None => {
+                let at = escape(&r.full_name_and_path());
+                format!("<li><a href=\"//{at}/\">{at}</a> → <code>{}</code></li>", escape(&r.target))
+            }
         };
         list.push_str(&item);
     }
@@ -318,7 +350,7 @@ fn bad_gateway(host: &str, route: &Route, error: &str) -> Response<Body> {
         "The dev server did not answer",
         format!(
             "<p><code>{}</code> goes to <code>{}</code>, but {}.</p>{note}<p>Is the dev server running?</p>",
-            escape(host),
+            escape(&format!("{host}{}", route.path.as_deref().unwrap_or(""))),
             escape(&route.target),
             escape(error)
         ),
@@ -365,6 +397,14 @@ mod tests {
         remove_hop_headers(&mut h, true);
         assert_eq!(h.get("upgrade").unwrap(), "websocket");
         assert_eq!(h.get("connection").unwrap(), "upgrade");
+    }
+
+    #[test]
+    fn strip_prefix_keeps_the_query_and_a_leading_slash() {
+        assert_eq!(strip_prefix("/api", "/api/users?x=1"), "/users?x=1");
+        assert_eq!(strip_prefix("/api", "/api"), "/");
+        assert_eq!(strip_prefix("/api", "/api?x=1"), "/?x=1");
+        assert_eq!(strip_prefix("/api", "/api/"), "/");
     }
 
     #[test]

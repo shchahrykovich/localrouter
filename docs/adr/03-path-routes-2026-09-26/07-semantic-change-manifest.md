@@ -7,7 +7,8 @@ open-point numbers continue those of ADR 01 (`I1` to `I19`, `U1` to `U5`).
 ## 1. Manifest status
 
 ```text
-Manifest status: PLANNED
+Manifest status: IMPLEMENTED_WITH_DRIFT   (planned text below is unchanged;
+                                           see Actual Change Manifest at the end)
 ```
 
 ## 2. Semantic change summary
@@ -461,3 +462,79 @@ What a rollback cannot undo
   old daemon its register_route calls with path go through an old MCP server
   that drops path (B2). Restart the sessions after a downgrade.
 ```
+
+---
+
+# Actual Change Manifest
+
+Re-read from the built code on 2026-09-26, not copied from the plan above.
+
+## A1. Summary
+
+```text
+Artifacts
++ Route.path, Route.strip_path                     libs/core/src/routes.rs
++ RouteKey (host, path), Display "shop/blog"       libs/core/src/routes.rs
++ RouteTable::routes_of, lookup(name, path, fb),
+  explain, serves; one private walk behind lookup
+  and explain                                      libs/core/src/routes.rs
++ path_matches, normalize_path (public helpers)    libs/core/src/routes.rs
++ RouteError: HostLooksLikePath, BadPath,
+  PathOnlyForHttp, StripPathNeedsPath,
+  HostHasTcpRoute, HostHasPathRoutes               libs/core/src/routes.rs
++ LogEntry::Http.route, LogEntry::with_route       libs/core/src/logs.rs
++ X-Forwarded-Prefix on strip_path routes          libs/core/src/proxy.rs
+~ API_VERSION "1.1"; HostParams.path               libs/core/src/api.rs
+~ routes.json version 1 or 2 on write; 1..=2 read  apps/daemon/src/store.rs
+~ daemon: every table access by RouteKey;
+  certificate hook calls serves                    apps/daemon/src/daemon.rs
++ CLI: add --path --strip-path, rm --path,
+  which <url>, route column in logs, (strip) in list  apps/cli/src/main.rs
+~ MCP: path, strip_path, deny_unknown_fields on
+  every argument struct, INSTRUCTIONS paragraph    apps/cli/src/mcp.rs
+~ Swift: Route.path, stripPath, id = key,
+  HostParams(route:), LogEntry.http route,
+  DaemonClient.unregister(_ route:)                apps/menubar/Sources/LocalRouterKit/
+~ App: remove by key, strip badge, route in logs   apps/menubar/Sources/LocalRouter/
++ api/examples: register_route_path.request/reply,
+  unregister_route_path.request; list_routes,
+  get_logs, log.event, status, hello changed
+~ help.md, help.rs, scripts/LocalRouter.md,
+  docs/dictionary.md, CLAUDE.md
+
+New programs, processes, ports, data-folder files, MCP tools, socket methods: 0
+Unresolved effects: 2 (U6, U7)
+```
+
+## A2. Invariants and what checks them
+
+| Invariant | Checked by |
+|---|---|
+| I20 | `routes.rs` tests `slash_path_and_no_path_are_one_key`, `path_routes_have_their_own_keys`; `api.rs` `path_routes_are_registered_replaced_and_removed_by_key` |
+| I21 | `valid_paths_are_normalized`, `bad_paths_are_refused_with_the_rule` |
+| I22 | `path_is_only_for_http_routes`, `tcp_routes_do_not_share_a_host_with_path_routes`, `path_route_rules_are_enforced_by_the_daemon` |
+| I23 | `match_rule_table` |
+| I24 | `longest_path_wins_on_one_host`, `nearest_host_key_wins_over_a_longer_path`, `branch_path_route_falls_back_for_other_paths`, `without_path_routes_the_lookup_is_the_old_one` |
+| I25 | proxy `closed_path_target_gets_its_502_and_never_the_default_route`; E1b step 8 |
+| I26 | proxy `path_route_gets_its_path_unchanged...`, `strip_path_removes_the_prefix_and_sets_forwarded_prefix`; E1b step 4 |
+| I27 | proxy `name_with_only_a_path_route_gets_a_certificate`; E1b step 5 through the daemon's own hook |
+| I28 | `api.rs` path tests, `owner_exit_removes_only_its_path_route`; CLI `path_route_add_list_rm`; E1b step 10 |
+| I29 | `store.rs` `version_is_1_without_path_routes_and_2_with_them`, `versions_1_and_2_load_and_3_is_moved_aside` |
+| I30 | `api_examples.rs` `examples_cover_path_routes`, plus both round-trip tests |
+| I31 | `mcp.rs` `exactly_six_tools_are_listed`, `path_routes_through_mcp_and_unknown_arguments_are_refused` |
+| I32 | `agent_texts.rs` (presence); wording by M3, open |
+| I33 | `answer()` helper in every `routes.rs` lookup test compares `lookup` and `explain`; CLI `which_*` tests; E1b `check()` at every step |
+
+## A3. Plan vs Actual
+
+| # | Kind | Difference | Status |
+|---|---|---|---|
+| D1 | `~` | Pattern B for `next dev` must not strip the file prefix: hot reload needs it (M1). The plan, the help page draft and the working-backwards commands used `--strip-path`. | ACCEPTED: help page and CLI test corrected in this change |
+| D2 | `~` | Without a base path the failure is `200` with another app's files, not `404` (M2). U6's idea, a warning on 404s from the default route, would not see it. | ACCEPTED for the texts; U6 stays UNRESOLVED with this new fact |
+| D3 | `~` | Next.js 16 hot reload path is `/_next/hmr`, not `/_next/webpack-hmr`. | ACCEPTED: no code depends on the name |
+| D4 | `+` | The path hint is its own error, `HostLooksLikePath`, instead of a second hint inside `BadLabel`, so the old `BadLabel` test did not change. | ACCEPTED |
+| D5 | `+` | `routes_of`, `path_matches`, `normalize_path` are public; the daemon uses `normalize_path` for `unregister_route`. | ACCEPTED |
+| D6 | `+` | The `hello` and `status` examples now say `1.1`. | ACCEPTED |
+| D7 | `-` | The app's Domains list does not indent path routes under their host; rows come in daemon order (host, then path, default first) and show `shop.localhost/blog`. | ACCEPTED |
+| D8 | `-` | Manual tests M3 (Claude Code session), M4 (menu bar app), M5 (downgrade), M6 (post-release smoke) not run; not released. | FIX_REQUIRED before release |
+| D9 | `~` | A WebSocket request whose upstream never answers writes no log entry at all, so the log does not show it. Seen in M1 with the stripped socket. | ACCEPTED: the same holds for any request the upstream never answers; not new in this ADR |

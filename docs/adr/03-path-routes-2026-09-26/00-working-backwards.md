@@ -209,6 +209,17 @@ in the change files.
 | G4 | A plain `<img src="/...">` breaks under a base path. | One line in help page Step 6, and a check in M1. | [03](03-forwarding.md); [04](04-clients-and-agent-texts.md) |
 | G5 | No way to ask "which route answers this URL?" without a request. | New read-only command `localrouter which <url>`. It runs `RouteTable::explain` in the CLI, the same code the proxy runs. No new socket method and no new MCP tool. | [02](02-path-lookup.md), "Explaining a lookup"; [04](04-clients-and-agent-texts.md); [06](06-data-flow.md), flow C; invariant I33; T3, T9, E1b |
 
+## What the manual tests changed
+
+Manual tests M1 and M2 ran before any user saw the feature, and corrected two
+reactions above:
+
+- **R1, pattern B.** The three commands above end with `--strip-path`. For
+  `next dev` that breaks hot reload; the file prefix needs a plain path route.
+  The help page now says so ([03](03-forwarding.md), "As built").
+- **R1, "no styles and no scripts".** The real symptom is worse: the page gets
+  another app's styles and scripts with status 200. The help page describes it.
+
 ## What this file does not do
 
 It does not replace manual test M3. A real agent session and real users may

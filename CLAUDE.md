@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 LocalRouter is a macOS menu bar app that gives local dev servers names instead
 of ports: `https://feat-login.shop.localhost` for HTTP, `db.shop.localhost:15432`
 for TCP. Coding agents manage routes through an MCP server. Design and
-decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture) and
-`docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater).
+decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
+`docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater) and
+`docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 
@@ -104,6 +105,14 @@ list, so a new tool needs that test changed on purpose.
   the host key `router`. Keep `help.md` in step with the CLI and MCP tools.
 - **Owned routes (`owner_pid`) are never saved**; persistent + owner_pid is
   refused.
+- **A route is keyed by host plus path** (ADR 03). Never look up, replace or
+  remove a route by host alone: `unregister_route` without `path` removes only
+  the route without a path. `RouteTable::lookup` (the proxy) and
+  `RouteTable::explain` (`localrouter which`) share one walk, so they cannot
+  disagree. `routes.json` is written as
+  version 1 unless a saved route has a path, so older daemons can still read it.
+- **MCP arguments refuse unknown fields** (`deny_unknown_fields`): an argument
+  the server does not know must fail, not vanish.
 - **The daemon never replaces an existing CA**; only `reset_ca` (user action,
   not an MCP tool) does. `ca.key` is created with mode 0600 and never appears in
   a reply or log.

@@ -11,7 +11,10 @@ use localrouter_core::config::Config;
 use localrouter_core::routes::Route;
 use serde::{Deserialize, Serialize};
 
-pub const ROUTES_VERSION: u32 = 1;
+/// Version 1 has routes without a path. Version 2 may have `path` and
+/// `strip_path` (ADR 03). A file is written as version 1 whenever it can be, so
+/// a daemon from before ADR 03 still reads it (I29).
+pub const ROUTES_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RoutesFile {
@@ -30,7 +33,7 @@ pub struct Loaded<T> {
 pub fn load_routes(path: &Path) -> Loaded<Vec<Route>> {
     load(path, |text| {
         let file: RoutesFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
-        if file.version != ROUTES_VERSION {
+        if !(1..=ROUTES_VERSION).contains(&file.version) {
             return Err(format!("unknown version {}", file.version));
         }
         Ok(file.routes)
@@ -62,11 +65,12 @@ fn load<T: Default>(path: &Path, parse: impl Fn(&str) -> Result<T, String>) -> L
     }
 }
 
-/// Persistent routes, sorted by host.
+/// Persistent routes, sorted by host and path.
 pub fn save_routes(path: &Path, routes: &[Route]) -> std::io::Result<()> {
     let mut routes = routes.to_vec();
-    routes.sort_by(|a, b| a.host.cmp(&b.host));
-    let file = RoutesFile { version: ROUTES_VERSION, routes };
+    routes.sort_by_key(Route::key);
+    let version = if routes.iter().any(|r| r.path.is_some() || r.strip_path) { 2 } else { 1 };
+    let file = RoutesFile { version, routes };
     replace(path, &serde_json::to_vec_pretty(&file)?)
 }
 
@@ -105,10 +109,12 @@ mod tests {
     fn route(host: &str) -> Route {
         Route {
             host: host.into(),
+            path: None,
             protocol: Protocol::Http,
             target: "http://127.0.0.1:5173".into(),
             listen_port: None,
             https_only: false,
+            strip_path: false,
             note: String::new(),
             owner_pid: None,
             persistent: true,
@@ -161,6 +167,50 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("routes.json.bad-"))
             .collect();
         assert_eq!(aside.len(), 1);
+    }
+
+    fn version(path: &Path) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(path).unwrap()).unwrap()["version"].clone()
+    }
+
+    // ADR 03, T7, I29
+    #[test]
+    fn version_is_1_without_path_routes_and_2_with_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        save_routes(&path, &[route("shop")]).unwrap();
+        assert_eq!(version(&path), 1);
+
+        let blog = Route { path: Some("/blog".into()), ..route("shop") };
+        save_routes(&path, &[blog.clone(), route("shop")]).unwrap();
+        assert_eq!(version(&path), 2);
+        let loaded = load_routes(&path);
+        assert!(loaded.problem.is_none());
+        assert_eq!(loaded.value, [route("shop"), blog], "sorted by host, then path");
+
+        let strip = Route { path: Some("/api".into()), strip_path: true, ..route("shop") };
+        save_routes(&path, &[strip]).unwrap();
+        assert_eq!(version(&path), 2);
+
+        save_routes(&path, &[route("shop")]).unwrap();
+        assert_eq!(version(&path), 1, "back to version 1 when no path route is saved");
+    }
+
+    // ADR 03, T7
+    #[test]
+    fn versions_1_and_2_load_and_3_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        for v in [1, 2] {
+            fs::write(&path, format!(r#"{{"version":{v},"routes":[{{"host":"shop","target":"http://127.0.0.1:1"}}]}}"#)).unwrap();
+            let loaded = load_routes(&path);
+            assert!(loaded.problem.is_none(), "version {v}");
+            assert_eq!(loaded.value.len(), 1);
+        }
+        fs::write(&path, r#"{"version":3,"routes":[]}"#).unwrap();
+        let loaded = load_routes(&path);
+        assert!(loaded.problem.unwrap().contains("unknown version 3"));
+        assert!(!path.exists());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.0"
+public let apiVersion = "1.1"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -43,39 +43,50 @@ public enum RouteProtocol: String, Codable, Sendable {
 
 public struct Route: Codable, Equatable, Sendable, Identifiable {
     public var host: String
+    /// Path prefix of a path route, for example `/blog`; nil for the route
+    /// without a path (ADR 03).
+    public var path: String?
     public var `protocol`: RouteProtocol
     public var target: String
     public var listenPort: UInt16?
     public var httpsOnly: Bool
+    public var stripPath: Bool
     public var note: String
     public var ownerPid: UInt32?
     public var persistent: Bool
 
-    public var id: String { host }
+    /// The route key: host plus path, for example `shop/blog`. Two routes of
+    /// one host have different ids.
+    public var id: String { host + (path ?? "") }
 
-    public init(host: String, protocol: RouteProtocol = .http, target: String, listenPort: UInt16? = nil,
-                httpsOnly: Bool = false, note: String = "", ownerPid: UInt32? = nil, persistent: Bool = false) {
+    public init(host: String, path: String? = nil, protocol: RouteProtocol = .http, target: String, listenPort: UInt16? = nil,
+                httpsOnly: Bool = false, stripPath: Bool = false, note: String = "", ownerPid: UInt32? = nil,
+                persistent: Bool = false) {
         self.host = host
+        self.path = path
         self.protocol = `protocol`
         self.target = target
         self.listenPort = listenPort
         self.httpsOnly = httpsOnly
+        self.stripPath = stripPath
         self.note = note
         self.ownerPid = ownerPid
         self.persistent = persistent
     }
 
     enum CodingKeys: String, CodingKey {
-        case host, `protocol`, target, listenPort, httpsOnly, note, ownerPid, persistent
+        case host, path, `protocol`, target, listenPort, httpsOnly, stripPath, note, ownerPid, persistent
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         host = try c.decode(String.self, forKey: .host)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
         self.protocol = try c.decodeIfPresent(RouteProtocol.self, forKey: .protocol) ?? .http
         target = try c.decode(String.self, forKey: .target)
         listenPort = try c.decodeIfPresent(UInt16.self, forKey: .listenPort)
         httpsOnly = try c.decodeIfPresent(Bool.self, forKey: .httpsOnly) ?? false
+        stripPath = try c.decodeIfPresent(Bool.self, forKey: .stripPath) ?? false
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
         ownerPid = try c.decodeIfPresent(UInt32.self, forKey: .ownerPid)
         persistent = try c.decodeIfPresent(Bool.self, forKey: .persistent) ?? false
@@ -85,16 +96,21 @@ public struct Route: Codable, Equatable, Sendable, Identifiable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(host, forKey: .host)
+        try c.encodeIfPresent(path, forKey: .path)
         try c.encode(self.protocol, forKey: .protocol)
         try c.encode(target, forKey: .target)
         try c.encodeIfPresent(listenPort, forKey: .listenPort)
         if httpsOnly { try c.encode(true, forKey: .httpsOnly) }
+        if stripPath { try c.encode(true, forKey: .stripPath) }
         if !note.isEmpty { try c.encode(note, forKey: .note) }
         try c.encodeIfPresent(ownerPid, forKey: .ownerPid)
         if persistent { try c.encode(true, forKey: .persistent) }
     }
 
     public var fullName: String { "\(host).localhost" }
+
+    /// `shop.localhost/blog`, or `shop.localhost` for the route without a path.
+    public var fullNameAndPath: String { fullName + (path ?? "") }
 }
 
 /// A route as clients see it. The route's fields are flattened into the same object.
@@ -104,7 +120,7 @@ public struct RouteView: Codable, Equatable, Sendable, Identifiable {
     public var upstreamUp: Bool?
     public var listenFailed: Bool
 
-    public var id: String { route.host }
+    public var id: String { route.id }
 
     enum CodingKeys: String, CodingKey { case urls, upstreamUp, listenFailed }
 
@@ -173,9 +189,17 @@ public struct RegisterRouteResult: Codable, Equatable, Sendable {
     public var oldTarget: String?
 }
 
+/// Names one route: host plus the path of a path route. Without a path,
+/// `unregister_route` removes only the route without a path (ADR 03).
 public struct HostParams: Codable, Equatable, Sendable {
     public var host: String
-    public init(host: String) { self.host = host }
+    public var path: String?
+    public init(host: String, path: String? = nil) {
+        self.host = host
+        self.path = path
+    }
+
+    public init(route: Route) { self.init(host: route.host, path: route.path) }
 }
 
 public struct UnregisterRouteResult: Codable, Equatable, Sendable {
@@ -204,24 +228,25 @@ public struct GetLogsParams: Codable, Equatable, Sendable {
 }
 
 public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
-    case http(time: UInt64, method: String, host: String, path: String, status: UInt16, durationMs: UInt64)
+    /// `route` is the key of the route that answered, for example `shop/blog`.
+    case http(time: UInt64, method: String, host: String, path: String, status: UInt16, durationMs: UInt64, route: String?)
     case tcp(time: UInt64, host: String, listenPort: UInt16, bytesIn: UInt64, bytesOut: UInt64, durationMs: UInt64, failed: Bool)
 
     public var id: String {
         switch self {
-        case let .http(time, method, host, path, status, _): "\(time)-\(method)-\(host)\(path)-\(status)"
+        case let .http(time, method, host, path, status, _, _): "\(time)-\(method)-\(host)\(path)-\(status)"
         case let .tcp(time, host, port, bytesIn, _, _, _): "\(time)-\(host):\(port)-\(bytesIn)"
         }
     }
 
     public var host: String {
         switch self {
-        case let .http(_, _, host, _, _, _), let .tcp(_, host, _, _, _, _, _): host
+        case let .http(_, _, host, _, _, _, _), let .tcp(_, host, _, _, _, _, _): host
         }
     }
 
     enum CodingKeys: String, CodingKey {
-        case kind, timeMs, method, host, path, status, durationMs, listenPort, bytesIn, bytesOut, failed
+        case kind, timeMs, method, host, path, status, durationMs, route, listenPort, bytesIn, bytesOut, failed
     }
 
     public init(from decoder: Decoder) throws {
@@ -233,7 +258,7 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
         case "http":
             self = .http(time: time, method: try c.decode(String.self, forKey: .method), host: host,
                          path: try c.decode(String.self, forKey: .path), status: try c.decode(UInt16.self, forKey: .status),
-                         durationMs: duration)
+                         durationMs: duration, route: try c.decodeIfPresent(String.self, forKey: .route))
         case "tcp":
             self = .tcp(time: time, host: host, listenPort: try c.decode(UInt16.self, forKey: .listenPort),
                         bytesIn: try c.decode(UInt64.self, forKey: .bytesIn), bytesOut: try c.decode(UInt64.self, forKey: .bytesOut),
@@ -246,7 +271,7 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .http(time, method, host, path, status, duration):
+        case let .http(time, method, host, path, status, duration, route):
             try c.encode("http", forKey: .kind)
             try c.encode(time, forKey: .timeMs)
             try c.encode(method, forKey: .method)
@@ -254,6 +279,7 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
             try c.encode(path, forKey: .path)
             try c.encode(status, forKey: .status)
             try c.encode(duration, forKey: .durationMs)
+            try c.encodeIfPresent(route, forKey: .route)
         case let .tcp(time, host, port, bytesIn, bytesOut, duration, failed):
             try c.encode("tcp", forKey: .kind)
             try c.encode(time, forKey: .timeMs)

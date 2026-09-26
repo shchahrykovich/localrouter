@@ -5,8 +5,9 @@
     "time_ms": 1790000002000,
     "method": "POST",
     "host": "shop.localhost",
-    "path": "/login",
+    "path": "/blog/login",
     "status": 302,
-    "duration_ms": 40
+    "duration_ms": 40,
+    "route": "shop/blog"
   }
 }

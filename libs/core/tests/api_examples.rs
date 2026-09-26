@@ -107,3 +107,22 @@ fn every_example_decodes() {
         assert!(methods_seen.contains(m), "no request example for {m}");
     }
 }
+
+/// ADR 03, I30: the examples carry the new fields, so both contract tests
+/// (this one and the Swift one) check that they survive a round trip.
+#[test]
+fn examples_cover_path_routes() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../api/examples");
+    let read = |file: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"))).unwrap()
+    };
+    let has_path_route = |route: &Value| route["path"].is_string() && route["strip_path"] == Value::Bool(true);
+
+    assert!(has_path_route(&read("register_route_path.request.json")["params"]), "request needs path and strip_path");
+    assert!(has_path_route(&read("register_route_path.reply.json")["result"]["route"]), "reply needs path and strip_path");
+    let listed = read("list_routes.reply.json");
+    assert!(listed["result"]["routes"].as_array().unwrap().iter().any(has_path_route), "list_routes needs a path route");
+    assert!(read("unregister_route_path.request.json")["params"]["path"].is_string());
+    assert!(read("log.event.json")["entry"]["route"].is_string(), "a log entry needs route");
+    assert!(read("get_logs.reply.json")["result"]["entries"][0]["route"].is_string());
+}

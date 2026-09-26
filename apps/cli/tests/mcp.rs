@@ -43,9 +43,13 @@ async fn exactly_six_tools_are_listed() {
     assert_eq!(names, ["find_free_port", "get_logs", "list_routes", "register_route", "status", "unregister_route"]);
     let register = tools.iter().find(|t| t.name == "register_route").unwrap();
     let schema = serde_json::to_value(&register.input_schema).unwrap();
-    for field in ["host", "protocol", "target", "port", "listen_port", "note", "owner_pid", "persistent"] {
+    for field in ["host", "path", "strip_path", "protocol", "target", "port", "listen_port", "note", "owner_pid", "persistent"] {
         assert!(schema["properties"].get(field).is_some(), "register_route has no {field}: {schema}");
     }
+    // ADR 03, I31: unregister_route names a route by host and path.
+    let unregister = tools.iter().find(|t| t.name == "unregister_route").unwrap();
+    let schema = serde_json::to_value(&unregister.input_schema).unwrap();
+    assert!(schema["properties"].get("path").is_some(), "unregister_route has no path: {schema}");
     client.cancel().await.unwrap();
 }
 
@@ -116,5 +120,35 @@ async fn a_daemon_with_another_major_version_is_refused() {
     let r = call(&client, "list_routes", json!({})).await;
     assert!(is_error(&r));
     assert!(text(&r).contains("update the older one"), "{}", text(&r));
+    client.cancel().await.unwrap();
+}
+
+// ADR 03, T10: path routes and unknown arguments.
+#[tokio::test]
+async fn path_routes_through_mcp_and_unknown_arguments_are_refused() {
+    let d = Daemon::start();
+    let client = mcp_client(d.home()).await;
+
+    let r = call(&client, "register_route", json!({"host": "shop", "path": "/blog", "port": 3001})).await;
+    assert!(!is_error(&r), "{}", text(&r));
+    let reg: Value = serde_json::from_str(&text(&r)).unwrap();
+    assert_eq!(reg["route"]["path"], "/blog");
+
+    // A misspelled argument must not be dropped: dropping "pth" would register
+    // the route without a path and replace the main app's route.
+    let params = CallToolRequestParams::new(Cow::Borrowed("register_route"))
+        .with_arguments(json!({"host": "shop", "pth": "/api", "port": 8000}).as_object().unwrap().clone());
+    match client.call_tool(params).await {
+        Ok(r) => assert!(is_error(&r), "an unknown argument was accepted: {}", text(&r)),
+        Err(e) => assert!(e.to_string().contains("pth"), "{e}"),
+    }
+    let r = call(&client, "list_routes", json!({})).await;
+    let routes = serde_json::from_str::<Value>(&text(&r)).unwrap()["routes"].as_array().unwrap().clone();
+    assert_eq!(routes.len(), 1, "nothing but shop/blog: {routes:?}");
+
+    let r = call(&client, "unregister_route", json!({"host": "shop"})).await;
+    assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["removed"], false, "I28");
+    let r = call(&client, "unregister_route", json!({"host": "shop", "path": "/blog"})).await;
+    assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["removed"], true);
     client.cancel().await.unwrap();
 }

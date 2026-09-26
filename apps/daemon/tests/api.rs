@@ -384,3 +384,130 @@ fn router_localhost_shows_the_daemon_status() {
     assert!(page.contains(&format!("| HTTP | on, port {port} |")), "{page}");
     assert!(page.contains("| Local CA | ready, "), "{page}");
 }
+
+// ADR 03, T6: path routes through the real daemon.
+
+fn path_route(host: &str, path: &str, port: u16) -> Value {
+    json!({"host": host, "path": path, "target": format!("http://127.0.0.1:{port}")})
+}
+
+fn keys(c: &mut Client) -> Vec<String> {
+    c.call("list_routes", json!({}))["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| format!("{}{}", r["host"].as_str().unwrap(), r["path"].as_str().unwrap_or("")))
+        .collect()
+}
+
+#[test]
+fn path_routes_are_registered_replaced_and_removed_by_key() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    c.call("register_route", http_route("shop", 5173));
+    let reg = c.call("register_route", path_route("shop", "/blog/", 3001));
+    assert_eq!(reg["replaced"], false);
+    assert_eq!(reg["route"]["path"], "/blog", "trailing slash removed");
+    assert!(reg["route"]["urls"][0].as_str().unwrap().ends_with("/blog"), "{reg}");
+    assert_eq!(keys(&mut c), ["shop", "shop/blog"]);
+
+    let again = c.call("register_route", path_route("shop", "/blog", 3002));
+    assert_eq!(again["replaced"], true);
+    assert_eq!(again["old_target"], "http://127.0.0.1:3001");
+    assert_eq!(keys(&mut c), ["shop", "shop/blog"], "the default route is untouched");
+
+    // I28: without a path only the default route goes.
+    assert_eq!(c.call("unregister_route", json!({"host": "shop"}))["removed"], true);
+    assert_eq!(keys(&mut c), ["shop/blog"]);
+    assert_eq!(c.call("unregister_route", json!({"host": "shop", "path": "/blog"}))["removed"], true);
+    assert!(keys(&mut c).is_empty());
+    assert_eq!(c.error_code("unregister_route", json!({"host": "shop", "path": "blog"})), "invalid_route");
+}
+
+#[test]
+fn path_route_rules_are_enforced_by_the_daemon() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    assert_eq!(c.error_code("register_route", path_route("shop", "/a/../b", 1)), "invalid_route");
+    let mut strip = http_route("shop", 1);
+    strip["strip_path"] = json!(true);
+    assert_eq!(c.error_code("register_route", strip), "invalid_route");
+    c.call("register_route", json!({"host": "db", "protocol": "tcp", "target": "tcp://127.0.0.1:5432", "listen_port": 0}));
+    assert_eq!(c.error_code("register_route", path_route("db", "/x", 1)), "invalid_route");
+    assert_eq!(keys(&mut c), ["db"]);
+}
+
+#[test]
+fn owner_exit_removes_only_its_path_route() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let mut shop = http_route("shop", 5173);
+    shop["persistent"] = json!(true);
+    c.call("register_route", shop);
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    let mut owned = path_route("shop", "/blog", 3002);
+    owned["owner_pid"] = json!(child.id());
+    c.call("register_route", owned);
+    assert_eq!(keys(&mut c), ["shop", "shop/blog"]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while keys(&mut c) != ["shop"] {
+        assert!(Instant::now() < deadline, "owned path route still there after 1 s: {:?}", keys(&mut c));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn persistent_path_route_survives_a_restart() {
+    let saved = {
+        let d = Daemon::start();
+        let mut c = d.client();
+        let mut r = path_route("shop", "/blog", 3001);
+        r["persistent"] = json!(true);
+        r["strip_path"] = json!(true);
+        c.call("register_route", r);
+        std::fs::read_to_string(d.dir.path().join("routes.json")).unwrap()
+    };
+    assert!(saved.contains("\"version\": 2"), "{saved}");
+    let d = Daemon::start_with(|dir| std::fs::write(dir.join("routes.json"), &saved).unwrap());
+    let mut c = d.client();
+    let list = c.call("list_routes", json!({}));
+    assert_eq!(list["routes"][0]["path"], "/blog");
+    assert_eq!(list["routes"][0]["strip_path"], true);
+    assert!(c.call("status", json!({})).get("routes_file_problem").is_none());
+}
+
+#[test]
+fn a_request_reaches_the_path_route_and_the_log_names_it() {
+    // A one-shot HTTP upstream per route, so the answer says which one it was.
+    fn upstream(body: &'static str) -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        port
+    }
+    let d = Daemon::start();
+    let mut c = d.client();
+    c.call("register_route", http_route("shop", upstream("main")));
+    c.call("register_route", path_route("shop", "/blog", upstream("blog")));
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap() as u16;
+    let get = |path: &str| {
+        let mut s = TcpStream::connect(("127.0.0.1", http)).unwrap();
+        write!(s, "GET {path} HTTP/1.1\r\nhost: shop.localhost\r\nconnection: close\r\n\r\n").unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out.rsplit("\r\n\r\n").next().unwrap().to_string()
+    };
+    assert_eq!(get("/blog/x"), "blog");
+    assert_eq!(get("/x"), "main");
+    let entries = c.call("get_logs", json!({"host": "shop", "limit": 10}))["entries"].clone();
+    let routes: Vec<_> = entries.as_array().unwrap().iter().map(|e| e["route"].as_str().unwrap().to_string()).collect();
+    assert_eq!(routes, ["shop/blog", "shop"]);
+}

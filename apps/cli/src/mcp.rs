@@ -22,12 +22,25 @@ Typical flow: call find_free_port, start the dev server on that port, then regis
 that says what the route is for. For a git branch or worktree use one label in front of the project: \
 feat-login.shop (labels are a-z, 0-9 and '-'). Set owner_pid to the dev server's process id to remove the \
 route automatically when it exits. Tell the user the URL from the reply.\n\
+Several apps of one site can share a name. register_route with path \"/blog\" sends /blog and /blog/... to that \
+server; the route without a path gets every other path. The app must serve under that path (Next.js basePath, \
+Vite base), or set strip_path for a server that answers at /. basePath, base and assetPrefix also change the \
+production build: ask the user before you change them. `localrouter which <url>` shows which route answers a URL.\n\
 Step-by-step setup for a project, the current routes and the HTTP/HTTPS status: curl -s http://router.localhost";
 
+// Unknown arguments are refused, not dropped: an argument this server does not
+// know would otherwise be lost without a word (ADR 03, manifest B2).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RegisterArgs {
     /// Name without .localhost, for example "shop" or "feat-login.shop".
     pub host: String,
+    /// HTTP only: path prefix on this name, for example "/blog". Requests for /blog and /blog/... go to this server; other paths go to the route without a path.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// With path: remove the path before the request reaches the server. For servers that answer at /.
+    #[serde(default)]
+    pub strip_path: Option<bool>,
     /// "http" (default) for web servers, "tcp" for databases, caches and other TCP services.
     #[serde(default)]
     pub protocol: Option<String>,
@@ -71,6 +84,7 @@ impl RegisterArgs {
         };
         Ok(Route {
             host: self.host,
+            path: self.path,
             protocol,
             target,
             listen_port: match protocol {
@@ -78,6 +92,7 @@ impl RegisterArgs {
                 Protocol::Http => self.listen_port,
             },
             https_only: self.https_only.unwrap_or(false),
+            strip_path: self.strip_path.unwrap_or(false),
             note: self.note.unwrap_or_default(),
             owner_pid: self.owner_pid,
             persistent: self.persistent.unwrap_or(false),
@@ -86,12 +101,17 @@ impl RegisterArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HostArgs {
     /// Name without .localhost, for example "feat-login.shop".
     pub host: String,
+    /// The path of a path route, for example "/blog". Without it, only the route without a path is removed.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FreePortArgs {
     /// Try this port first, then the ports above it.
     #[serde(default)]
@@ -99,6 +119,7 @@ pub struct FreePortArgs {
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LogsArgs {
     /// Only entries for this name and its subdomains.
     #[serde(default)]
@@ -109,6 +130,7 @@ pub struct LogsArgs {
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
 #[derive(Clone)]
@@ -142,7 +164,8 @@ impl LocalRouterMcp {
     }
 
     #[tool(description = "Create or replace a route: a name under .localhost that forwards to a local server. \
-Returns the URLs. Replacing an existing name returns replaced=true and the old target.")]
+Give path to send only that part of the name to this server. Returns the URLs. Replacing an existing name and \
+path returns replaced=true and the old target.")]
     async fn register_route(&self, Parameters(args): Parameters<RegisterArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(match args.into_route() {
             Ok(route) => self.call("register_route", route).await,
@@ -150,9 +173,10 @@ Returns the URLs. Replacing an existing name returns replaced=true and the old t
         })
     }
 
-    #[tool(description = "Remove a route by name.")]
+    #[tool(description = "Remove a route by name, and by path for a path route. Without path it removes only \
+the route without a path.")]
     async fn unregister_route(&self, Parameters(args): Parameters<HostArgs>) -> Result<CallToolResult, ErrorData> {
-        Ok(self.call("unregister_route", HostParams { host: args.host }).await)
+        Ok(self.call("unregister_route", HostParams { host: args.host, path: args.path }).await)
     }
 
     #[tool(description = "List all routes with their URLs, notes, and whether each target is up.")]

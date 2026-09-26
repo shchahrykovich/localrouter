@@ -1,4 +1,5 @@
 //! T5: the HTTP proxy against real upstream servers on random ports.
+//! ADR 03, T4 and T5: path routes, strip_path, and the route in the log.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -24,8 +25,8 @@ struct Table {
 }
 
 impl RouteSource for Table {
-    fn lookup(&self, host: &str) -> Option<Route> {
-        self.routes.read().unwrap().lookup(host, true).cloned()
+    fn lookup(&self, host: &str, path: &str) -> Option<Route> {
+        self.routes.read().unwrap().lookup(host, path, true).cloned()
     }
     fn all(&self) -> Vec<Route> {
         self.routes.read().unwrap().iter().cloned().collect()
@@ -38,10 +39,12 @@ impl RouteSource for Table {
 fn route(host: &str, target: String) -> Route {
     Route {
         host: host.into(),
+        path: None,
         protocol: Protocol::Http,
         target,
         listen_port: None,
         https_only: false,
+        strip_path: false,
         note: "test note".into(),
         owner_pid: None,
         persistent: false,
@@ -75,6 +78,7 @@ where
             "xfp": header("x-forwarded-proto"),
             "xfh": header("x-forwarded-host"),
             "keep_alive": header("keep-alive"),
+            "prefix": header("x-forwarded-prefix"),
         });
         Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from(json.to_string()))))
     });
@@ -186,7 +190,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
     };
     let ca_der = ca.cert_der().clone();
     let src = source.clone();
-    let store = Arc::new(CertStore::new(Some(ca), Arc::new(move |name: &str| src.lookup(name).is_some())));
+    let store = Arc::new(CertStore::new(Some(ca), Arc::new(move |name: &str| src.routes.read().unwrap().serves(name, true))));
     let acceptor = tokio_rustls::TlsAcceptor::from(tls::server_config(store).unwrap());
     tokio::spawn(async move {
         loop {
@@ -204,10 +208,18 @@ async fn harness(routes: Vec<Route>) -> Harness {
 }
 
 async fn get(addr: SocketAddr, host: &str, path: &str) -> (StatusCode, hyper::HeaderMap, String) {
+    get_with(addr, host, path, &[]).await
+}
+
+async fn get_with(addr: SocketAddr, host: &str, path: &str, extra: &[(&str, &str)]) -> (StatusCode, hyper::HeaderMap, String) {
     let stream = TcpStream::connect(addr).await.unwrap();
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
     tokio::spawn(conn);
-    let req = Request::get(path).header("host", host).header("keep-alive", "timeout=5").body(Empty::<Bytes>::new()).unwrap();
+    let mut req = Request::get(path).header("host", host).header("keep-alive", "timeout=5");
+    for (name, value) in extra {
+        req = req.header(*name, *value);
+    }
+    let req = req.body(Empty::<Bytes>::new()).unwrap();
     let resp = sender.send_request(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
@@ -359,4 +371,109 @@ async fn router_name_is_served_over_https_without_a_route() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&body).starts_with("# LocalRouter"));
+}
+
+// ADR 03: path routes.
+
+fn at(host: &str, path: &str, target: String) -> Route {
+    Route { path: Some(path.into()), ..route(host, target) }
+}
+
+fn url(addr: SocketAddr) -> String {
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+#[tokio::test]
+async fn path_route_gets_its_path_unchanged_and_others_go_to_the_default() {
+    let main = echo_upstream().await;
+    let blog = echo_upstream().await;
+    let h = harness(vec![route("shop", url(main)), at("shop", "/blog", url(blog))]).await;
+
+    let (status, _, body) = get(h.http, "shop.localhost", "/blog/x?y=1").await;
+    assert_eq!(status, StatusCode::OK);
+    let j = json(&body);
+    assert_eq!(j["path"], "/blog/x?y=1", "I26: path and query unchanged");
+    assert_eq!(j["host"], "shop.localhost", "I12: Host unchanged");
+    assert_eq!(j["prefix"], "", "no X-Forwarded-Prefix without strip_path");
+
+    // Both upstreams echo the same JSON; the log says which route answered.
+    for (path, want) in [("/blog", "shop/blog"), ("/x", "shop"), ("/blogger", "shop"), ("/", "shop")] {
+        let (status, _, body) = get(h.http, "shop.localhost", path).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&body)["path"], path);
+        let last = h.log.recent(None, 1).pop().unwrap();
+        assert!(matches!(&last, LogEntry::Http { route: Some(r), .. } if r == want), "{path}: {last:?}");
+    }
+}
+
+#[tokio::test]
+async fn strip_path_removes_the_prefix_and_sets_forwarded_prefix() {
+    let api = echo_upstream().await;
+    let mut r = at("shop", "/api", url(api));
+    r.strip_path = true;
+    let h = harness(vec![r]).await;
+
+    let (_, _, body) = get_with(h.http, "shop.localhost", "/api/users?x=1", &[("x-forwarded-prefix", "/evil")]).await;
+    let j = json(&body);
+    assert_eq!(j["path"], "/users?x=1");
+    assert_eq!(j["prefix"], "/api", "I26: the client value is replaced");
+    assert_eq!(j["host"], "shop.localhost");
+
+    let (_, _, body) = get(h.http, "shop.localhost", "/api").await;
+    assert_eq!(json(&body)["path"], "/");
+}
+
+#[tokio::test]
+async fn closed_path_target_gets_its_502_and_never_the_default_route() {
+    let main = echo_upstream().await;
+    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let h = harness(vec![route("shop", url(main)), at("shop", "/blog", url(closed))]).await;
+    let (status, _, body) = get(h.http, "shop.localhost", "/blog/x").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "I25: {body}");
+    assert!(body.contains(&closed.port().to_string()), "{body}");
+    assert!(body.contains("shop.localhost/blog"), "{body}");
+    let (status, _, _) = get(h.http, "shop.localhost", "/x").await;
+    assert_eq!(status, StatusCode::OK, "the default route still works");
+}
+
+#[tokio::test]
+async fn websocket_upgrade_reaches_the_path_route() {
+    let main = echo_upstream().await;
+    let ws = ws_upstream().await;
+    let h = harness(vec![route("shop", url(main)), at("shop", "/blog", url(ws))]).await;
+    let stream = TcpStream::connect(h.http).await.unwrap();
+    let req = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+        "ws://shop.localhost/blog/_next/webpack-hmr",
+    )
+    .unwrap();
+    let (mut sock, resp) = tokio_tungstenite::client_async(req, stream).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+    sock.send("ping".into()).await.unwrap();
+    assert_eq!(sock.next().await.unwrap().unwrap().into_text().unwrap(), "ping");
+}
+
+#[tokio::test]
+async fn name_with_only_a_path_route_gets_a_certificate() {
+    let up = echo_upstream().await;
+    let h = harness(vec![at("shop", "/blog", url(up))]).await;
+    let tls = tls_client(&h, "shop.localhost", &[b"http/1.1"]).await.expect("I27: certificate for a path-only name");
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.unwrap();
+    tokio::spawn(conn);
+    let req = Request::get("/blog/x").header("host", "shop.localhost").body(Empty::<Bytes>::new()).unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(tls_client(&h, "blog.localhost", &[b"http/1.1"]).await.is_err(), "I5: no route, no certificate");
+}
+
+#[tokio::test]
+async fn not_found_lists_path_routes_and_logs_no_route() {
+    let h = harness(vec![at("shop", "/blog", "http://127.0.0.1:9".into())]).await;
+    let (status, _, body) = get(h.http, "shop.localhost", "/other").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("shop.localhost/blog"), "{body}");
+    let entries = h.log.recent(None, 10);
+    assert!(matches!(&entries[0], LogEntry::Http { status: 404, route: None, .. }), "{entries:?}");
+    let _ = get(h.http, "router.localhost", "/").await;
+    let entries = h.log.recent(None, 10);
+    assert!(matches!(entries.last().unwrap(), LogEntry::Http { status: 200, route: None, .. }), "{entries:?}");
 }

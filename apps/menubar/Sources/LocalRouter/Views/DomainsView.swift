@@ -42,7 +42,7 @@ struct RouteRow: View {
         }
     }
 
-    private var primaryURL: String { view.urls.first ?? view.route.fullName }
+    private var primaryURL: String { view.urls.first ?? view.route.fullNameAndPath }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -58,6 +58,7 @@ struct RouteRow: View {
                         Text(primaryURL).font(.body.monospaced())
                     }
                     if view.route.protocol == .tcp { Badge(text: "tcp") }
+                    if view.route.stripPath { Badge(text: "strip").help("The path is removed before the request reaches the target") }
                     if view.route.ownerPid != nil { Badge(text: "owned") } else if !view.route.persistent { Badge(text: "session") }
                 }
                 Text("→ \(view.route.target)").font(.caption.monospaced()).foregroundStyle(.secondary)

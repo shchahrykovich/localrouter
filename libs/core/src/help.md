@@ -4,6 +4,8 @@ LocalRouter {{VERSION}} runs on this Mac. It gives local dev servers names
 instead of ports:
 
 - HTTP: `https://shop.localhost` goes to `http://127.0.0.1:5173`
+- HTTP by path: `https://shop.localhost/blog` goes to `http://127.0.0.1:3001`,
+  and every other path of `shop.localhost` to 5173
 - TCP: `db.shop.localhost:15432` goes to `127.0.0.1:5432` (databases, caches)
 
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
@@ -39,12 +41,13 @@ Use the first one that works:
 
 | MCP tool | Command line | What it does |
 |---|---|---|
-| `register_route` | `localrouter add <host> <port>` | Create or replace a route |
-| `unregister_route` | `localrouter rm <host>` | Remove a route |
+| `register_route` | `localrouter add <host> <port> [--path /blog]` | Create or replace a route |
+| `unregister_route` | `localrouter rm <host> [--path /blog]` | Remove a route |
 | `list_routes` | `localrouter list` | All routes, their URLs, and whether each target is up |
 | `find_free_port` | - | A free TCP port on 127.0.0.1 |
 | `get_logs` | `localrouter logs [host]` | Recent requests and connections |
 | `status` | `localrouter status` | Daemon version, ports, local CA |
+| - | `localrouter which <url>` | Which route answers a URL, and why (no MCP tool) |
 
 ## Step 2: choose names
 
@@ -55,8 +58,11 @@ Use the first one that works:
 - Put the other servers of the project under it: `api.shop`, `db.shop`.
 - For a git branch or worktree, put the branch first: `feat-login.shop`.
 - A name without its own route uses its parent: `other.shop` goes to `shop`.
+- One site that is split by path in production (`/blog`, `/admin`): one host,
+  one route per path (Step 4b). Separate sites: separate hosts.
 - `router` is taken by this page.
-- Run `localrouter list` first. Adding a host that exists replaces it.
+- Run `localrouter list` first. Adding a host and path that exist replaces that
+  route.
 
 ## Step 3: find the dev servers
 
@@ -96,6 +102,64 @@ How long a route lives:
 | session | `--session` | default | LocalRouter restarts |
 | owned | `--owner-pid <pid>` | `owner_pid: <pid>` | That process exits |
 
+## Step 4b: several apps on one name
+
+Use this when the apps of one site share a domain in production and a proxy
+there picks the app by path. Locally they then share cookies and sign-in, as in
+production.
+
+```
+localrouter add shop 5173
+localrouter add shop 3001 --path /blog
+```
+
+With MCP: `register_route` with `host: "shop"`, `path: "/blog"`, `port: 3001`.
+
+- `/blog` matches `/blog` and `/blog/...`, never `/blogger`. Case matters.
+- The route without a path gets every path no other route of the name matches.
+- The longest matching path wins: `/blog/admin` before `/blog`.
+- A path route whose server is down answers 502. The request never goes to
+  another route.
+- Remove a path route with `localrouter rm shop --path /blog`. Without
+  `--path`, only the route without a path is removed.
+
+**The app must know its path.** LocalRouter sends the path unchanged and
+rewrites nothing in the answer. First look at how production splits the site,
+and use the same pattern:
+
+| Pattern | The app's pages | The app's files | App setting | Routes |
+|---|---|---|---|---|
+| A: base path | under `/blog/...` | under `/blog/_next/...` | Next.js `basePath: "/blog"`, Vite `base: "/blog/"`, Astro `base: "/blog"` | `--path /blog` |
+| B: own pages, file prefix | `/products/...`, `/brands/...` | under `/shop-assets/_next/...` | Next.js `assetPrefix: "/shop-assets"` | one route per page prefix, and one for the file prefix |
+
+Pattern B, one app on port 3002:
+
+```
+localrouter add shop 3002 --path /products
+localrouter add shop 3002 --path /brands
+localrouter add shop 3002 --path /shop-assets
+```
+
+Do not add `--strip-path` to the file prefix for `next dev`: the dev server
+serves its files under the prefix itself, and its hot reload socket
+(`/shop-assets/_next/hmr`) works only with the prefix. A production proxy may
+strip the prefix; the dev server does not need it.
+
+Give all routes of one dev server the same `owner_pid`, so they go away
+together.
+
+**Ask the user before you change `basePath`, `base` or `assetPrefix`.** These
+settings change the production build too, not only the dev server.
+
+`--strip-path` (MCP `strip_path: true`) removes the path before the request
+reaches the server: `/api/users` arrives as `/users`, with the header
+`X-Forwarded-Prefix: /api`. Use it for an API or another server that answers
+at `/` and does not know its prefix. Redirects and cookies from a stripped
+server are not rewritten, so do not use it for the pages of a web app.
+
+If `register_route` has no `path` argument, your MCP server is older than
+LocalRouter: restart the session, or use the command line.
+
 ## Step 5: a server for a branch or worktree
 
 1. Get a free port: `find_free_port`.
@@ -103,6 +167,10 @@ How long a route lives:
 3. Register `<branch>.<project>` with `owner_pid` set to the dev server's pid.
    The route goes away when the server stops.
 4. Give the user `https://<branch>.<project>.localhost`.
+
+A branch of one path app: register `<branch>.<project>` with the same path and
+`owner_pid`, for example `feat-x.shop` with path `/blog`. Other paths of the
+branch name use the project's routes, so the rest of the site still works.
 
 ## Step 6: check that it works
 
@@ -117,7 +185,19 @@ curl -s -o /dev/null -w "%{http_code}\n" http://shop.localhost/
   webpack-dev-server `allowedHosts`, Django `ALLOWED_HOSTS`, Rails
   `config.hosts`.
 - HTTPS errors: see "Turn on HTTP, HTTPS and trust" below.
-- `localrouter logs shop` shows what reached LocalRouter.
+- `localrouter logs shop` shows what reached LocalRouter, and which route
+  answered each request (`route shop/blog`).
+- `localrouter which https://shop.localhost/blog/x` shows which route answers
+  a URL, and why, without a request.
+- A page under `/blog` with no styles, or with the styles and scripts of
+  another app: the app asks for `/_next/...` or `/@vite/...` outside its path,
+  and the route without a path answers that. Dev file names such as
+  `main-app.js` are the same in every Next.js app, so the answer is often 200
+  with the wrong file, not an error. `localrouter logs <host>` shows `route
+  shop` on those files. Set the base path in the app (Step 4b).
+- A wrong or missing image under a base path: a plain `<img src="/logo.png">`
+  does not get the base path, so another app may answer it. Use `next/image`,
+  or write the base path into the URL.
 
 ## Turn on HTTP, HTTPS and trust
 
@@ -151,9 +231,10 @@ Add a short section to the project's agent instructions (`CLAUDE.md` or
 ## Local URLs (LocalRouter)
 
 - https://shop.localhost - dev server, port 5173
+- https://shop.localhost/blog - blog app, port 3001 (Next.js basePath /blog)
 - db.shop.localhost:15432 - Postgres, port 5432
 
-Set up once: localrouter add shop 5173 && localrouter add db.shop 5432 --tcp --listen 15432
+Set up once: localrouter add shop 5173 && localrouter add shop 3001 --path /blog && localrouter add db.shop 5432 --tcp --listen 15432
 Branch or worktree: register <branch>.shop with owner_pid of the dev server.
 Instructions: curl -s http://router.localhost
 ```
