@@ -38,8 +38,15 @@ final class StatusItemMenu: NSObject {
         menu.addItem(item("Check for Updates…", #selector(checkForUpdates)))
         menu.addItem(.separator())
         menu.addItem(item("Quit LocalRouter", #selector(quit)))
+        // A menu takes the appearance of the view it opens in, and the menu
+        // bar is dark over a dark wallpaper. Use the system appearance, as a
+        // status item's own menu does.
+        menu.appearance = NSApp.effectiveAppearance
         let below = view.isFlipped ? view.bounds.maxY + 4 : view.bounds.minY - 4
+        let button = StatusButton.find(in: view)
+        button?.highlight(true)
         menu.popUp(positioning: nil, at: NSPoint(x: view.bounds.minX, y: below), in: view)
+        button?.highlight(false)
     }
 
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -48,11 +55,11 @@ final class StatusItemMenu: NSObject {
         return item
     }
 
-    /// Click the status item button, as a left click would.
+    /// Click the status item button, as a left click would. Wait until the
+    /// menu has closed, so the window does not open during menu tracking.
     @objc private func openWindow() {
-        guard let view = statusWindow?.contentView else { return }
-        let button = view as? NSButton ?? view.subviews.lazy.compactMap { $0 as? NSButton }.first
-        button?.performClick(nil)
+        guard let view = statusWindow?.contentView, let button = StatusButton.find(in: view) else { return }
+        DispatchQueue.main.async { button.performClick(nil) }
     }
 
     @objc private func openAgentHelp() { model.open(model.agentHelpURL) }
