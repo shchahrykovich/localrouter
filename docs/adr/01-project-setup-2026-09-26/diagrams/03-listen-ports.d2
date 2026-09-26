@@ -1,0 +1,18 @@
+...@_palette
+direction: right
+title: "Listening on ports 80 and 443 without root" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+r_a: "Bind 127.0.0.1:443\nor ::1:443" { class: del }
+r_b: "Permission denied\n(needs root)" { class: del }
+r_a -> r_b
+
+a_a: "Bind 0.0.0.0:443\nand [::]:443" { class: ins }
+a_b: "Connection\naccepted" { class: step }
+a_c: "Peer address\nis loopback?" { class: dec }
+a_d: "Serve the request" { class: ins }
+a_e: "Close at once\nand log it" { class: del }
+a_a -> a_b -> a_c
+a_c -> a_d: "yes"
+a_c -> a_e: "no, and LAN\naccess is off"
+
+legend: "Red row = measured on macOS 27.0: a normal user cannot bind a loopback address below port 1024.\nGreen row = the chosen design: bind all interfaces, then refuse every peer that is not 127.0.0.0/8 or ::1." { near: bottom-center; shape: text; style.font-size: 13 }

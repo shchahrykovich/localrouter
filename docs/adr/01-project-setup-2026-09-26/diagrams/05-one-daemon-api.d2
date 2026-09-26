@@ -1,0 +1,18 @@
+...@_palette
+direction: right
+title: "Three clients, one daemon API" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+agent: "Claude Code\nor other agent" { class: ext }
+mcp: "localrouter mcp\nstdio shim" { class: ins }
+cli: "localrouter CLI\nin a terminal" { class: ins }
+ui: "Menu bar app" { class: ins }
+d: "localrouterd\nonly writer" { class: ins }
+routes: "routes.json" { class: write }
+
+agent -> mcp: "MCP over stdio"
+mcp -> d: "JSON lines,\nUnix socket"
+cli -> d: "same API"
+ui -> d: "same API"
+d -> routes: "atomic replace"
+
+legend: "Only the daemon writes routes.json. The shim, the CLI and the app hold no route state." { near: bottom-center; shape: text; style.font-size: 13 }

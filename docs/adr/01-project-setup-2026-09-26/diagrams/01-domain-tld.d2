@@ -1,0 +1,21 @@
+...@_palette
+direction: right
+title: "How each domain ending is looked up on macOS" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+lh_a: ".localhost (chosen)\nshop.localhost" { class: term }
+lh_b: "macOS resolver\nanswers by itself" { class: step }
+lh_c: "127.0.0.1 and ::1\nat once" { class: ins }
+lh_a -> lh_b -> lh_c
+
+ts_a: ".test (not in v1)\nshop.test" { class: term }
+ts_b: "/etc/resolver/test\nneeds admin once" { class: skip }
+ts_c: "DNS server inside\nLocalRouter" { class: skip }
+ts_a -> ts_b -> ts_c
+ts_c -> lh_c: "" { style.stroke: "#7a7a7a"; style.stroke-dash: 4 }
+
+lo_a: ".local (rejected)\nshop.local" { class: term }
+lo_b: "Bonjour sends a\nmulticast query" { class: del }
+lo_c: "No answer:\nfails after 5.0 s" { class: del }
+lo_a -> lo_b -> lo_c
+
+legend: "Green = works with no setup. Grey = not in version 1. Red = rejected.\nTimings measured on macOS 27.0 with getaddrinfo." { near: bottom-center; shape: text; style.font-size: 13 }

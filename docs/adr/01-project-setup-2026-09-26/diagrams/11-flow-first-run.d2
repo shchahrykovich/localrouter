@@ -1,0 +1,21 @@
+...@_palette
+direction: right
+title: "Flow C: first run creates and trusts the local CA" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "Daemon starts" { class: term }
+b: "CA files exist?" { class: dec }
+c: "Create key pair\nand root cert" { class: ins }
+ca: "ca/ca.key 0600\nca/ca.pem" { class: write }
+d: "Serve HTTPS" { class: ins }
+u: "User clicks Trust\nor runs trust" { class: term }
+k: "macOS asks for\npassword once" { class: skip }
+kc: "Login keychain\ntrust setting" { class: write }
+
+a -> b
+b -> c: "no"
+c -> ca
+ca -> d
+b -> d: "yes"
+u -> k -> kc
+
+legend: "The daemon never touches the keychain. Only the app or the CLI does, and only when the user asks.\nUntil then HTTPS works but browsers show a certificate warning." { near: bottom-center; shape: text; style.font-size: 13 }

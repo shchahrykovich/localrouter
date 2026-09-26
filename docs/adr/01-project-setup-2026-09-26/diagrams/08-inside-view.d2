@@ -1,0 +1,29 @@
+vars: { d2-config: { layout-engine: elk } }
+...@_palette
+direction: down
+title: "Inside view: which folder holds which part" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+daemon: "apps/daemon\nbinary: localrouterd\nlisteners, store, socket API" { class: ins }
+cli: "apps/cli\nbinary: localrouter\nCLI and MCP shim" { class: ins }
+app: "apps/menubar\nSwift menu bar app" { class: ins }
+
+core: "libs/core (Rust library, no binary)" {
+  style.fill: "#f7fcf9"
+  routes: "routes\ntable, lookup,\nfallback" { class: ins }
+  proxy: "proxy\nHTTP/1, HTTP/2,\nWebSocket" { class: ins }
+  tls: "tls\nCA, leaf certs,\ncache" { class: ins }
+  tcp: "tcp\nbyte copy for\nTCP routes" { class: ins }
+  logs: "logs\nring buffer of\nlast requests" { class: ins }
+  api: "api\nrequest and\nreply types" { class: ins }
+}
+
+daemon -> core.routes
+daemon -> core.proxy
+daemon -> core.tls
+daemon -> core.tcp
+daemon -> core.logs
+daemon -> core.api: "serves"
+cli -> core.api: "client"
+app -> core.api: "same JSON,\nSwift copy" { style.stroke-dash: 4 }
+
+legend: "All parts are new. Dashed = the Swift app does not link Rust code: it has its own Swift structs for the same JSON,\nand a contract test checks both sides against shared example files." { near: bottom-center; shape: text; style.font-size: 13 }

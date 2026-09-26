@@ -1,0 +1,24 @@
+...@_palette
+direction: right
+title: "Processes each option would run" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+c_a: "Chosen:\nRust + Swift" { class: term }
+c_b: "Menu bar app\nSwift, SwiftUI" { class: ins }
+c_c: "localrouterd\nRust daemon" { class: ins }
+c_d: "localrouter\nRust CLI + MCP" { class: ins }
+c_a -> c_b
+c_b -> c_c: "Unix socket"
+c_d -> c_c: "Unix socket"
+
+s_a: "Viable:\nall Swift" { class: term }
+s_b: "One Swift app\nSwiftNIO proxy" { class: skip }
+s_c: "CLI + MCP\nin Swift" { class: skip }
+s_a -> s_b
+s_c -> s_b: "socket"
+
+t_a: "Rejected:\nTauri / Electron" { class: term }
+t_b: "App process\nRust or Node" { class: del }
+t_c: "Web view process\nHTML menus" { class: del }
+t_a -> t_b -> t_c
+
+legend: "Green = chosen. Grey = would also work, weaker network libraries. Red = rejected: an extra web view process only to draw menus." { near: bottom-center; shape: text; style.font-size: 13 }

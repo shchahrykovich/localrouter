@@ -1,0 +1,24 @@
+...@_palette
+direction: right
+title: "System view: what runs on the Mac" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+browser: "Browser, curl,\npsql, redis-cli" { class: ext }
+agent: "Claude Code" { class: ext }
+mcp: "localrouter mcp\nRust, per agent session" { class: ins }
+cli: "localrouter CLI\nRust" { class: ins }
+app: "LocalRouter.app\nSwift menu bar" { class: ins }
+d: "localrouterd\nRust, one per user" { class: ins }
+store: "Application Support\nroutes, config, CA" { class: write }
+kc: "Login keychain\nCA trust" { class: write }
+dev: "Dev servers, databases\n127.0.0.1:5173, :55001 ..." { class: ext }
+
+agent -> mcp: "MCP, stdio"
+mcp -> d: "JSON, Unix socket"
+cli -> d: "JSON, Unix socket"
+app -> d: "JSON, Unix socket"
+browser -> d: "HTTP :80, HTTPS :443,\nTCP route ports"
+d -> dev: "HTTP, HTTPS,\nWebSocket, TCP"
+d -> store: "files"
+app -> kc: "trust CA once"
+
+legend: "All boxes are new: the repository is empty today. Grey = not part of LocalRouter. Launch of the daemon by the app (SMAppService) is not drawn." { near: bottom-center; shape: text; style.font-size: 13 }

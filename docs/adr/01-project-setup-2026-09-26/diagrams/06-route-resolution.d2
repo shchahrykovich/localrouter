@@ -1,0 +1,18 @@
+...@_palette
+direction: right
+title: "Which route serves feat-x.shop.localhost" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "Host header\nfeat-x.shop.localhost" { class: term }
+b: "Remove .localhost\nkey = feat-x.shop" { class: step }
+c: "Route for\nthis key?" { class: dec }
+d: "Drop left label\nkey = shop" { class: step }
+f: "Forward to\nroute target" { class: ins }
+g: "404 page that\nlists all routes" { class: del }
+
+a -> b -> c
+c -> f: "yes"
+c -> d: "no, labels left and\nfallback is on"
+d -> c
+c -> g: "no, nothing left\nor fallback off"
+
+legend: "Longest match wins. Example: feat-x.shop has no route, shop has a route to port 5173, so the request goes to 5173." { near: bottom-center; shape: text; style.font-size: 13 }

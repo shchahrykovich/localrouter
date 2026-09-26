@@ -1,0 +1,20 @@
+...@_palette
+direction: right
+title: "Flow D: a TCP client reaches a database" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "psql -h db.shop.localhost\n-p 15432" { class: term }
+b: "Loopback listener\nof route db.shop" { class: ins }
+c: "Connect to target\n127.0.0.1:55001" { class: dec }
+d: "Copy bytes\nboth ways" { class: ins }
+x: "Close client\nconnection" { class: del }
+g: "Postgres in Docker\n:55001" { class: ext }
+ring: "request log\none entry at close" { class: write }
+
+a -> b -> c
+c -> d: "within 2 s"
+c -> x: "no answer"
+d -> g
+d -> ring: "bytes, duration"
+x -> ring: "failed"
+
+legend: "No name check and no TLS: the listen port alone selects the route. Nothing in this flow writes to disk." { near: bottom-center; shape: text; style.font-size: 13 }

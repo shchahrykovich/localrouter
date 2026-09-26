@@ -1,0 +1,26 @@
+...@_palette
+direction: right
+title: "Flow B: an agent registers a route, and it is removed later" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "Agent calls\nregister_route\n(MCP shim, socket)" { class: term }
+c: "Name, target,\npid valid?" { class: dec }
+err: "Error reply,\nnothing written" { class: del }
+d: "Update table\nin memory" { class: upd }
+p: "Kind of\nroute?" { class: dec }
+file: "routes.json\ntemp + rename" { class: write }
+w: "Watch pid\n(kqueue)" { class: upd }
+x: "Pid exits:\nroute removed" { class: del }
+ok: "Reply with URLs" { class: ins }
+
+a -> c
+c -> err: "no"
+c -> d: "yes"
+d -> p
+p -> file: "persistent"
+p -> w: "has pid"
+p -> ok: "session only"
+file -> ok
+w -> ok
+w -> x: "later"
+
+legend: "Purple = written to disk. A route with an owner pid is never written to routes.json,\nso a daemon restart cannot attach it to a reused pid." { near: bottom-center; shape: text; style.font-size: 13 }

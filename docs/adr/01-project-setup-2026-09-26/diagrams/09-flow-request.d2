@@ -1,0 +1,17 @@
+...@_palette
+direction: right
+title: "Flow A: a browser request reaches a dev server" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "Open https://\nfeat.shop.localhost\n(macOS: 127.0.0.1)" { class: term }
+c: "Daemon: check peer,\npick TLS cert" { class: ins }
+e: "Find route\n(longest match)" { class: ins }
+f: "Forward, add\nX-Forwarded-*" { class: ins }
+g: "Dev server\n127.0.0.1:5174" { class: ext }
+routes: "route table\nin memory" { class: tbl }
+ring: "request log\nring buffer" { class: write }
+
+a -> c -> e -> f -> g
+routes -> e: "read"
+f -> ring: "one entry"
+
+legend: "Green = new code in localrouterd. Grey = not ours.\nNothing in this flow writes to disk." { near: bottom-center; shape: text; style.font-size: 13 }

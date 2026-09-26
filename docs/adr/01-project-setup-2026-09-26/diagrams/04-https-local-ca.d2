@@ -1,0 +1,23 @@
+...@_palette
+direction: right
+title: "Certificate for each name, made on demand" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "TLS hello for\nfeat.shop.localhost" { class: term }
+b: "Name has a\nroute?" { class: dec }
+c: "Certificate\nin memory cache?" { class: dec }
+d: "Sign a new one\n90 days, one name" { class: ins }
+ca: "Local CA\nca.key, ca.pem" { class: tbl }
+cache: "Certificate cache\nin memory" { class: write }
+e: "Finish handshake" { class: ins }
+x: "Refuse handshake" { class: del }
+
+a -> b
+b -> c: "yes"
+b -> x: "no"
+c -> e: "yes"
+c -> d: "no"
+ca -> d: "signs with"
+d -> cache
+cache -> e
+
+legend: "The CA is created once on first run and trusted once by the user (see data flow). Leaf certificates follow Apple rules:\nserverAuth EKU, name in SAN, at most 825 days. Nothing leaves the Mac." { near: bottom-center; shape: text; style.font-size: 13 }

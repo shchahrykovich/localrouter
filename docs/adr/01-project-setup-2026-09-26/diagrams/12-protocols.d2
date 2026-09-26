@@ -1,0 +1,20 @@
+...@_palette
+direction: right
+title: "Where each protocol carries the name" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+h_a: "http://shop.localhost" { class: term }
+h_b: "Host header\nshop.localhost" { class: step }
+h_c: "One shared port 80,\nroute by name" { class: ins }
+h_a -> h_b -> h_c
+
+s_a: "https://shop.localhost" { class: term }
+s_b: "TLS SNI, then\nHost header" { class: step }
+s_c: "One shared port 443,\nroute by name" { class: ins }
+s_a -> s_b -> s_c
+
+t_a: "db.shop.localhost:15432\n(Postgres, Redis, ...)" { class: term }
+t_b: "No name in the bytes:\nonly 127.0.0.1 and port" { class: del }
+t_c: "One port per route,\nroute by port" { class: upd }
+t_a -> t_b -> t_c
+
+legend: "Green = many routes share one port. Blue = each TCP route owns its own listen port.\nEvery *.localhost name resolves to 127.0.0.1, and 127.0.0.2 does not exist on lo0 without root, so the port is the only thing left." { near: bottom-center; shape: text; style.font-size: 13 }
