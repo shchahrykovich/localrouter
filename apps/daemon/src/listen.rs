@@ -37,16 +37,31 @@ pub fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
 
 /// Bind `port` on all IPv4 and all IPv6 interfaces. Port `0` picks one free
 /// port for IPv4 and uses the same number for IPv6.
+///
+/// A wildcard socket is kept only if a connection to the loopback address of
+/// its family really reaches it. `SO_REUSEADDR` lets `0.0.0.0:80` bind next to
+/// another program's `127.0.0.1:80`, and that program would then get every
+/// request while the status said "bound".
 pub fn bind_all(port: u16) -> (Vec<std::net::TcpListener>, PortStatus) {
     let mut status = PortStatus { configured: port, port: None, bound: vec![], errors: vec![] };
     let mut listeners = vec![];
     let mut actual = port;
-    for ip in [IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V6(Ipv6Addr::UNSPECIFIED)] {
+    for (ip, loopback) in [
+        (IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        (IpAddr::V6(Ipv6Addr::UNSPECIFIED), IpAddr::V6(Ipv6Addr::LOCALHOST)),
+    ] {
         let addr = SocketAddr::new(ip, actual);
         match bind(addr) {
             Ok(l) => {
                 let local = l.local_addr().map(|a| a.port()).unwrap_or(actual);
                 actual = local;
+                let probe = SocketAddr::new(loopback, local);
+                if !receives(&l, probe) {
+                    status.errors.push(format!(
+                        "{probe}: port {local} is held by another program, so loopback requests would not reach LocalRouter"
+                    ));
+                    continue;
+                }
                 status.port = Some(local);
                 status.bound.push(SocketAddr::new(ip, local).to_string());
                 listeners.push(l);
@@ -55,6 +70,24 @@ pub fn bind_all(port: u16) -> (Vec<std::net::TcpListener>, PortStatus) {
         }
     }
     (listeners, status)
+}
+
+/// Does a connection to `probe` arrive at `listener`? The listener is
+/// non-blocking, so poll accept() for a short while.
+fn receives(listener: &std::net::TcpListener, probe: SocketAddr) -> bool {
+    let Ok(stream) = std::net::TcpStream::connect_timeout(&probe, std::time::Duration::from_millis(300)) else {
+        return false;
+    };
+    let Ok(ours) = stream.local_addr() else { return false };
+    for _ in 0..30 {
+        match listener.accept() {
+            Ok((_, peer)) if peer == ours => return true,
+            Ok(_) => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 pub fn describe_bind_error(addr: SocketAddr, e: &io::Error) -> String {
@@ -118,6 +151,22 @@ mod tests {
         let ports: Vec<_> = listeners.iter().map(|l| l.local_addr().unwrap().port()).collect();
         assert_eq!(ports[0], ports[1]);
         assert!(status.errors.is_empty());
+    }
+
+    // A program that already listens on 127.0.0.1:<port> would silently get
+    // every loopback request, because SO_REUSEADDR lets the wildcard bind
+    // succeed next to it. bind_all must notice and report it.
+    #[test]
+    fn loopback_port_held_by_another_program_is_reported() {
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let (listeners, status) = bind_all(port);
+        let v4: Vec<_> = listeners.iter().filter(|l| l.local_addr().unwrap().is_ipv4()).collect();
+        assert!(v4.is_empty(), "0.0.0.0:{port} must not stay bound: {status:?}");
+        assert!(
+            status.errors.iter().any(|e| e.contains("127.0.0.1") && e.contains("another program")),
+            "{status:?}"
+        );
     }
 
     #[test]
