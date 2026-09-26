@@ -1,0 +1,6 @@
+target/
+apps/menubar/.build/
+apps/menubar/.swiftpm/
+build/
+*.xcuserstate
+.DS_Store

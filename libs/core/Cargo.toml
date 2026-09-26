@@ -1,0 +1,34 @@
+[package]
+name = "localrouter-core"
+description = "Routes, proxy, TLS, TCP byte copy, request log and API types for LocalRouter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Adds X.509 name constraints (only .localhost) to a newly created CA.
+# Off until manual test M7 decides open point U1.
+name-constraints = []
+
+[dependencies]
+bytes.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+x509-parser = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
