@@ -60,7 +60,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseDown || event?.modifierFlags.contains(.control) == true {
             popover.performClose(nil)
-            showMenu()
+            DispatchQueue.main.async { self.showMenu() }
         } else if popover.isShown {
             popover.performClose(nil)
         } else if Date().timeIntervalSince(closedAt) > 0.3 {
