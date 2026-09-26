@@ -174,7 +174,7 @@ final class AppModel {
 
     /// Runs the bundled CLI (trust, untrust). macOS shows its own password dialog.
     func runTool(_ args: [String]) async -> (Bool, String) {
-        let tool = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/localrouter")
+        let tool = Bundle.main.bundleURL.appendingPathComponent(BundleLayout.cli)
         return await Task.detached {
             let p = Process()
             p.executableURL = tool
@@ -278,7 +278,7 @@ final class AppModel {
         try? fm.removeItem(at: Paths.dataDir)
         try? fm.removeItem(at: Paths.logsDir)
         let link = CLIInstaller().link
-        if let dest = try? fm.destinationOfSymbolicLink(atPath: link.path), dest.hasSuffix("/Contents/MacOS/localrouter") {
+        if let dest = try? fm.destinationOfSymbolicLink(atPath: link.path), dest.hasSuffix("/" + BundleLayout.cli) {
             try? fm.removeItem(at: link)
         }
         busy = false

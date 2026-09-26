@@ -4,3 +4,5 @@ apps/menubar/.swiftpm/
 build/
 *.xcuserstate
 .DS_Store
+.env.notarize
+dist/

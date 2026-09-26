@@ -88,7 +88,7 @@ final class CLIInstallerTests: XCTestCase {
     }
 
     private func fakeTool(in app: String) throws -> URL {
-        let tool = dir.appendingPathComponent("\(app)/Contents/MacOS/localrouter")
+        let tool = dir.appendingPathComponent("\(app)/\(BundleLayout.cli)")
         try FileManager.default.createDirectory(at: tool.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "#!/bin/sh\n".write(to: tool, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
@@ -126,5 +126,14 @@ final class CLIInstallerTests: XCTestCase {
     func testMissingToolIsReported() {
         let installer = CLIInstaller(tool: dir.appendingPathComponent("nope"), binDir: dir, pathVariable: "")
         XCTAssertThrowsError(try installer.install())
+    }
+}
+
+final class BundleLayoutTests: XCTestCase {
+    /// macOS file systems ignore case by default: two programs whose paths differ
+    /// only in case are one file, and copying the second overwrites the first.
+    func testBundledProgramsNeverCollideWhenCaseIsIgnored() {
+        let paths = [BundleLayout.appExecutable, BundleLayout.daemon, BundleLayout.cli]
+        XCTAssertEqual(Set(paths.map { $0.lowercased() }).count, paths.count, "\(paths)")
     }
 }

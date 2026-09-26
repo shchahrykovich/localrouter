@@ -4,6 +4,16 @@
 
 import Foundation
 
+/// Where the bundled programs live inside LocalRouter.app.
+public enum BundleLayout {
+    /// The Swift app's own executable (CFBundleExecutable).
+    public static let appExecutable = "Contents/MacOS/LocalRouter"
+    /// The daemon, started by the LaunchAgent (BundleProgram).
+    public static let daemon = "Contents/MacOS/localrouterd"
+    /// The command-line tool and MCP server.
+    public static let cli = "Contents/Helpers/localrouter"
+}
+
 public struct CLIInstaller {
     public enum Outcome: Equatable {
         /// The link was made or already pointed at this app.
@@ -32,7 +42,7 @@ public struct CLIInstaller {
     public init(bundle: Bundle = .main,
                 binDir: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
                 pathVariable: String = ProcessInfo.processInfo.environment["PATH"] ?? "") {
-        self.tool = bundle.bundleURL.appendingPathComponent("Contents/MacOS/localrouter")
+        self.tool = bundle.bundleURL.appendingPathComponent(BundleLayout.cli)
         self.binDir = binDir
         self.pathVariable = pathVariable
     }
@@ -57,7 +67,7 @@ public struct CLIInstaller {
         }
         if let existing = try? fm.destinationOfSymbolicLink(atPath: link.path) {
             if existing == tool.path { return .installed(link: link, onPath: onPath) }
-            guard existing.hasSuffix("/Contents/MacOS/localrouter") else { throw Failure.occupied(link) }
+            guard existing.hasSuffix("/" + BundleLayout.cli) else { throw Failure.occupied(link) }
             try? fm.removeItem(at: link)
         } else if fm.fileExists(atPath: link.path) {
             throw Failure.occupied(link)
