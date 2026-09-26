@@ -212,34 +212,41 @@ final class AppModel {
 
     // MARK: Command line tool
 
-    func installCLI() {
+    /// The result also goes to the window footer; the right-click menu shows
+    /// it in an alert.
+    @discardableResult
+    func installCLI() -> Feedback {
+        let feedback: Feedback
         do {
             let installer = CLIInstaller()
             switch try installer.install() {
             case let .installed(link, onPath):
-                message = onPath
-                    ? "Installed \(link.path)."
-                    : "Installed \(link.path). Add it to PATH: \(installer.pathHint)"
+                feedback = .cliInstalled(link: link, onPath: onPath, pathHint: installer.pathHint)
             }
         } catch {
-            message = error.localizedDescription
+            feedback = .failed("Could not install the command line tool", error.localizedDescription)
         }
+        message = feedback.summary
+        return feedback
     }
 
     /// Link the note into ~/.claude and import it at the top of CLAUDE.md.
-    func installClaude() {
+    @discardableResult
+    func installClaude() -> Feedback {
+        let feedback: Feedback
         do {
-            switch try ClaudeInstaller().install() {
+            let installer = ClaudeInstaller()
+            switch try installer.install() {
             case let .installed(link, importAdded):
-                message = importAdded
-                    ? "Installed \(link.path). CLAUDE.md now reads it; new Claude Code sessions see it."
-                    : "Installed \(link.path). CLAUDE.md already reads it."
+                feedback = .claudeInstalled(link: link, claudeMD: installer.claudeMD, importAdded: importAdded)
             case let .noClaude(dir):
-                message = "\(dir.path) does not exist. Is Claude Code installed?"
+                feedback = .noClaude(dir)
             }
         } catch {
-            message = error.localizedDescription
+            feedback = .failed("Could not install the Claude Code instructions", error.localizedDescription)
         }
+        message = feedback.summary
+        return feedback
     }
 
     var mcpCommand: String {

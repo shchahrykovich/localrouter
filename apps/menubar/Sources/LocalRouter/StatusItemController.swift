@@ -31,15 +31,26 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.target = self
             button.action = #selector(clicked)
             button.sendAction(on: [.leftMouseDown, .rightMouseDown])
+            button.toolTip = isDev ? "LocalRouter (development build)" : "LocalRouter"
         }
         trackIcon()
     }
+
+    private let isDev = BuildKind.current == .dev
 
     /// Redraw the icon whenever `model.running` changes.
     private func trackIcon() {
         withObservationTracking {
             let name = model.running ? "point.3.filled.connected.trianglepath.dotted" : "point.3.connected.trianglepath.dotted"
-            item.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "LocalRouter")
+            var image = NSImage(systemSymbolName: name, accessibilityDescription: "LocalRouter")
+            // A local build is orange, so it is not mistaken for the release.
+            // The status bar ignores contentTintColor, so the color is drawn
+            // into the image, which then must not be a template.
+            if isDev {
+                image = image?.withSymbolConfiguration(.init(paletteColors: [.systemOrange]))
+                image?.isTemplate = false
+            }
+            item.button?.image = image
         } onChange: {
             Task { @MainActor [weak self] in self?.trackIcon() }
         }
@@ -103,32 +114,52 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func openAgentHelp() { model.open(model.agentHelpURL) }
-
-    /// The copy commands say "Copied …" in the footer, so show it.
-    @objc private func copyAgentPrompt() {
-        model.copy(model.agentPrompt)
-        openWindow()
-    }
-
-    @objc private func copyMCPCommand() {
-        model.copy(model.mcpCommand)
-        openWindow()
-    }
+    @objc private func copyAgentPrompt() { model.copy(model.agentPrompt) }
+    @objc private func copyMCPCommand() { model.copy(model.mcpCommand) }
 
     @objc private func installCLI() {
-        model.installCLI()
-        openWindow()
+        let feedback = model.installCLI()
+        DispatchQueue.main.async { self.alert(feedback) }
     }
 
     @objc private func installClaude() {
-        model.installClaude()
-        openWindow()
+        let feedback = model.installClaude()
+        DispatchQueue.main.async { self.alert(feedback) }
     }
 
-    /// The window footer shows "Checking…" and then the result.
+    /// Says the result in an alert; an available update can be installed
+    /// from it.
     @objc private func checkForUpdates() {
-        openWindow()
-        Task { await model.checkForUpdates(manual: true) }
+        Task { @MainActor in
+            await model.checkForUpdates(manual: true)
+            switch model.update {
+            case let .available(release):
+                let answer = alert(.updateAvailable(release, current: model.version), buttons: ["Install", "Later"])
+                guard answer == .alertFirstButtonReturn else { return }
+                await model.installUpdate(release)
+                // On success the app quits; it is still here only on failure.
+                if case let .failed(why) = model.update { alert(.failed("Could not install the update", why)) }
+            case .upToDate:
+                alert(.upToDate(version: model.version))
+            case let .failed(why):
+                alert(.failed("Could not check for updates", why))
+            case .idle, .checking, .downloading:
+                break
+            }
+        }
+    }
+
+    /// An alert in front of other apps; LocalRouter has no window to attach
+    /// it to.
+    @discardableResult
+    private func alert(_ feedback: Feedback, buttons: [String] = []) -> NSApplication.ModalResponse {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = feedback.title
+        alert.informativeText = feedback.detail
+        alert.alertStyle = feedback.failed ? .warning : .informational
+        for title in buttons { alert.addButton(withTitle: title) }
+        return alert.runModal()
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
