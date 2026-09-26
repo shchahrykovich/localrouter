@@ -252,3 +252,20 @@ the password. The daemon never sets it.
 | **`LSUIElement`** | An `Info.plist` key. When it is `YES`, the app has no Dock icon and no main menu. |
 | **login keychain** | The user's own keychain on macOS. It stores the trust setting for the local CA. |
 | **ADR** | Architecture Decision Record: a document in `docs/adr/` that records a decision and why. |
+
+## Distribution and updates
+
+Decided in [ADR 02](adr/02-distribution-and-self-update-2026-09-26/README.md).
+
+| Term | Meaning |
+|---|---|
+| **release** | A GitHub release `vX.Y.Z` on `shchahrykovich/localrouter` with one asset, `localrouter-X.Y.Z.dmg`. |
+| **version** | `[workspace.package] version` in `Cargo.toml`: the one source for every program and for `Info.plist`. |
+| **Developer ID** | The Apple certificate ("Developer ID Application") that signs release builds. Its team id is the **Team ID** the updater compares. |
+| **notarization** | Apple's automated check of a signed image (`xcrun notarytool`). The result is **stapled** to the DMG so it works offline. |
+| **Gatekeeper**, `spctl` | The macOS component that decides whether signed code or an image may open. The updater asks it about each downloaded DMG. |
+| **ad-hoc signed** | Signed without a certificate (`codesign --sign -`). Local builds from `scripts/install.sh` are ad-hoc and never update themselves. |
+| **self-update** | The app checks `releases/latest`, downloads the DMG after a click, checks it, and a detached **install script** swaps the bundle and restarts the daemon. |
+| **bundle layout** | Where programs live in `LocalRouter.app`: `Contents/MacOS/LocalRouter` (app), `Contents/MacOS/localrouterd` (daemon), `Contents/Helpers/localrouter` (CLI). The CLI is not in `MacOS` because `localrouter` and `LocalRouter` are one name on a case-insensitive disk. |
+| **Install Command Line Tool** | The menu command that links `~/.local/bin/localrouter` to the bundled CLI. |
+| **`.env.notarize`** | Notary credentials at the repository root, ignored by git, read by the release scripts and never exported. |

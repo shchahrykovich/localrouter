@@ -1,0 +1,22 @@
+...@_palette
+direction: right
+title: "Flow U: an installed app updates itself" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "Timer: 30 s after\nstart, then 6 h" { class: term }
+b: "GET releases/latest" { class: step }
+gh: "GitHub API" { class: ext }
+c: "Download DMG\nto temp folder" { class: step }
+tmp: "\$TMPDIR/LocalRouter-\nX.Y.Z.dmg" { class: write }
+d: "spctl check,\nwrite script" { class: step }
+e: "App quits; script\nswaps the bundle" { class: upd }
+app: "/Applications/\nLocalRouter.app" { class: write }
+f: "kickstart daemon,\nopen new app" { class: ins }
+log: "~/Library/Logs/\nLocalRouter/update-*.log" { class: write }
+
+a -> b -> c -> d -> e -> f
+gh -> b: "tag, DMG URL"
+c -> tmp
+e -> app: "rename swap"
+e -> log
+
+legend: "Only the user clicks Update: the check is automatic, the install is not. Routes and the CA are untouched." { near: bottom-center; shape: text; style.font-size: 13 }

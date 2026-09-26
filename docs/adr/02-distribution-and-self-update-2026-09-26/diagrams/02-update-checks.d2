@@ -1,0 +1,23 @@
+...@_palette
+direction: down
+title: "Checks before the app replaces itself" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "releases/latest\nis newer" { class: term }
+b: "DMG URL is https\non a GitHub host?" { class: dec }
+c: "App is in\n/Applications?" { class: dec }
+d: "Gatekeeper accepts\nthe DMG (spctl)?" { class: dec }
+e: "Same Team ID as\nthe running app?" { class: dec }
+f: "Swap the app,\nrestart daemon" { class: ins }
+x: "Stop, show why\nkeep the old app" { class: del }
+
+a -> b
+b -> c: "yes"
+c -> d: "yes"
+d -> e: "yes"
+e -> f: "yes"
+b -> x: "no"
+c -> x: "no"
+d -> x: "no"
+e -> x: "no"
+
+legend: "The first three checks run in the app. The Team ID check runs in the install script, on the mounted image,\nafter codesign --verify --deep --strict." { near: bottom-center; shape: text; style.font-size: 13 }

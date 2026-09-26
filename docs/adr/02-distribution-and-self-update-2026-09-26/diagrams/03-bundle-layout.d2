@@ -1,0 +1,15 @@
+...@_palette
+direction: right
+title: "Where the CLI lives in the bundle" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+o_a: "Planned:\nContents/MacOS/localrouter" { class: del }
+o_b: "Same file as\nContents/MacOS/LocalRouter\n(case-insensitive disk)" { class: del }
+o_c: "Swift app overwritten\nby the CLI" { class: del }
+o_a -> o_b -> o_c
+
+n_a: "Built:\nContents/Helpers/localrouter" { class: ins }
+n_b: "Three distinct\nprograms" { class: ins }
+n_c: "Test + build check\nguard it" { class: ins }
+n_a -> n_b -> n_c
+
+legend: "Found by the first real build: `ls Contents/MacOS` showed two files instead of three." { near: bottom-center; shape: text; style.font-size: 13 }

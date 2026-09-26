@@ -1,0 +1,17 @@
+...@_palette
+direction: right
+title: "From source to a GitHub release" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "scripts/publish.sh" { class: term }
+c: "Bump version, build\nRust + Swift, assemble" { class: step }
+e: "Developer ID sign,\nDMG, notarize, staple" { class: step }
+f: "gh release create\nvX.Y.Z + upload" { class: ins }
+env: ".env.notarize\n(not in git)" { class: tbl }
+apple: "Apple notary\nservice" { class: ext }
+gh: "GitHub Releases\nshchahrykovich/localrouter" { class: write }
+
+a -> c -> e -> f -> gh
+env -> e: "credentials"
+e -> apple: "submit, wait"
+
+legend: "Same approach as VibeViewer. publish.sh refuses to upload an image that is not notarized,\nbecause the updater would refuse it." { near: bottom-center; shape: text; style.font-size: 13 }

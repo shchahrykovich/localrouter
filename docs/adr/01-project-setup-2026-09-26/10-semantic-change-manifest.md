@@ -3,10 +3,11 @@
 ## 1. Manifest status
 
 ```text
-Manifest status: PLANNED
+Manifest status: IMPLEMENTED_WITH_DRIFT
 ```
 
-This describes intended behaviour only. The repository has no code yet.
+Sections 2 to 14 are the plan as accepted and are not edited. What was built is
+in the **Actual Change Manifest** at the end of this file.
 
 ## 2. Semantic change summary
 
@@ -545,3 +546,96 @@ Not undone automatically
   - A CA reset cannot be undone: certificates signed by the old root, and the
     old trust, are gone.
 ```
+
+---
+
+# Actual Change Manifest (2026-09-26)
+
+Re-analysed from the built system on branch `implement-adr-01`.
+
+## Actual summary
+
+```text
+Artifacts
++ 3 executables: localrouterd, localrouter, LocalRouter.app (Swift package)
++ 1 library crate: localrouter-core
++ 1 Swift library: LocalRouterKit (API types, daemon client, updater, CLI installer)
++ 1 LaunchAgent: dev.localrouter.app.daemon (plist in Contents/Library/LaunchAgents)
++ 4 shared HTTP listeners, 2 loopback listeners per TCP route
++ 11 socket methods, 6 MCP tools, 10 CLI commands
++ 26 API example files in api/examples
++ release scripts and a self-updater (ADR 02)
+
+Persistent data, runtime effects, source of truth, reads and writes:
+as planned (sections 3 to 6), plus the update effects in ADR 02.
+
+Tests
++ 86 Rust tests (libs/core, apps/daemon, apps/cli), 13 Swift tests
+```
+
+## Plan vs Actual
+
+```text
+                                  Planned    Actual
+Executables                          3          3     ✓
+Socket API methods                  11         11     ✓
+MCP tools                            6          6     ✓
+CLI commands                        10         10     ✓
+Persistent file types                7          7     ✓
+Invariants with an automated test   19         19     ✓
+External network calls               0         +1     ⚠  (GitHub update check, ADR 02)
+Bundle layout            MacOS/localrouter  Helpers/localrouter  ⚠
+Build of the Swift app      Xcode project   Swift package + script  ⚠
+```
+
+## Architectural drift
+
+```text
+~ D1. Swift package and scripts/build-app.sh instead of an Xcode project.
+      status: ACCEPTED (user decision, 2026-09-26; ADR 02, change 3)
+
+~ D2. The CLI is Contents/Helpers/localrouter, not Contents/MacOS/localrouter.
+      reason: on a case-insensitive disk it overwrote Contents/MacOS/LocalRouter.
+      status: ACCEPTED (ADR 02, change 3; BundleLayoutTests)
+
++ D3. Self-update from GitHub Releases, release and notarization scripts.
+      status: ACCEPTED as ADR 02 (a new decision, not part of this ADR)
+
++ D4. The shared listeners check themselves after binding: a connection to
+      127.0.0.1 and ::1 must reach LocalRouter's own socket.
+      reason: SO_REUSEADDR (needed for fast restarts) let 0.0.0.0:80 bind next to
+      another program's 127.0.0.1:80, which then got every request while
+      status said "bound". Found while writing this manifest; measured with a
+      Python test; fixed with a failing test first
+      (listen::tests::loopback_port_held_by_another_program_is_reported).
+      status: ACCEPTED (fixed)
+
++ D5. The MCP tool register_route also accepts `port` as a shorthand for
+      target http://127.0.0.1:<port> (or tcp:// for TCP routes).
+      status: ACCEPTED (agents make fewer target mistakes)
+
++ D6. CLI routes are persistent by default; `--session` and `--owner-pid`
+      opt out. The API default stays persistent = false.
+      status: ACCEPTED (a person typing `localrouter add` expects it to stay)
+
++ D7. Debug builds of the daemon read LOCALROUTER_TEST_API_VERSION, so T7 can
+      play a daemon with another major version. Release builds ignore it.
+      status: ACCEPTED (test hook)
+
++ D8. set_config refuses http_port == https_port and log_size 0.
+      status: ACCEPTED
+
+- D9. Name constraints on the CA exist behind the cargo feature
+      `name-constraints`, off by default: U1 is still open (M7 not run).
+      status: ACCEPTED (as planned)
+```
+
+## Actual risks added
+
+- **Fork inheritance.** On macOS a socket is marked close-on-exec only after it
+  is created. A child the daemon starts at that moment (`/usr/bin/security`
+  for the trust check) can hold a new TCP route's port for its life (about
+  50 ms). Found as a flaky test (`tcp_listen` tests); the test now tolerates
+  it, the product does not need to.
+- **A root program that binds 127.0.0.1:80 after LocalRouter** still takes the
+  loopback traffic. D4 checks only at start.

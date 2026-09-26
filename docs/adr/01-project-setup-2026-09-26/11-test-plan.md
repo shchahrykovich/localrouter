@@ -1,5 +1,11 @@
 # 11. Test plan
 
+> **As built (2026-09-26).** The automated tests below exist and pass; see
+> "Results" at the end. Two changes from the plan: the Swift test runs with
+> `swift test --package-path apps/menubar` (no Xcode project, drift D1), and
+> the CLI tests live in `apps/cli/tests/` next to a shared helper
+> `apps/cli/tests/common/mod.rs` that builds and starts a real daemon.
+
 ## What the repository can run today
 
 Nothing. The repository has only `README.md` and this ADR. There is no test
@@ -281,3 +287,37 @@ No deploy exists; this runs on each release build. It makes no network calls.
 | I17. `listen_port` unique, not HTTP ports, not the target port | T1 | |
 | I18. Removing a TCP route closes its connections | T12, E1 | |
 | I19. Fields valid only for their protocol | T1 | |
+
+## Results (2026-09-26)
+
+Commands: `cargo test --workspace` and `swift test --package-path apps/menubar`.
+
+| ID | File | Tests | Result |
+|---|---|---|---|
+| T1 | `libs/core/src/routes.rs` | 17 | pass |
+| T2 | `libs/core/src/tls.rs` | 8 | pass |
+| T3 | `apps/daemon/src/store.rs` | 4 | pass |
+| T4 | `apps/daemon/src/listen.rs` | 5 (incl. the D4 regression test) | pass |
+| T5 | `libs/core/tests/proxy.rs`, `libs/core/src/proxy.rs` | 8 + 3 | pass |
+| T6 | `apps/daemon/tests/api.rs` | 14 | pass |
+| T7 | `apps/cli/tests/mcp.rs` | 4 | pass |
+| T8 | `libs/core/src/logs.rs` | 5 | pass |
+| T9 | `libs/core/tests/api_examples.rs`, `apps/menubar/Tests/.../ApiContractTests.swift` | 1 + 1 | pass |
+| T10, T11 | `apps/cli/tests/cli.rs` | 9 | pass |
+| T12 | `libs/core/tests/tcp.rs`, `apps/daemon/src/tcp_listen.rs` | 3 + 2 | pass |
+| E1 | `apps/cli/tests/e2e.rs` | 1 (12 steps) | pass |
+| pidwatch | `apps/daemon/src/pidwatch.rs` | 2 | pass |
+
+Manual tests:
+
+| ID | Result |
+|---|---|
+| M5 | partly done: the bundled daemon with 5 routes used **5.0 MB** after 5 s idle (target under 20 MB). App memory not measured yet. |
+| M1 to M4, M6 to M8 | not run yet. They change this Mac (ports 80 and 443, the login keychain, a login item) and need the app installed from a release. |
+
+Findings while testing:
+
+1. A flaky run of the TCP listener test came from sockets inherited by a child
+   that another test forked at the same moment (manifest, "Actual risks added").
+2. Writing the as-built manifest found drift D4 (a shadowed loopback port),
+   now covered by a test.

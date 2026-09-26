@@ -1,6 +1,9 @@
 # ADR 01. Project setup: stack and architecture of LocalRouter
 
-**Status:** Proposed (2026-09-26). Nothing is built yet.
+**Status:** Accepted, built on 2026-09-26 with drift (see the manifest's Actual
+Change Manifest). Automated tests pass (86 Rust, 13 Swift); manual tests M1 to
+M4 and M6 to M8 are open. Distribution and self-update:
+[ADR 02](../02-distribution-and-self-update-2026-09-26/README.md).
 
 ## Summary
 

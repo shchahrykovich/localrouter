@@ -1,5 +1,10 @@
 # 12. Tasks
 
+> **Status on 2026-09-26:** tasks 1 to 11 are done on branch
+> `implement-adr-01`; task 12 is done for E1 and partly for the manual tests
+> (see the test plan results); task 13 is this documentation update. Task 11
+> used decisions U2 and U4 recorded in ADR 02.
+
 | # | Task | Depends on |
 |---|---|---|
 | 1 | Workspace scaffold | none |

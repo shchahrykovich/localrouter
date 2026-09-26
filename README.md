@@ -12,8 +12,30 @@ Context Protocol) is the protocol that coding agents such as Claude Code use to
 call tools. So when an agent starts a new project, it can register a domain for
 that project by itself, and write a note that says what the domain is for.
 
-> **Status: design stage.** Nothing is built yet. This README describes the
-> planned behavior. Commands and tool names can still change.
+> **Status: version 0.1, Apple Silicon Macs, macOS 14 or later.** The design is
+> in [ADR 01](docs/adr/01-project-setup-2026-09-26/README.md); distribution and
+> self-update are in [ADR 02](docs/adr/02-distribution-and-self-update-2026-09-26/README.md).
+
+## Install
+
+1. Download `localrouter-<version>.dmg` from
+   [Releases](https://github.com/shchahrykovich/localrouter/releases/latest).
+2. Open it and drag **LocalRouter** to **Applications**. Start it from there.
+3. The icon appears next to the clock. macOS may say that a background item was
+   added: that is the daemon. If the menu says "not running", allow LocalRouter
+   in **System Settings → General → Login Items**.
+4. **Settings → Trust…** trusts the local CA (macOS asks for your password), so
+   `https://` names show no warning.
+5. **⋯ → Install Command Line Tool…** links `~/.local/bin/localrouter`. Then give
+   your coding agent access:
+
+   ```
+   claude mcp add localrouter -- ~/.local/bin/localrouter mcp
+   ```
+
+The app updates itself from GitHub Releases: it checks 30 seconds after start
+and then every 6 hours, and **⋯ → Check for Updates…** checks at once. The app
+must be in `/Applications` or `~/Applications` to replace itself.
 
 ## What it does
 
@@ -73,7 +95,7 @@ Checked on macOS 27.0 with `socket.getaddrinfo`:
 - `projectx.local` fails after **5.0 seconds** (the mDNS timeout). A browser
   would wait this long on each new connection.
 
-The TLD is a setting. The default is `.localhost`.
+Version 1 supports `.localhost` only.
 
 ## Routes
 
@@ -101,10 +123,10 @@ app and the logs. Details: [ADR 01, change 7](docs/adr/01-project-setup-2026-09-
 
 ## MCP interface
 
-Add LocalRouter to Claude Code:
+Add LocalRouter to Claude Code (after **Install Command Line Tool**):
 
 ```
-claude mcp add localrouter -- localrouter mcp
+claude mcp add localrouter -- ~/.local/bin/localrouter mcp
 ```
 
 `localrouter mcp` is a small stdio process. It forwards each tool call to the
@@ -112,12 +134,12 @@ running daemon over a Unix socket.
 
 | Tool | What it does |
 |---|---|
-| `register_route` | Create or update a route (`host`, `target`, `note`, `owner_pid`, `persistent`). Returns the full URLs. |
+| `register_route` | Create or update a route (`host`, `protocol`, `target` or `port`, `listen_port`, `https_only`, `note`, `owner_pid`, `persistent`). Returns the URLs. |
 | `unregister_route` | Remove a route by host. |
 | `list_routes` | All routes, with an "upstream is up / down" flag for each. |
 | `find_free_port` | Return a free local port. Useful when many worktrees run at once. |
-| `get_logs` | Last N requests, optionally for one host: time, method, path, status, duration. |
-| `status` | Daemon version, TLD, HTTPS state, CA trust state. |
+| `get_logs` | Last N requests and TCP connections, optionally for one host. Paths never include the query string. |
+| `status` | Daemon version, ports bound or failed, CA state and trust. |
 
 Example of what an agent does when it starts a worktree:
 
@@ -129,18 +151,18 @@ Example of what an agent does when it starts a worktree:
 ## Command line
 
 ```
-localrouter add shop 5173 --note "main dev server"
-localrouter add feat-login.shop 5174
+localrouter add shop 5173 --note "main dev server"   # saved; --session to not save
+localrouter add feat-login.shop 5174 --owner-pid 4242  # removed when process 4242 exits
 localrouter add api.shop --target https://127.0.0.1:8443 --https-only
 localrouter add db.shop 55001 --tcp --listen 15432
 localrouter list
 localrouter rm feat-login.shop
-localrouter logs shop
+localrouter logs shop -f   # follow
 localrouter status
 localrouter trust          # install the local CA into the keychain
 localrouter untrust        # remove it again
 localrouter ca-path        # print the path of ca.pem
-localrouter ca reset       # make a new CA (breaks the old trust)
+localrouter ca reset --yes # make a new CA (breaks the old trust)
 localrouter mcp            # MCP server over stdio
 ```
 
@@ -171,7 +193,7 @@ Checked on macOS 27.0 without root:
 | `0.0.0.0` | ✓ allowed |
 | `127.0.0.1` | ✗ permission denied |
 
-So the daemon binds `0.0.0.0:80` and `0.0.0.0:443` and **closes every
+So the daemon binds `0.0.0.0` and `[::]` on ports 80 and 443 and **closes every
 connection that does not come from a loopback address**. Your dev servers are not
 visible on the local network. The setting "Allow LAN access" turns this check
 off. If the macOS firewall is on, it can ask once whether to accept incoming
@@ -183,7 +205,7 @@ Goal: very small memory use, native look, no web view.
 
 | Part | Language | Main libraries |
 |---|---|---|
-| `localrouterd`: proxy, TLS, route table, logs, optional DNS | Rust | `tokio`, `hyper`, `rustls`, `rcgen`, `hickory-server` (only for `.test`) |
+| `localrouterd`: proxy, TLS, route table, logs | Rust | `tokio`, `hyper`, `rustls`, `rcgen` |
 | `localrouter`: CLI and MCP stdio server | Rust | `clap`, `rmcp` (official Rust MCP SDK) |
 | Menu bar app | Swift | SwiftUI `MenuBarExtra`, `SMAppService` to start the daemon at login |
 | Link between app and daemon | JSON over a Unix socket | |
@@ -197,19 +219,24 @@ Why this split:
 3. SwiftUI gives a real native menu bar item with little code and little memory.
    A Tauri or Electron UI would start a web view process for a few menus.
 
-## Planned layout
+## Layout
 
 ```
 localrouter/
 ├── apps/
-│   ├── daemon/      Rust, localrouterd: listeners, proxy, Unix socket API
+│   ├── daemon/      Rust, localrouterd: listeners, Unix socket API, route store
 │   ├── cli/         Rust, localrouter: commands and the MCP stdio server
-│   └── menubar/     Swift, LocalRouter.app (Xcode project)
+│   └── menubar/     Swift package, LocalRouter.app: menu bar UI and updater
 ├── libs/
-│   └── core/        Rust library: route table, proxy, TLS, CA, logs
+│   └── core/        Rust library: routes, proxy, TCP copy, TLS, CA, logs, API types
 ├── api/examples/    JSON examples shared by the Rust and Swift tests
-└── docs/
+├── scripts/         build, release, notarize, publish, install
+└── docs/            ADRs and the dictionary
 ```
+
+Inside `LocalRouter.app`: `Contents/MacOS/LocalRouter` (Swift),
+`Contents/MacOS/localrouterd` (daemon, started by the LaunchAgent in
+`Contents/Library/LaunchAgents`) and `Contents/Helpers/localrouter` (CLI).
 
 The full tree is in [ADR 01, components](docs/adr/01-project-setup-2026-09-26/08-components.md#project-structure-on-disk).
 
@@ -219,8 +246,37 @@ The full tree is in [ADR 01, components](docs/adr/01-project-setup-2026-09-26/08
 |---|---|
 | Domains | List of routes with status dot (upstream up / down), note, "open in browser", "copy URL", remove. |
 | Logs | Live request log, filter by host. |
-| Settings | TLD, HTTPS on/off, trust CA, subdomain fallback, allow LAN access, start at login. |
+| Settings | Subdomain fallback, allow LAN access, trust or untrust the CA, daemon status, install the command line tool, updates, uninstall. |
 | Help | How to add the MCP server to Claude Code, how to trust the CA in Firefox and Node. |
+
+## Development
+
+```
+cargo test --workspace
+swift test --package-path apps/menubar
+scripts/install.sh --user --launch
+```
+
+`scripts/install.sh` builds an ad-hoc signed app into `~/Applications`. Such a
+build does not update itself (the updater only accepts notarized images from
+GitHub). Tests never touch `~/Library`: they set `LOCALROUTER_HOME` to a temp
+folder and use random ports.
+
+## Releasing
+
+Same approach as VibeViewer. One-time setup: a "Developer ID Application"
+certificate in the keychain, and notary credentials in `.env.notarize` (see
+`scripts/notarize.env.example`; the file is ignored by git).
+
+```
+scripts/publish.sh            # bump patch, build, sign, notarize, release on GitHub
+scripts/publish.sh --minor    # or --major, --set X.Y.Z, --no-bump
+```
+
+`publish.sh` runs `release.sh --notarize` (version bump in `Cargo.toml`,
+Developer ID signing with the hardened runtime, DMG, `notarytool`, staple),
+then `gh release create vX.Y.Z` on `shchahrykovich/localrouter` and checks the
+uploaded size. Commit the version bump afterwards.
 
 ## License
 

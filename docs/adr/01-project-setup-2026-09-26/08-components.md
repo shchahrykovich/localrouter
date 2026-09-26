@@ -1,5 +1,11 @@
 # 8. Components and project structure on disk
 
+> **As built (2026-09-26):** two differences from the trees below, both in the
+> Swift app: `apps/menubar` is a Swift package (`Package.swift`,
+> `Sources/LocalRouter`, `Sources/LocalRouterKit`, `Tests/LocalRouterKitTests`)
+> instead of an Xcode project, and the CLI is `Contents/Helpers/localrouter` in
+> the bundle. See the manifest's drift D1 and D2.
+
 This file answers two questions: what runs on the Mac, and which file holds
 which part. The repository is empty today, so every component here is **new**.
 
