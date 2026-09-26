@@ -25,6 +25,6 @@
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>NSHumanReadableCopyright</key>
-    <string>LocalRouter</string>
+    <string>Copyright © 2026 LocalRouter. MIT License.</string>
 </dict>
 </plist>

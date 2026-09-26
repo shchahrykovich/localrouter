@@ -280,4 +280,4 @@ uploaded size. Commit the version bump afterwards.
 
 ## License
 
-Not chosen yet.
+MIT. See [LICENSE](LICENSE).
