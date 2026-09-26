@@ -118,7 +118,9 @@ list, so a new tool needs that test changed on purpose.
 ## Bundle and release
 
 - `LocalRouter.app/Contents/MacOS/LocalRouter` (Swift), `Contents/MacOS/localrouterd`
-  (LaunchAgent `BundleProgram`), `Contents/Helpers/localrouter` (CLI). The CLI
+  (LaunchAgent `BundleProgram`), `Contents/Helpers/localrouter` (CLI),
+  `Contents/Resources/LocalRouter.md` (the Claude Code note, from
+  `scripts/LocalRouter.md`; keep it in step with `help.md`). The CLI
   is not in `MacOS/` because `localrouter` and `LocalRouter` are one file on a
   case-insensitive disk; paths live in `BundleLayout` (Swift) and
   `scripts/build-app.sh`.

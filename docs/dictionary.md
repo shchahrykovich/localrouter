@@ -269,4 +269,5 @@ Decided in [ADR 02](adr/02-distribution-and-self-update-2026-09-26/README.md).
 | **self-update** | The app checks `releases/latest`, downloads the DMG after a click, checks it, and a detached **install script** swaps the bundle and restarts the daemon. |
 | **bundle layout** | Where programs live in `LocalRouter.app`: `Contents/MacOS/LocalRouter` (app), `Contents/MacOS/localrouterd` (daemon), `Contents/Helpers/localrouter` (CLI). The CLI is not in `MacOS` because `localrouter` and `LocalRouter` are one name on a case-insensitive disk. |
 | **Install Command Line Tool** | The menu command that links `~/.local/bin/localrouter` to the bundled CLI. |
+| **Install Claude Code Instructions** | The menu command that links `~/.claude/LocalRouter.md` to the note in the bundle (`Contents/Resources/LocalRouter.md`) and adds `@LocalRouter.md` as the first line of `~/.claude/CLAUDE.md`. It replaces only a link into a LocalRouter bundle, and does nothing without `~/.claude`. |
 | **`.env.notarize`** | Notary credentials at the repository root, ignored by git, read by the release scripts and never exported. |

@@ -12,6 +12,8 @@ public enum BundleLayout {
     public static let daemon = "Contents/MacOS/localrouterd"
     /// The command-line tool and MCP server.
     public static let cli = "Contents/Helpers/localrouter"
+    /// The note for Claude Code, linked into ~/.claude.
+    public static let claudeNote = "Contents/Resources/LocalRouter.md"
 }
 
 public struct CLIInstaller {

@@ -33,6 +33,11 @@ that project by itself, and write a note that says what the domain is for.
    claude mcp add localrouter -- ~/.local/bin/localrouter mcp
    ```
 
+6. **⋯ → Install Claude Code Instructions…** links `~/.claude/LocalRouter.md`
+   to a note in the app and adds `@LocalRouter.md` at the top of
+   `~/.claude/CLAUDE.md`. Every new Claude Code session then knows that
+   LocalRouter is here and how to use it.
+
 The app updates itself from GitHub Releases: it checks 30 seconds after start
 and then every 6 hours, and **⋯ → Check for Updates…** checks at once. The app
 must be in `/Applications` or `~/Applications` to replace itself.

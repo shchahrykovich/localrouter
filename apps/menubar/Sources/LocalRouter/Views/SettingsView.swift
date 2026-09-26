@@ -60,6 +60,9 @@ struct SettingsView: View {
             Section("Command line and agents") {
                 Button("Install Command Line Tool…") { model.installCLI() }
                 Text("Links ~/.local/bin/localrouter to this app.").font(.caption).foregroundStyle(.secondary)
+                Button("Install Claude Code Instructions…") { model.installClaude() }
+                Text("Links ~/.claude/LocalRouter.md to this app and adds @LocalRouter.md at the top of ~/.claude/CLAUDE.md.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Updates") {
                 LabeledContent("This version", value: model.version)

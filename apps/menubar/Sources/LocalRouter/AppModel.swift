@@ -229,6 +229,22 @@ final class AppModel {
         }
     }
 
+    /// Link the note into ~/.claude and import it at the top of CLAUDE.md.
+    func installClaude() {
+        do {
+            switch try ClaudeInstaller().install() {
+            case let .installed(link, importAdded):
+                message = importAdded
+                    ? "Installed \(link.path). CLAUDE.md now reads it; new Claude Code sessions see it."
+                    : "Installed \(link.path). CLAUDE.md already reads it."
+            case let .noClaude(dir):
+                message = "\(dir.path) does not exist. Is Claude Code installed?"
+            }
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
     var mcpCommand: String {
         let link = CLIInstaller().link
         let installed = (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil
@@ -293,6 +309,7 @@ final class AppModel {
         if let dest = try? fm.destinationOfSymbolicLink(atPath: link.path), dest.hasSuffix("/" + BundleLayout.cli) {
             try? fm.removeItem(at: link)
         }
+        ClaudeInstaller().uninstall()
         busy = false
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
         message = "LocalRouter is uninstalled. Move LocalRouter.app to the Trash."

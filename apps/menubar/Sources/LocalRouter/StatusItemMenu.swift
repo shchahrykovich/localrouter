@@ -35,6 +35,7 @@ final class StatusItemMenu: NSObject {
         menu.addItem(item("Copy MCP Command", #selector(copyMCPCommand)))
         menu.addItem(.separator())
         menu.addItem(item("Install Command Line Tool…", #selector(installCLI)))
+        menu.addItem(item("Install Claude Code Instructions…", #selector(installClaude)))
         menu.addItem(item("Check for Updates…", #selector(checkForUpdates)))
         menu.addItem(.separator())
         menu.addItem(item("Quit LocalRouter", #selector(quit)))
@@ -68,6 +69,11 @@ final class StatusItemMenu: NSObject {
 
     @objc private func installCLI() {
         model.installCLI()
+        openWindow()
+    }
+
+    @objc private func installClaude() {
+        model.installClaude()
         openWindow()
     }
 

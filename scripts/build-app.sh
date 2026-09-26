@@ -72,6 +72,8 @@ if [[ ! -f "$icon_cache" || "$ROOT/scripts/make-icon.swift" -nt "$icon_cache" ]]
     rm -rf "$tmp"
 fi
 cp "$icon_cache" "$APP/Contents/Resources/AppIcon.icns"
+# The note that Install Claude Code Instructions… links into ~/.claude.
+cp "$ROOT/scripts/LocalRouter.md" "$APP/Contents/Resources/LocalRouter.md"
 
 lr_say "Signing ($([[ "$identity" == "-" ]] && echo ad-hoc || echo "Developer ID"))"
 if [[ "$identity" == "-" ]]; then

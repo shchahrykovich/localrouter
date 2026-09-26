@@ -77,6 +77,7 @@ struct MainView: View {
             Spacer()
             Menu {
                 Button("Install Command Line Tool…") { model.installCLI() }
+                Button("Install Claude Code Instructions…") { model.installClaude() }
                 Button("Check for Updates…") { Task { await model.checkForUpdates(manual: true) } }
                 Divider()
                 Button("Quit LocalRouter") { NSApp.terminate(nil) }
