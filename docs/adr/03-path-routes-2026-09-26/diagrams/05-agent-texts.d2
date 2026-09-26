@@ -1,0 +1,16 @@
+...@_palette
+direction: right
+title: "What Claude Code reads about LocalRouter" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+agent: "Claude Code" { class: ext }
+note: "~/.claude/LocalRouter.md\nlink to the note in the bundle\nread every session" { class: upd }
+help: "router.localhost\nhelp.md, filled by help.rs\nread before the first route" { class: upd }
+mcp: "MCP server text\ninstructions and\ntool descriptions" { class: upd }
+proj: "Project CLAUDE.md\nsection Local URLs\nwritten by the agent" { class: skip }
+
+agent -> note: "1. always"
+agent -> mcp: "2. when it has the tools"
+agent -> help: "3. curl, once per project"
+agent -> proj: "4. per project"
+
+legend: "Blue = text this ADR changes. Grey = text the agent writes itself, from the example in help.md Step 7.\nThe note is a link into LocalRouter.app, so an app update changes it without a new install." { near: bottom-center; shape: text; style.font-size: 13 }

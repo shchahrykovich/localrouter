@@ -1,0 +1,22 @@
+...@_palette
+direction: right
+title: "System view: what this ADR changes" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+browser: "Browser, curl" { class: ext }
+agent: "Claude Code" { class: ext }
+mcp: "localrouter mcp\npath, strip_path args" { class: upd }
+cli: "localrouter CLI\n--path, --strip-path" { class: upd }
+app: "LocalRouter.app\nrows keyed by host + path" { class: upd }
+d: "localrouterd\npath lookup, route key" { class: upd }
+store: "routes.json\nversion 1 or 2" { class: write }
+dev: "Dev servers\n:5173 default, :3001 /blog" { class: ext }
+
+agent -> mcp: "MCP, stdio"
+mcp -> d: "socket API 1.1"
+cli -> d: "socket API 1.1"
+app -> d: "socket API 1.1"
+browser -> d: "HTTP :80, HTTPS :443"
+d -> dev: "HTTP, WebSocket\npath kept or stripped"
+d -> store: "atomic replace"
+
+legend: "Blue = grows in this ADR. Nothing is new as a program: no new process, port, file or MCP tool.\nTCP routes, the local CA and the keychain do not change and are not drawn." { near: bottom-center; shape: text; style.font-size: 13 }

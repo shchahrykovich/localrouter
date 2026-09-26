@@ -1,0 +1,20 @@
+...@_palette
+direction: right
+title: "Two apps on one name ask for the same /_next/ files" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+bad: "Blog app without basePath" {
+  p: "Page /blog\nfrom the blog app" { class: step }
+  s: "HTML asks for\n/_next/static/a.js" { class: step }
+  w: "Default route shop\nanswers it" { class: del }
+  r: "404: the blog page\nhas no scripts or styles" { class: del }
+  p -> s -> w -> r
+}
+good: "Blog app with basePath /blog" {
+  p: "Page /blog\nfrom the blog app" { class: step }
+  s: "HTML asks for\n/blog/_next/static/a.js" { class: ins }
+  w: "Route shop /blog\nanswers it" { class: ins }
+  r: "The page loads,\nhot reload works" { class: ins }
+  p -> s -> w -> r
+}
+
+legend: "Red = the failure LocalRouter cannot see: every request gets an answer, only the wrong app answers it.\nThe fix is in the app, not in the router. The help page and the Claude Code note tell the agent to set it." { near: bottom-center; shape: text; style.font-size: 13 }

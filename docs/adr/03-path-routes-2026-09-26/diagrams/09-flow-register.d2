@@ -1,0 +1,25 @@
+...@_palette
+direction: right
+title: "Flow B (changed): register and remove a path route" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "register_route\nhost shop, path /blog" { class: term }
+v: "Validate path;\nhost has no\nTCP route?" { class: dec }
+k: "Insert or replace\nkey shop + /blog" { class: upd }
+p: "persistent?" { class: dec }
+w: "Replace routes.json\nversion 2 if any\nsaved path" { class: upd }
+o: "Reply with URL\nshop.localhost/blog" { class: ins }
+x: "Refuse with\ninvalid_route" { class: del }
+table: "route table" { class: write }
+file: "routes.json" { class: write }
+
+a -> v
+v -> k: "ok"
+v -> x: "no"
+k -> table
+k -> p
+p -> w: "yes"
+p -> o: "no"
+w -> file
+w -> o
+
+legend: "Blue = changed. unregister_route takes the same key: host plus optional path. Without a path it removes only the route without a path.\nOne write lock covers the table change and the file write; a failed write puts the old route back, as today." { near: bottom-center; shape: text; style.font-size: 13 }

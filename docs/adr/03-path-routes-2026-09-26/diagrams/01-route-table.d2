@@ -1,0 +1,22 @@
+...@_palette
+direction: right
+title: "One name, three dev servers, chosen by path" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+b: "Browser\nhttps://shop.localhost" { class: term }
+d: "localrouterd\none route key =\nhost + path" { class: upd }
+r1: "shop /blog\nblog app" { class: ins }
+r2: "shop /admin\nadmin app" { class: ins }
+r0: "shop (no path)\ndefault route" { class: step }
+s1: "127.0.0.1:3001" { class: ext }
+s2: "127.0.0.1:5174" { class: ext }
+s0: "127.0.0.1:5173" { class: ext }
+
+b -> d
+d -> r1: "/blog, /blog/..."
+d -> r2: "/admin, /admin/..."
+d -> r0: "every other path"
+r1 -> s1
+r2 -> s2
+r0 -> s0
+
+legend: "Green = new: routes with a path. Blue = the daemon grows a path lookup. The route without a path already exists today and becomes the default for its name." { near: bottom-center; shape: text; style.font-size: 13 }

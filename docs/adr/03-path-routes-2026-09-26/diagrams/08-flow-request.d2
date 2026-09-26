@@ -1,0 +1,18 @@
+...@_palette
+direction: right
+title: "Flow A (changed): a request reaches one of several dev servers" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "GET https://\nshop.localhost/blog/x" { class: term }
+c: "Check peer,\ncert if the name\nhas any route" { class: upd }
+e: "Find route by\nhost key, then\nlongest path" { class: upd }
+f: "Keep or strip the\npath, add\nX-Forwarded-*" { class: upd }
+g: "Dev server\n127.0.0.1:3001" { class: ext }
+routes: "route table\nin memory" { class: tbl }
+ring: "request log\nwith route key" { class: write }
+
+a -> c -> e -> f -> g
+routes -> c: "read"
+routes -> e: "read"
+f -> ring: "one entry"
+
+legend: "Blue = changed step. Before: the host key alone chose the route, and the path was always sent unchanged.\nNothing in this flow writes to disk. A target that does not answer gives 502; the daemon never tries the default route instead." { near: bottom-center; shape: text; style.font-size: 13 }

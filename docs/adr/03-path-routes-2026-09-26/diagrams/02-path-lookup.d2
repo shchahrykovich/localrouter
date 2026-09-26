@@ -1,0 +1,17 @@
+...@_palette
+direction: right
+title: "Which route answers feat-x.shop.localhost/blog/post-1" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "Host key feat-x.shop\npath /blog/post-1" { class: term }
+c: "Does this host key have\na route whose path matches?" { class: dec }
+f: "Forward to the matching\nroute with the longest path" { class: upd }
+d: "Drop the left label\nkey = shop" { class: step }
+g: "404 page that\nlists the routes" { class: del }
+
+a -> c
+c -> f: "yes"
+c -> d: "no, labels left\nand fallback on"
+d -> c
+c -> g: "no, nothing left\nor fallback off"
+
+legend: "Blue = new step. /blog matches /blog and /blog/post-1, never /blogger.\nA route without a path matches every path.\nA nearer host key always wins over a parent, whatever the path length." { near: bottom-center; shape: text; style.font-size: 13 }

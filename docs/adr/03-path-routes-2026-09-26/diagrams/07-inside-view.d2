@@ -1,0 +1,23 @@
+...@_palette
+title: "Inside view: which files change" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+files: "" {
+  grid-columns: 4
+  grid-gap: 24
+  style.fill: transparent
+  style.stroke: transparent
+  a: "libs/core\nroutes.rs\nroute key, path rules,\npath lookup" { class: upd }
+  b: "libs/core\nproxy.rs\npass path, strip_path,\nX-Forwarded-Prefix" { class: upd }
+  c: "libs/core\napi.rs, logs.rs\nAPI 1.1, path in HostParams,\nroute in log entry" { class: upd }
+  d: "libs/core\nhelp.md, help.rs\npath section, routes\nlisted with path" { class: upd }
+  e: "apps/daemon\ndaemon.rs\nroute keys instead of\nhosts, cert check" { class: upd }
+  f: "apps/daemon\nstore.rs\nroutes.json\nversion 1 or 2" { class: upd }
+  g: "apps/cli\nmain.rs\n--path, --strip-path,\nlist and rm" { class: upd }
+  h: "apps/cli\nmcp.rs\ntool args,\ninstructions" { class: upd }
+  i: "apps/menubar\nApi.swift\npath, strip_path,\nid = host + path" { class: upd }
+  j: "apps/menubar\nAppModel, views\nremove by key,\nrow shows path" { class: upd }
+  k: "api/examples\nnew path examples\nfor both contract tests" { class: ins }
+  l: "scripts/LocalRouter.md\ndocs/dictionary.md\nCLAUDE.md" { class: upd }
+}
+
+legend: "Blue = the file grows. Green = new files. No new crate, module, dependency or MCP tool." { near: bottom-center; shape: text; style.font-size: 13 }

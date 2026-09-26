@@ -1,0 +1,18 @@
+...@_palette
+direction: down
+title: "What the dev server sees, with and without strip_path" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+keep: "Default: the path is kept" {
+  a: "Browser asks\n/blog/post-1?x=1" { class: term }
+  b: "Route shop /blog\nstrip_path: false" { class: step }
+  c: "Dev server gets\n/blog/post-1?x=1" { class: ins }
+  a -> b -> c
+}
+strip: "strip_path: true" {
+  a: "Browser asks\n/blog/post-1?x=1" { class: term }
+  b: "Route shop /blog\nremove /blog" { class: upd }
+  c: "Dev server gets\n/post-1?x=1\nX-Forwarded-Prefix: /blog" { class: ins }
+  a -> b -> c
+}
+
+legend: "Use the default when the app is built to live under /blog (Next.js basePath, Vite base).\nUse strip_path for an app that answers at / and does not know its prefix, for example an API.\nIn both cases the Host header is unchanged and no response header or body is rewritten." { near: bottom-center; shape: text; style.font-size: 13 }
