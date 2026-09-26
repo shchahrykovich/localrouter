@@ -22,6 +22,7 @@ Artifacts
 ~ 1 socket API: 1.0 -> 1.1, 2 request types and 2 reply types grow
 ~ 2 MCP tools: register_route, unregister_route (arguments)
 ~ 4 CLI commands: add, rm, list, logs
++ 1 CLI command: which (read-only)
 ~ 1 persistent file format: routes.json version 2 (version 1 still written when possible)
 ~ 3 agent texts: Claude Code note, MCP instructions, help page
 
@@ -30,6 +31,7 @@ Persistent data
 
 Runtime effects
 ~ route lookup reads the request path
++ the CLI runs the same lookup on a copy of the table (which)
 ~ certificate decision reads "does the name have any route"
 ~ request path rewritten for strip_path routes
 + X-Forwarded-Prefix set for strip_path routes
@@ -56,7 +58,8 @@ Source of truth: unchanged.
 Domain objects
 ~ Route           + path: Option<String>, + strip_path: bool
 + RouteKey        (host, path), "" = default route
-~ RouteTable      keyed by RouteKey; + serves(name, fallback)
+~ RouteTable      keyed by RouteKey; + serves(name, fallback);
+                  + explain(name, path, fallback), which lookup is built on
 ~ RouteError      + BadPath, + PathOnlyForHttp, + StripPathNeedsPath,
                   + HostHasTcpRoute, + HostHasPathRoutes
 ~ LogEntry::Http  + route: Option<String>
@@ -65,7 +68,8 @@ Interfaces
 ~ socket API 1.1  Route, HostParams, RouteView, LogEntry grow; 11 methods, unchanged
 ~ MCP             register_route + path, strip_path; unregister_route + path;
                   unknown arguments refused; still 6 tools
-~ CLI             add --path --strip-path; rm --path; list and logs columns
+~ CLI             add --path --strip-path; rm --path; list and logs columns;
+                  + which <url>
 
 Persistent artifacts
 ~ routes.json     version 2 when a saved route has path or strip_path
@@ -116,6 +120,18 @@ write_idempotent:       as idempotent as the request itself (unchanged)
 producer_deterministic: yes (a pure string operation)
 destructive:            no
 
+READ   explain one URL (localrouter which)
+type:                   socket calls list_routes and get_config, then an
+                        in-memory lookup in the CLI process
+trigger:                a person or an agent runs localrouter which <url>
+cardinality:            one of each call per command
+write_idempotent:       n/a (read)
+producer_deterministic: yes for a given table; the table can change between
+                        the command and a later request
+side effect:            list_routes makes one 200 ms connection attempt per
+                        route target (upstream_up), as it does today
+destructive:            no
+
 WRITE  routes.json
 type:                   file REPLACE (temp file, fsync, rename)
 target:                 <data folder>/routes.json
@@ -148,6 +164,7 @@ WRITE
 - route table (insert, replace, remove by key)
 - routes.json (version 1 or 2)
 - request log (with route)
+- the CLI's own copy of the table, for which (memory only, discarded)
 
 EXTERNAL READ / WRITE
 - none
@@ -174,6 +191,7 @@ HIDDEN DEPENDENCIES THAT EXIST ONLY AFTER THIS CHANGE
 ~ CLI     localrouter rm    + --path
 ~ CLI     localrouter list  path shown
 ~ CLI     localrouter logs  route column
++ CLI     localrouter which <url>  read-only, no new socket method
 ~ HTTP    to dev servers    + X-Forwarded-Prefix (strip_path routes only)
 ~ HTTP    404 page          lists path routes with their paths
   Socket methods, MCP tool names, events: unchanged
@@ -249,8 +267,17 @@ I31. The MCP server still exposes exactly six tools (I13). register_route
      enforced by: T10.
 
 I32. The help page, the Claude Code note and the MCP instructions all
-     mention path routes, and the help page names the base path settings.
-     enforced by: T11 (presence only; wording by M3).
+     mention path routes and all three tell the agent to ask the user before
+     it changes basePath, base or assetPrefix, because these change the
+     production build. The help page names both patterns (base path; page
+     prefixes plus a stripped file prefix) and localrouter which.
+     enforced by: T11 (presence of the words; wording by M3).
+
+I33. localrouter which and the proxy choose the same route for the same
+     table, name and path: lookup is explain without the record, in one
+     function in libs/core.
+     enforced by: T3 (explain and lookup agree on every lookup case), E1b
+     (which names the same route as the log entry of a real request).
 ```
 
 ## 10. Data impact
@@ -344,8 +371,8 @@ B6. Dev servers behind a path route
     dependency:   framework asset and hot reload paths
     failure mode: SILENT in LocalRouter. Without a base path, a page renders
                   without scripts or styles; every request gets an answer, from
-                  the default route. Visible only through the route field of
-                  the request log. See U6.
+                  the default route. Visible through the route field of the
+                  request log and through localrouter which. See U6.
 ```
 
 **Confirmed unaffected.** TCP routes and their listeners, the local CA and
@@ -365,8 +392,8 @@ reason:  the pattern is a guess from framework names; a list of framework
          paths goes stale; a false warning on a site that serves /_next/ from
          its main app on purpose is noise. Undecided: where the warning shows,
          and whether it is worth a list of framework paths in the daemon.
-blocks:  nothing. The texts (I32) and the route field in the log cover the
-         case without it.
+blocks:  nothing. The texts (I32), the route field in the log and
+         localrouter which (I33) cover the case without it.
 outcome: a decision after M2 shows how hard the failure is to diagnose with
          the log alone
 
@@ -395,6 +422,16 @@ outcome: decide when a user asks for it
   project's path routes for that name. This is intended (I24), but a user who
   expected `feat-x.shop.localhost/blog` to reach the main blog app sees the
   branch's main app instead. The 404 and log `route` field make it visible.
+- **One app, several routes.** An app with several page prefixes and a file
+  prefix (pattern B in [03](03-forwarding.md)) needs one route per prefix. If
+  a user removes one of them by hand, the app is half routed: some pages come
+  from the default route. Routes registered with the same `owner_pid` go
+  together; persistent and session routes do not. `localrouter list` shows the
+  routes of one host together, so the gap is visible.
+- **An agent changes the production build.** Making a path route work can
+  need `basePath`, `base` or `assetPrefix` in the app, and those change the
+  production build. The texts tell the agent to ask first (I32), but a text
+  is a request to the agent, not a check. M3 tests it with a real session.
 - **Replace across agents, now per key.** ADR 01 names the silent replace when
   two agents register the same host. With paths, two agents that register
   `shop/blog` for two worktrees replace each other the same way. The help page

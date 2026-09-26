@@ -1,12 +1,13 @@
 # 6. Data flow
 
-These are the flows this ADR **will** change once built. No flow is new or
-removed; two change.
+These are the flows this ADR **will** change or add once built. Two flows
+change, one is new, none is removed.
 
 | Flow | new/changed/removed | Trigger | Writes | Reads |
 |---|---|---|---|---|
 | A. A request reaches a dev server | changed: the route was chosen by host key alone and the path was always sent unchanged | a browser or `curl` request on port 80 or 443 | request log entry, now with `route` | route table (by host key, then path) |
 | B. Register and remove a route | changed: the table and `routes.json` were keyed by host | `register_route`, `unregister_route`, an owner process exits | route table; `routes.json` for persistent routes, version 1 or 2 | route table (key, TCP conflict) |
+| C. Explain one URL | new | `localrouter which <url>` | nothing | route table through `list_routes`, `fallback` through `get_config` |
 
 ## Flow A: a request reaches one of several dev servers
 
@@ -53,3 +54,22 @@ write fails, the table change is undone before the lock is released, so memory
 and disk stay equal (invariant I4 of ADR 01). This ADR does not change that
 mechanism; it changes what the undo puts back: the old route of the same key,
 not of the same host.
+
+## Flow C: `localrouter which` explains one URL
+
+![Flow C (new): localrouter which explains one URL](diagrams/10-flow-which.svg)
+
+Decided in [02](02-path-lookup.md) ("Explaining a lookup") and
+[04](04-clients-and-agent-texts.md) (the command).
+
+1. The CLI calls `list_routes` and `get_config` on the socket. Both methods
+   exist today and only read.
+2. It builds a `RouteTable` in its own memory from the routes in the reply.
+3. It runs `RouteTable::explain` with the name, the path and `fallback`. This
+   is the same code the daemon's proxy runs through `lookup` (invariant I33).
+4. It prints the route and each step.
+
+Nothing is written, in the daemon or on disk. `list_routes` also checks each
+target with a 200 ms connection attempt (`upstream_up`); `which` does not need
+it but pays for it. That costs at most 200 ms per call, which is fine for a
+command a person types.

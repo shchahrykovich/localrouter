@@ -56,7 +56,9 @@ Two more changes in the same file:
    name. register_route with path "/blog" sends /blog and /blog/... to that
    server; the route without a path gets every other path. The app must serve
    under that path (Next.js basePath, Vite base), or set strip_path for a server
-   that answers at /."
+   that answers at /. basePath, base and assetPrefix also change the
+   production build: ask the user before you change them. `localrouter which
+   <url>` shows which route answers a URL."
 2. **Unknown arguments are refused.** `RegisterArgs`, `HostArgs`, `LogsArgs` and
    the others get `#[serde(deny_unknown_fields)]`. Today an unknown argument is
    dropped without a word. This matters for the next change of this kind, not for
@@ -71,6 +73,30 @@ Two more changes in the same file:
 | `localrouter rm` | `--path /blog`. Without it, only the default route is removed; if the host still has path routes, the output says so: `removed shop; shop/blog and shop/admin remain`. |
 | `localrouter list` | the name column shows `shop.localhost/blog`; `strip_path` shows as `strip` in the kind column. Rows of one host are printed together, default route first. |
 | `localrouter logs` | a `route` column with the route key. |
+| `localrouter which <url>` | **new**, read-only. Prints the route that answers the URL and each step of the lookup. See below. |
+
+**`localrouter which`.** It takes a URL (`https://feat-x.shop.localhost/blog/1`)
+or a name and path (`feat-x.shop.localhost/blog/1`). It calls `list_routes` and
+`get_config` (for `fallback`), builds a `RouteTable` from the reply, and runs
+`RouteTable::explain` from `libs/core`, the same code the daemon's proxy runs.
+No socket method is added, and the CLI still does not depend on the daemon
+crate. Example output:
+
+```
+$ localrouter which https://feat-x.shop.localhost/products
+feat-x.shop.localhost/products -> shop -> http://127.0.0.1:5173
+  1. feat-x.shop: routes /blog; none matches /products
+  2. fallback is on: try shop
+  3. shop: default route matches
+```
+
+For a name with no route it prints the 404 case and the parent keys it tried.
+It explains HTTP routes only; for a TCP route it says that TCP routes are
+chosen by listen port and prints `localrouter list`'s line for that port. The
+answer can be out of date by the time a request is made (another client may
+change the table in between); it describes the table at the moment of the call.
+There is no MCP tool for it, because the tool list stays six (I13); agents run
+the command line.
 
 **A path typed into the host.** `localrouter add shop/blog 3001` today fails with
 the label hint `Try "shop-blog"` (`normalize_host`, `libs/core/src/routes.rs`).
@@ -115,7 +141,7 @@ Nothing changes in `~/.claude/CLAUDE.md` and nothing changes in the installer
 the new text without a new install.
 
 **Text 1, `scripts/LocalRouter.md`.** It is short on purpose and points to the
-help page. It changes in four lines:
+help page. It changes in five lines:
 
 1. The opening list gains a third item: "HTTP by path:
    `https://shop.localhost/blog` goes to one dev server and the rest of
@@ -127,6 +153,12 @@ help page. It changes in four lines:
    or use `--strip-path` for a server that answers at `/`."
 4. "Adding a host that exists replaces it" becomes "Adding a host and path that
    exist replaces that route."
+5. "Names in short" gains: "Ask the user before you change `basePath`, `base`
+   or `assetPrefix`: they change the production build too."
+
+This rule is in the note, not only in the help page, because the note is the
+one text every session reads, and the help page may be read after the agent
+has already opened `next.config`.
 
 **Text 2, MCP.** As in the MCP section above.
 
@@ -135,11 +167,11 @@ help page. It changes in four lines:
 | Section | Change |
 |---|---|
 | Opening list | the same third item as in text 1 |
-| Step 1, tool table | `localrouter add <host> <port> [--path /blog]` and `localrouter rm <host> [--path /blog]` |
+| Step 1, tool table | `localrouter add <host> <port> [--path /blog]` and `localrouter rm <host> [--path /blog]`; a new row for `localrouter which <url>` (command line only, no MCP tool) |
 | Step 2, choose names | new rule: "One site that is split by path in production (`/blog`, `/admin`): one host, one route per path. Separate sites: separate hosts." |
-| New "Step 4b: several apps on one name" | the commands and MCP arguments; the match rule (`/blog` matches `/blog` and `/blog/...`, not `/blogger`); the default route; the framework table from [03](03-forwarding.md); when to use `strip_path`; the sentence "if register_route has no path argument, your MCP server is older than LocalRouter: restart the session or use the command line" |
+| New "Step 4b: several apps on one name" | the commands and MCP arguments; the match rule (`/blog` matches `/blog` and `/blog/...`, not `/blogger`); the default route; the two patterns from [03](03-forwarding.md): A, one base path (`basePath`, `base`), and B, several page prefixes plus a stripped file prefix (`assetPrefix`), with the three commands of B; "first look at how production splits the site, and use the same pattern"; "ask the user before you change `basePath`, `base` or `assetPrefix`: they change the production build too"; when to use `strip_path`; one route per path, with the same `owner_pid` for all routes of one dev server; the sentence "if register_route has no path argument, your MCP server is older than LocalRouter: restart the session or use the command line" |
 | Step 5, branch or worktree | new item: "A branch of one path app: register `<branch>.<project>` with the same path and `owner_pid`. Other paths of the branch name use the project's routes." |
-| Step 6, check | "A page under `/blog` without styles or scripts: the app asks for `/_next/...` or `/@vite/...` outside its path. `localrouter logs <host>` shows which route answered each request. Set the base path in the app." |
+| Step 6, check | "A page under `/blog` without styles or scripts: the app asks for `/_next/...` or `/@vite/...` outside its path. `localrouter which <url>` shows which route answers a URL, and `localrouter logs <host>` shows which route answered each request. Set the base path in the app." And: "An image that works at `/` but not under a base path: a plain `<img src="/logo.png">` does not get the base path. Use `next/image`, or write the base path into the URL." |
 | Step 7, write it down | the example section gains `- https://shop.localhost/blog - blog app, port 3001 (Next.js basePath /blog)` and the matching `localrouter add` command |
 
 `help.rs` renders `{{ROUTES}}`; path routes are listed as
@@ -156,15 +188,16 @@ is keyed by host plus path. Never remove or look up a route by host alone."
 step with the CLI and the MCP tools, and the note in step with `help.md`. That
 rule is a sentence, not a check. Task 8 adds a small test that reads
 `help.md`, `scripts/LocalRouter.md` and the MCP instructions and fails if any of
-them lacks `--path` or `path`, or if `help.md` lacks `basePath`. It proves the
-feature is mentioned, not that the wording is right; the wording is checked by
-manual test M3 with a real agent.
+them lacks `--path` or `path`, or lacks the words "production build" (the
+ask-first rule), or if `help.md` lacks `basePath`, `assetPrefix` or
+`localrouter which`. It proves the feature is mentioned, not that the wording
+is right; the wording is checked by manual test M3 with a real agent.
 
 ## Tests
 
 - `T8`: both contract tests over the new examples; Swift route id is the key;
   the Swift remove call sends `path`.
-- `T9`: CLI flags, `rm` output, the label hint.
+- `T9`: CLI flags, `rm` output, the label hint, `localrouter which`.
 - `T10`: MCP schema lists `path` and `strip_path`; unknown arguments refused;
   still six tools.
 - `T11`: help page lists path routes; the texts mention path routes.

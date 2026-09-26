@@ -89,6 +89,20 @@ default route and not to the parent host. A 502 that names the blog app is the
 fast answer to "why is `/blog` broken"; the main app's 404 page in its place
 would look almost right and hide the cause.
 
+### Explaining a lookup without a request
+
+A user or an agent often needs to know which route answers a URL, and why,
+before they make the request. For example: "why does
+`feat-x.shop.localhost/blog` show the branch's main app?" (the nearer host key
+has a default route).
+
+The table gets `explain(name, path, fallback) -> Explanation`. It runs the same
+steps as `lookup` and records each one: the host key tried, the routes on it,
+which path matched or that none did, and whether it fell back. `lookup` is
+`explain` without the record, so the two can never disagree (invariant I33).
+The CLI command `localrouter which` prints it (see
+[04](04-clients-and-agent-texts.md)).
+
 ### Data structure
 
 The map becomes `BTreeMap<RouteKey, Route>` with
@@ -103,3 +117,6 @@ range is enough; no trie is planned.
   and the regression test that a table without paths answers as before.
 - `T4`: a host with only a path route gets a certificate; 502 from a path route
   does not fall back.
+- `T3`, `E1b`: `explain` gives the same route as `lookup` for every case above,
+  and `localrouter which` names the same route as the log entry of a real
+  request.

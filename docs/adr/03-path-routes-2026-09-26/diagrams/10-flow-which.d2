@@ -1,0 +1,17 @@
+...@_palette
+direction: right
+title: "Flow C (new): localrouter which explains one URL" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "localrouter which\nhttps://feat-x.shop\n.localhost/products" { class: term }
+l: "list_routes and\nget_config over\nthe socket" { class: ins }
+b: "Build a route table\nin the CLI" { class: ins }
+e: "explain: the same\nlookup code as\nthe proxy" { class: ins }
+o: "Print the route\nand each step" { class: ins }
+routes: "route table\nin the daemon" { class: tbl }
+config: "config.json\nfallback" { class: tbl }
+
+a -> l -> b -> e -> o
+routes -> l: "read"
+config -> l: "read"
+
+legend: "Green = new. Nothing is written anywhere, and no request reaches a dev server.\nThe answer describes the table at the moment of the call." { near: bottom-center; shape: text; style.font-size: 13 }

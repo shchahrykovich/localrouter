@@ -12,7 +12,7 @@ no MCP tool. It grows existing modules. The two views below show which ones.
 | Component | State | Note |
 |---|---|---|
 | `localrouterd` | grows | route key, path lookup, `serves` for TLS, strip and `X-Forwarded-Prefix`, `route` in the log |
-| `localrouter` CLI | grows | `--path`, `--strip-path`, `rm` by key, `list` and `logs` columns |
+| `localrouter` CLI | grows | `--path`, `--strip-path`, `rm` by key, `list` and `logs` columns, new `which` command |
 | `localrouter mcp` | grows | `path` and `strip_path` arguments, instructions, unknown arguments refused |
 | `LocalRouter.app` | grows | route id is the key, remove by key, path shown |
 | `routes.json` | grows | version 2 when a saved route has a path |
@@ -31,14 +31,14 @@ the four types listed in [04](04-clients-and-agent-texts.md).
 
 | File | State | What changes |
 |---|---|---|
-| `libs/core/src/routes.rs` | grows | `Route.path`, `Route.strip_path`, `RouteKey`, path rules, `lookup(name, path, fallback)`, `serves(name, fallback)`, `owned_by` returns keys, new `RouteError` variants |
+| `libs/core/src/routes.rs` | grows | `Route.path`, `Route.strip_path`, `RouteKey`, path rules, `lookup(name, path, fallback)`, `explain(name, path, fallback)`, `serves(name, fallback)`, `owned_by` returns keys, new `RouteError` variants |
 | `libs/core/src/proxy.rs` | grows | `RouteSource::lookup` takes the path; strip and `X-Forwarded-Prefix` in `outgoing_request`; 404 page lists path routes |
 | `libs/core/src/api.rs` | grows | `API_VERSION = "1.1"`, `HostParams.path` |
 | `libs/core/src/logs.rs` | grows | `LogEntry::Http.route` |
 | `libs/core/src/help.md`, `help.rs` | grows | Step 4b and the other changes in [04](04-clients-and-agent-texts.md); routes listed with path |
 | `apps/daemon/src/daemon.rs` | grows | every `get`, `insert`, `remove` by key; `unregister_route` by key; `remove_owned_by` by key; certificate hook uses `serves`; `view` builds URLs with the path |
 | `apps/daemon/src/store.rs` | grows | `ROUTES_VERSION` 1 or 2 on write; both read |
-| `apps/cli/src/main.rs` | grows | flags and output |
+| `apps/cli/src/main.rs` | grows | flags and output; `which` builds a `RouteTable` from `list_routes` and runs `explain` |
 | `apps/cli/src/mcp.rs` | grows | arguments, descriptions, instructions, `deny_unknown_fields` |
 | `apps/menubar/Sources/LocalRouterKit/Api.swift` | grows | `path`, `strip_path`, `id`, `HostParams.path`, log `route` |
 | `apps/menubar/Sources/LocalRouterKit/DaemonClient.swift` | grows | `unregister(_ route:)` |
@@ -53,5 +53,7 @@ the four types listed in [04](04-clients-and-agent-texts.md).
   daemon's hook body changes.
 - `tcp.rs`, `tcp_listen.rs`, `listen.rs`, `pidwatch.rs`, the updater and the
   installers do not change.
-- The inside view does not show calls between files. The only new call is from
-  the daemon's certificate hook to `RouteTable::serves`.
+- The inside view does not show calls between files. The new calls are from
+  the daemon's certificate hook to `RouteTable::serves`, and from the CLI's
+  `which` command to `RouteTable::explain`. The CLI already depends on
+  `libs/core`, so no dependency is added.

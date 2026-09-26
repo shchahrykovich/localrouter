@@ -24,6 +24,39 @@ of such a site works too:
 The exact paths of each framework's hot reload socket under a base path are to
 be checked in manual test M1, not assumed.
 
+A base path moves only what the framework builds. A plain
+`<img src="/logo.png">` in a Next.js app with `basePath: "/blog"` still asks for
+`/logo.png`, which the default route answers. `next/link` and `next/image` add
+the base path; a plain tag does not. This is the same in production, so the fix
+is in the app. The help page says it in Step 6.
+
+### The two patterns a production proxy uses
+
+Production sites split by path in one of two ways. Both can be expressed with
+path routes; they differ in what the app knows about its path.
+
+| | Pattern A: base path | Pattern B: own pages, stripped file prefix |
+|---|---|---|
+| The app's pages | all under one prefix: `/blog/...` | at their normal paths: `/products/...`, `/brands/...` |
+| The app's files | under the same prefix: `/blog/_next/...` | under a prefix only for files: `/shop-assets/_next/...` |
+| App setting (Next.js) | `basePath: "/blog"` | `assetPrefix: "/shop-assets"` |
+| What the proxy strips | nothing | the file prefix |
+| LocalRouter routes | `shop/blog` | `shop/products`, `shop/brands`, and `shop/shop-assets` with `strip_path` |
+
+Pattern B is why `strip_path` exists for web apps and not only for APIs: the
+page HTML asks for `/shop-assets/_next/static/a.js`, the route strips
+`/shop-assets`, and the app's dev server answers `/_next/static/a.js`. The
+help page shows both patterns. Whether Next.js's dev server and its hot reload
+socket follow `assetPrefix` the same way the production build does is checked
+in M1, not assumed.
+
+**Both settings change the production build.** `basePath`, `base` and
+`assetPrefix` are not development settings. An agent that adds one to make a
+path route work changes what the app's production deploy serves. So the texts
+tell the agent to **ask the user first** (see
+[04](04-clients-and-agent-texts.md)), and to prefer the pattern the production
+proxy already uses.
+
 ### `strip_path: true`: the prefix is removed
 
 For a dev server that answers at `/` and does not know its prefix, for example an
@@ -49,9 +82,10 @@ The proxy does not rewrite response headers or bodies, with or without
   usually the reason to use one name.
 
 Rewriting either would make the local setup differ from production in a way no
-test in the app can see. So `strip_path` is recommended only for servers that
-answer data (APIs) or read `X-Forwarded-Prefix`. For a web app, set the base
-path in the app.
+test in the app can see. So `strip_path` is recommended for three cases only:
+servers that answer data (APIs), servers that read `X-Forwarded-Prefix`, and
+file prefixes (pattern B above), which never redirect. For the pages of a web
+app, use the base path in the app.
 
 ### The problem LocalRouter cannot fix: shared framework paths
 
@@ -70,14 +104,20 @@ could, but it is missing for some requests and not sent by every client, so a
 guess from it would work most of the time and fail without a message the rest.)
 The fix is in the app: a base path, as in the table above.
 
-LocalRouter helps in two places:
+LocalRouter helps in three places:
 
 1. **The request log names the route that answered.** HTTP log entries get a
    `route` field with the route key, for example `shop` or `shop/blog`.
    `localrouter logs shop` then shows `/_next/static/a.js 404 route shop`, which
    points at the cause.
-2. **The texts that agents read say it.** The help page and the Claude Code
-   note tell the agent to set the base path when it adds a path route (see
+2. **`localrouter which <url>` explains one URL** without a request: which
+   route answers it and why (see [02](02-path-lookup.md), "Explaining a
+   lookup"). `localrouter which https://shop.localhost/_next/static/a.js`
+   prints `shop` (default route), which is the same cause seen before the page
+   is opened.
+3. **The texts that agents read say it.** The help page and the Claude Code
+   note name the base path and file prefix settings when they describe path
+   routes, and tell the agent to ask before it changes them (see
    [04](04-clients-and-agent-texts.md)).
 
 A warning in the daemon itself (for example "a 404 from the default route for
@@ -96,4 +136,5 @@ fix.
   the query, maps `/api` to `/`; `X-Forwarded-Prefix` set and a client value
   replaced; `Host` unchanged; WebSocket upgrade under a path route.
 - `T5`: the log entry carries `route`.
-- `M1`, `M2`: real Next.js and Vite apps, with and without a base path.
+- `M1`, `M2`: real Next.js and Vite apps, with and without a base path, and a
+  Next.js app with `assetPrefix` behind a stripped file prefix (pattern B).

@@ -3,11 +3,11 @@
 | # | Task | Depends on |
 |---|---|---|
 | 1 | Route key and path rules in core | - |
-| 2 | Path lookup and `serves` | 1 |
+| 2 | Path lookup, `explain` and `serves` | 1 |
 | 3 | Proxy: path, `strip_path`, headers, log `route` | 2 |
 | 4 | Daemon: keys, exact removal, certificate hook, `routes.json` version | 2 |
 | 5 | Socket API 1.1, examples, Swift types and remove | 1, 4 |
-| 6 | CLI flags and output | 5 |
+| 6 | CLI flags, output and `which` | 5 |
 | 7 | MCP arguments, instructions, unknown arguments | 5 |
 | 8 | Agent texts and repository docs | 6, 7 |
 | 9 | End-to-end journey and manual tests | 3, 4, 6, 7, 8 |
@@ -27,14 +27,17 @@ fields; add `RouteKey { host, path }`; key the `BTreeMap` by it; change `get`,
 the second hint to `BadLabel` when the `/` is in the last label. Done when T1
 and T2 pass and every existing `routes.rs` test passes unchanged.
 
-## 2. Path lookup and `serves`
+## 2. Path lookup, `explain` and `serves`
 
 **Deps:** 1. **Tests:** T3.
 
-Replace `lookup(name, fallback)` with `lookup(name, path, fallback)` as in
-[02](02-path-lookup.md), using a range scan over one host key. Add
-`serves(name, fallback)`. Write the regression test that runs the old lookup
-cases through the new function. Done when T3 passes.
+Write `explain(name, path, fallback)` as in [02](02-path-lookup.md), using a
+range scan over one host key and recording each step. Replace
+`lookup(name, fallback)` with `lookup(name, path, fallback)`, built on
+`explain` so the two cannot disagree (I33). Add `serves(name, fallback)`. Write
+the regression test that runs the old lookup cases through the new function,
+and the test that `explain` and `lookup` agree on every case. Done when T3
+passes.
 
 ## 3. Proxy: path, `strip_path`, headers, log `route`
 
@@ -68,13 +71,16 @@ it, Domains rows show the path, Logs rows show the route key. Add
 `RouteKeyTests.swift`. Done when both contract tests and T8 pass. This task must
 not be split from task 4 in a release (B1).
 
-## 6. CLI flags and output
+## 6. CLI flags, output and `which`
 
 **Deps:** 5. **Tests:** T9.
 
 `apps/cli/src/main.rs`: `add --path --strip-path`, `rm --path` with the
 "remain" line, `list` and `logs` columns, local errors before a socket call.
-Done when T9 passes.
+New command `which <url>`: parse a URL or `name/path`, call `list_routes` and
+`get_config`, build a `RouteTable`, print `RouteTable::explain` as in
+[04](04-clients-and-agent-texts.md). Done when T9 passes, including the
+pattern B routes.
 
 ## 7. MCP arguments, instructions, unknown arguments
 
@@ -83,7 +89,8 @@ Done when T9 passes.
 `apps/cli/src/mcp.rs`: `path`, `strip_path` on `RegisterArgs` and into
 `into_route`; `path` on `HostArgs` for `unregister_route`;
 `#[serde(deny_unknown_fields)]` on every argument struct; the new tool
-descriptions and `INSTRUCTIONS` paragraph. Update
+descriptions and `INSTRUCTIONS` paragraph, including the ask-first rule and
+`localrouter which`. Update
 `exactly_six_tools_are_listed`. Done when T10 passes and the tool list is
 still six (I31).
 
@@ -92,8 +99,10 @@ still six (I31).
 **Deps:** 6, 7. **Tests:** T11.
 
 Change `libs/core/src/help.md` in the seven places listed in
-[04](04-clients-and-agent-texts.md), the `{{ROUTES}}` rendering in `help.rs`,
-`scripts/LocalRouter.md` in its four places, `docs/dictionary.md`, and the
+[04](04-clients-and-agent-texts.md), including both patterns, the ask-first
+rule, the `<img>` line and `localrouter which`; the `{{ROUTES}}` rendering in
+`help.rs`; `scripts/LocalRouter.md` in its five places, including the
+ask-first rule; `docs/dictionary.md`, and the
 project `CLAUDE.md` line. Add `libs/core/tests/agent_texts.rs`. Done when T11
 passes and a reader who knows only the note and the help page can add a path
 route (checked in task 9, M3).
@@ -135,7 +144,8 @@ edit the planned half.
 | I29 file version | 4 |
 | I30 examples cover new fields | 5 |
 | I31 MCP six tools, arguments | 7 |
-| I32 texts mention path routes | 8 |
+| I32 texts mention path routes, both patterns, ask first | 7, 8 |
+| I33 `which` agrees with the proxy | 2, 6 |
 
 Every test ID of the [test plan](08-test-plan.md) appears above: T1 and T2 in
 task 1, T3 in 2, T4 and T5 in 3, T6 and T7 in 4, T8 in 5, T9 in 6, T10 in 7,

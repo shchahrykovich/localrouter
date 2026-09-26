@@ -22,17 +22,17 @@ project `CLAUDE.md` requires. Nothing here needs a new dependency.
 |---|---|---|---|---|---|
 | T1 | unit | path rules and the route key (I20, I21) | `RouteTable::validate` | none | `cargo test` |
 | T2 | unit | protocol rules (I22) | `validate` | none | `cargo test` |
-| T3 | unit | match rule, lookup order, regression (I23, I24) | `RouteTable::lookup` | none | `cargo test` |
+| T3 | unit | match rule, lookup order, regression, explain agrees with lookup (I23, I24, I33) | `RouteTable::lookup`, `explain` | none | `cargo test` |
 | T4 | integration | forwarding, strip, headers, 502, TLS, WebSocket (I25, I26, I27) | proxy, TLS, hyper | the daemon: a fixed `RouteSource` | `cargo test` |
 | T5 | integration | log entry `route` | proxy, request log | the daemon | `cargo test` |
 | T6 | integration | register, replace, remove by key, owner watch (I20, I28) | daemon, socket, kqueue | none | `cargo test` |
 | T7 | unit | `routes.json` version 1 or 2 (I29) | `store.rs` | none | `cargo test` |
 | T8 | contract | Rust and Swift agree on the new fields (I30); Swift id and remove call | both type sets | the daemon (files, not a socket) | `cargo test`, `swift test` |
-| T9 | integration | CLI flags and output | CLI binary, daemon | none | `cargo test` |
+| T9 | integration | CLI flags and output, `which` | CLI binary, daemon | none | `cargo test` |
 | T10 | integration | MCP arguments, unknown arguments, six tools (I31) | MCP server, daemon | the agent: rmcp client | `cargo test` |
-| T11 | unit | help page and texts mention path routes (I32) | `help.rs`, text files | none | `cargo test` |
+| T11 | unit | help page and texts mention path routes, both patterns, the ask-first rule, `which` (I32) | `help.rs`, text files | none | `cargo test` |
 | E1b | end-to-end | the path journey through real binaries | daemon, CLI, MCP shim | dev servers: echo servers | `cargo test` |
-| M1 | manual | real Next.js and Vite apps under a path, hot reload | everything | none | by hand |
+| M1 | manual | real Next.js and Vite apps under a path (pattern A) and behind a stripped file prefix (pattern B), hot reload | everything | none | by hand |
 | M2 | manual | the failure without a base path, and how it looks | everything | none | by hand |
 | M3 | manual | a Claude Code session sets up path routes from the texts | agent, texts, MCP | none | by hand |
 | M4 | manual | menu bar app rows and remove | app | none | by hand |
@@ -79,6 +79,8 @@ project `CLAUDE.md` requires. Nothing here needs a new dependency.
 | `routes.rs` | T3: Scenario A and B of [02](02-path-lookup.md), fallback on and off |
 | `routes.rs` | T3 regression (grows by itself): every lookup case of the existing `lookup_exact_fallback_and_none` test, run through the new `lookup` with path `/` and with a random path, gives the same route |
 | `routes.rs` | T3: `serves`: a host with only a path route is served; a name with no route is not; fallback respected |
+| `routes.rs` | T3 (grows by itself): for every case in this section, `explain(...).route` equals `lookup(...)` (I33) |
+| `routes.rs` | T3: `explain` records each host key tried, the paths it has, the match or its absence, and the fallback step |
 
 ### Core: proxy
 
@@ -133,6 +135,8 @@ saw as JSON, so path and headers can be checked.
 | `apps/cli/tests/cli.rs` | T9: `--strip-path` without `--path` and `--path` with `--tcp` fail before any socket call (work without a daemon) |
 | `apps/cli/tests/cli.rs` | T9: `add shop/blog 3001` shows both hints (extends `invalid_name_shows_the_slug_hint`) |
 | `apps/cli/tests/cli.rs` | T9: `logs shop` shows the route column |
+| `apps/cli/tests/cli.rs` | T9: `which https://feat-x.shop.localhost/products` prints `shop` and the fallback step; `which` for a name with no route prints the 404 case; `which` on a TCP listen port prints the TCP route line |
+| `apps/cli/tests/cli.rs` | T9: pattern B: three routes to one port, `/products/x` and `/brands` kept, `/shop-assets/_next/a.js` arrives as `/_next/a.js` |
 | `apps/cli/tests/mcp.rs` | T10: `exactly_six_tools_are_listed` also expects `path`, `strip_path` on `register_route` and `path` on `unregister_route` |
 | `apps/cli/tests/mcp.rs` | T10: `register_route` with an unknown argument `pth` returns a tool error and creates no route |
 | `apps/cli/tests/mcp.rs` | T10: `register_route` with `path` then `unregister_route` with `path` round-trip |
@@ -142,7 +146,7 @@ saw as JSON, so path and headers can be checked.
 | Test file | Case |
 |---|---|
 | `libs/core/src/help.rs` `mod tests` | T11: `{{ROUTES}}` lists `https://shop.localhost/blog → http://127.0.0.1:3001` and marks strip routes (extends `routes_are_listed_with_address_target_kind_and_note`) |
-| `libs/core/tests/agent_texts.rs` (new) | T11: `help.md` contains `--path`, `basePath` and `strip`; `scripts/LocalRouter.md` contains `--path`; `apps/cli/src/mcp.rs` `INSTRUCTIONS` contains `path` (files read with `include_str!`) |
+| `libs/core/tests/agent_texts.rs` (new) | T11: `help.md` contains `--path`, `basePath`, `assetPrefix`, `strip` and `localrouter which`; `scripts/LocalRouter.md` contains `--path`; all three texts (help page, note, MCP `INSTRUCTIONS`) contain `production build` (the ask-first rule) (files read with `include_str!`) |
 
 ## 2. Automated end-to-end test: E1b
 
@@ -167,7 +171,10 @@ helpers (`echo_upstream`, real `localrouterd`, real `localrouter`, real
 8. Stop B. Check: `/blog/x` answers 502 naming B, not A.
 9. `localrouter logs shop`: entries carry the route keys `shop/blog`, `shop`,
    `shop/api`.
-10. CLI: `rm shop`. Check: `shop/blog` and `shop/api` remain; `/x` answers 404.
+10. For each request made in steps 2 to 8, `localrouter which <same url>`
+   prints the same route key as that request's log entry (I33, against the
+   real daemon's table).
+11. CLI: `rm shop`. Check: `shop/blog` and `shop/api` remain; `/x` answers 404.
 
 ## 3. Manual tests
 
@@ -182,6 +189,8 @@ Needs Node.js. No cost.
 | Edit a blog page | page updates without reload (hot reload socket under `/blog`) |
 | Open `https://shop.localhost/` and edit a page of the main app | same |
 | A Vite app with `base: "/admin/"` on 5174, `--path /admin` | page, styles and hot reload work |
+| Pattern B: a Next.js app with `assetPrefix: "/shop-assets"` and pages `/products`, `/brands` on 3002; three routes as in [01](01-route-key.md) | pages load with styles; hot reload works, or the socket path it uses is recorded |
+| A plain `<img src="/logo.png">` in the `basePath` app | image missing, as the help page says; `localrouter which https://shop.localhost/logo.png` prints `shop` |
 | Record the hot reload socket paths seen in `localrouter logs shop` | noted in this ADR for [03](03-forwarding.md) |
 
 ### M2. The failure without a base path
@@ -201,7 +210,9 @@ exist.
 | Check | Expected |
 |---|---|
 | Ask: "run the blog on shop.localhost/blog and the main app on shop.localhost" | the agent reads the note, fetches `router.localhost`, uses `path` |
-| The agent sets `basePath` in the blog app or asks before changing it | yes |
+| Before it changes `basePath` in the blog app, the agent asks and says that it changes the production build | yes; a change without asking is a failure of I32's text |
+| The agent checks the production split first (for example a proxy config in the repository) and picks pattern A or B to match | yes |
+| Ask: "why does feat-x.shop.localhost/products show the main app?" | the agent runs `localrouter which` and explains the fallback |
 | The agent writes the "Local URLs" section with the path line | yes |
 | Ask the agent to start a worktree of the blog | it registers `<branch>.shop` with path `/blog` and `owner_pid` |
 | Close the session, start a new one with an MCP server from before the update still running elsewhere | not required; B2 is documented, not tested |
@@ -248,7 +259,8 @@ Free, no data written outside the test route.
 | I29 file version | T7 | M5 |
 | I30 examples cover new fields | T8 | |
 | I31 MCP six tools, arguments | T10 | M3 |
-| I32 texts mention path routes | T11 | M3 (wording) |
+| I32 texts mention path routes, both patterns, ask first | T11 | M3 (wording, behaviour) |
+| I33 `which` agrees with the proxy | T3, E1b | M1 |
 
 ## Not in this plan without approval
 

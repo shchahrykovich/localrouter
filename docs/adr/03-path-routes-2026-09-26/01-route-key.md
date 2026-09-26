@@ -67,6 +67,27 @@ instead of hosts.
 routes as a side effect. Removing every route of a host at once is not in this
 ADR (open point U7 in the [manifest](07-semantic-change-manifest.md)).
 
+### One app with several paths: one route per path
+
+Some apps own more than one path prefix. For example, one app serves
+`/products` and `/brands`, and moves its files under `/shop-assets`. Such an
+app needs one route per prefix, all with the same target:
+
+```
+localrouter add shop 3001 --path /products
+localrouter add shop 3001 --path /brands
+localrouter add shop 3001 --path /shop-assets --strip-path
+```
+
+A route does **not** get a list of paths. A list would make the key a set, and
+then two routes could claim the same path from two lists, which the key rule
+forbids today by construction. Three commands are the cost. An agent that
+starts the app with `owner_pid` gives all three routes the same owner, so they
+also disappear together. The help page shows this pattern (see
+[03](03-forwarding.md) and [04](04-clients-and-agent-texts.md)). If users ask
+for fewer commands, a CLI shortcut that sends several `register_route` calls
+(`--path /products --path /brands`) is possible without any change to the key.
+
 ### Why a flat key and not a list of paths inside one route
 
 The other shape is one route per host that holds a list of `path → target`

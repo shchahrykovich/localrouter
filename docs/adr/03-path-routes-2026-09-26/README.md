@@ -45,9 +45,9 @@ each app must be built to live under its path (Next.js `basePath`, Vite
 `base`), and LocalRouter cannot fix two apps that both ask for `/_next/...`.
 
 The socket API becomes 1.1 with additive fields only, the MCP server keeps its
-six tools and gains `path` and `strip_path` arguments, the CLI gains `--path`
-and `--strip-path`, and the app keys its rows and its remove call by host plus
-path.
+six tools and gains `path` and `strip_path` arguments, the CLI gains `--path`,
+`--strip-path` and a `which` command that explains one URL, and the app keys
+its rows and its remove call by host plus path.
 
 `routes.json` stays version 1 until a path route is saved, so a downgrade only
 loses anything when path routes were in use.
@@ -60,6 +60,7 @@ Next.js, Vite and a Claude Code session.
 
 | # | Change | Kind | File |
 |---|---|---|---|
+| 0 | Working backwards: what users might say | simulation | [00-working-backwards.md](00-working-backwards.md) |
 | 1 | The route key becomes host plus path | feature | [01-route-key.md](01-route-key.md) |
 | 2 | Lookup: nearest host key first, then the longest path | feature | [02-path-lookup.md](02-path-lookup.md) |
 | 3 | Forwarding: the path is kept unless `strip_path` is set | feature | [03-forwarding.md](03-forwarding.md) |
@@ -80,9 +81,10 @@ Full detail in [04](04-clients-and-agent-texts.md).
 | MCP `unregister_route` | new argument `path`; without it only the route without a path is removed |
 | MCP tool count | still six |
 | MCP arguments | unknown arguments are refused instead of dropped |
-| MCP `INSTRUCTIONS` | one paragraph on path routes and base paths |
-| `scripts/LocalRouter.md` (`~/.claude/LocalRouter.md`) | four lines: what a path route is, when to use it, the command, "host and path" replace rule |
-| `libs/core/src/help.md` (`router.localhost`) | seven places, including a new "Step 4b: several apps on one name" |
+| MCP `INSTRUCTIONS` | one paragraph on path routes, base paths, "ask before you change the production build", and `localrouter which` |
+| `scripts/LocalRouter.md` (`~/.claude/LocalRouter.md`) | five lines: what a path route is, when to use it, the command, the "host and path" replace rule, and "ask the user before you change `basePath`, `base` or `assetPrefix`" |
+| `libs/core/src/help.md` (`router.localhost`) | seven places, including a new "Step 4b: several apps on one name" with both production patterns |
+| CLI | new read-only command `localrouter which <url>`: which route answers a URL, and why |
 | `~/.claude/CLAUDE.md`, the installer | no change: the note is a link into the bundle |
 
 ## The through-line
@@ -94,6 +96,17 @@ is exact, removal must be exact, and every client that removed "by host" must
 now remove by key. And because LocalRouter forwards and does not rewrite, the
 apps must know their own paths, which is why the texts agents read matter as
 much as the code.
+
+## Why read the working-backwards file
+
+[00-working-backwards.md](00-working-backwards.md) writes the announcement and
+simulated reactions from five kinds of users, and checks each one against this
+ADR. It found five gaps (G1 to G5), and all five are now fixed in the change
+files. The two that changed the design most: every agent text now tells the
+agent to ask before it changes `basePath`, `base` or `assetPrefix`, because
+they change the production build (G3), and the new `localrouter which` command
+explains which route answers a URL without a request (G5). The quotes are
+simulated, not real user statements.
 
 ## Why read the manifest
 
@@ -128,6 +141,7 @@ is listed as "not without approval".
 - Route fields `path` and `strip_path`; the route key `(host, path)`.
 - Request header `X-Forwarded-Prefix` for `strip_path` routes.
 - Log entry field `route`.
+- CLI command `localrouter which <url>` (read-only; no new socket method).
 - Socket API 1.1; `routes.json` version 2 (version 1 still written when
   possible).
 - Three new files in `api/examples/`.
