@@ -275,6 +275,23 @@ final class AppModel {
         return feedback
     }
 
+    @discardableResult
+    func installCodex() -> Feedback {
+        let feedback: Feedback
+        do {
+            switch try CodexInstaller().install() {
+            case let .installed(link, agentsMD, instructionAdded):
+                feedback = .codexInstalled(link: link, agentsMD: agentsMD, instructionAdded: instructionAdded)
+            case let .noCodex(dir):
+                feedback = .noCodex(dir)
+            }
+        } catch {
+            feedback = .failed("Could not install the Codex instructions", error.localizedDescription)
+        }
+        message = feedback.summary
+        return feedback
+    }
+
     var mcpCommand: String {
         let link = CLIInstaller().link
         let installed = (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil

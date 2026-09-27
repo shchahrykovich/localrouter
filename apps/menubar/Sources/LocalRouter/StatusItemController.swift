@@ -103,6 +103,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("Install Command Line Tool…", #selector(installCLI)))
         menu.addItem(menuItem("Install Claude Code Instructions…", #selector(installClaude)))
+        menu.addItem(menuItem("Install Codex Instructions…", #selector(installCodex)))
         menu.addItem(menuItem("Check for Updates…", #selector(checkForUpdates)))
         menu.addItem(.separator())
         menu.addItem(menuItem("Quit LocalRouter", #selector(quit)))
@@ -133,6 +134,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc private func installClaude() {
         let feedback = model.installClaude()
+        DispatchQueue.main.async { self.alert(feedback) }
+    }
+
+    @objc private func installCodex() {
+        let feedback = model.installCodex()
         DispatchQueue.main.async { self.alert(feedback) }
     }
 

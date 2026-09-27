@@ -11,8 +11,8 @@ ports:
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
 setup and no `/etc/hosts` change.
 
-You are reading this because the user chose **Install Claude Code
-Instructions…** in the {{APP}} menu bar app.
+You are reading this because the user installed agent instructions from
+the {{APP}} menu bar app (Claude Code or Codex).
 
 ## When to use it
 
@@ -21,7 +21,7 @@ Instructions…** in the {{APP}} menu bar app.
   does not take the main one's port or URL.
 - The project is one site made of several apps split by path (`/blog`,
   `/admin`): one name, one route per path.
-- The project's `CLAUDE.md` or README has a "Local URLs (LocalRouter)" section:
+- The project's `AGENTS.md`, `CLAUDE.md` or README has a "Local URLs (LocalRouter)" section:
   use the names listed there.
 
 Do not make a project need LocalRouter. Other people on the project may not

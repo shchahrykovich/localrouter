@@ -37,6 +37,12 @@ that project by itself, and write a note that says what the domain is for.
    to a note in the app and adds `@LocalRouter.md` at the top of
    `~/.claude/CLAUDE.md`. Every new Claude Code session then knows that
    LocalRouter is here and how to use it.
+7. **⋯ → Install Codex Instructions…** links `~/.codex/LocalRouter.md` to
+   the same note and adds an instruction to read it to `~/.codex/AGENTS.md`
+   (or a non-empty `AGENTS.override.md`). Existing instructions are preserved;
+   repeated installs do not add duplicates. Start a new Codex session afterward.
+   If `CODEX_HOME` is set in the app's environment, that directory is used.
+   Run Codex once before installing so its home directory exists.
 
 The app updates itself from GitHub Releases: it checks 30 seconds after start
 and then every 6 hours, and **⋯ → Check for Updates…** checks at once. The app

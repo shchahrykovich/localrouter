@@ -114,13 +114,20 @@ final class InstanceFilesTests: XCTestCase {
         let releaseNote = try claudeInstaller(.release), devNote = try claudeInstaller(dev)
         for installer in [releaseCLI, devCLI] { _ = try installer.install() }
         for installer in [releaseNote, devNote] { _ = try installer.install() }
+        let codexDir = root.appendingPathComponent("dot-codex")
+        try fm.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        let releaseCodex = CodexInstaller(note: releaseNote.note, codexDir: codexDir, instance: .release)
+        let devCodex = CodexInstaller(note: devNote.note, codexDir: codexDir, instance: dev)
+        for installer in [releaseCodex, devCodex] { _ = try installer.install() }
 
-        Uninstaller(dataDir: devPaths.data, logsDir: devPaths.logs, cli: devCLI, claude: devNote).removeFiles()
+        Uninstaller(dataDir: devPaths.data, logsDir: devPaths.logs, cli: devCLI, claude: devNote, codex: devCodex).removeFiles()
 
         XCTAssertFalse(fm.fileExists(atPath: devPaths.data.path))
         XCTAssertFalse(fm.fileExists(atPath: devPaths.logs.path))
         XCTAssertNil(link(devCLI.link))
         XCTAssertNil(link(devNote.link))
+        XCTAssertNil(link(devCodex.link))
+        XCTAssertEqual(link(releaseCodex.link), releaseCodex.note.path)
         XCTAssertTrue(fm.fileExists(atPath: releasePaths.data.path))
         XCTAssertTrue(fm.fileExists(atPath: releasePaths.logs.path))
         XCTAssertEqual(link(releaseCLI.link), releaseCLI.tool.path)

@@ -40,6 +40,18 @@ public struct Feedback: Equatable, Sendable {
                  failed: true)
     }
 
+    public static func codexInstalled(link: URL, agentsMD: URL, instructionAdded: Bool) -> Feedback {
+        Feedback(title: "Codex instructions installed",
+                 detail: "\(link.path) links to this app. " + (instructionAdded
+                     ? "An instruction to read it was added to \(agentsMD.path). Start a new Codex session."
+                     : "\(agentsMD.path) already tells Codex to read it. Start a new Codex session."))
+    }
+
+    public static func noCodex(_ dir: URL) -> Feedback {
+        Feedback(title: "Codex home was not found",
+                 detail: "\(dir.path) does not exist. Run Codex first, then try again.", failed: true)
+    }
+
     public static func upToDate(version: String) -> Feedback {
         Feedback(title: "LocalRouter is up to date", detail: "Version \(version) is the latest version.")
     }
