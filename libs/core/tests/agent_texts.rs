@@ -121,6 +121,9 @@ fn dev_texts_say_when_to_use_the_dev_instance() {
     let page = render(&dev(), &[], Some(7080), Some(7443), None);
     assert!(page.contains("Project files are shared with people who run the release"), "Step 7 says why it keeps the release names");
     assert!(page.contains("launchctl kickstart -k gui/$(id -u)/dev.localrouter.app-dev.daemon"));
+    assert!(page.contains("Browsers share cookies between ports"), "the dev page warns about shared cookies");
+    let release = render(&Instance::release(), &[], Some(80), Some(443), None);
+    assert!(!release.contains("Browsers share cookies between ports"));
 }
 
 /// The help page follows the ports the daemon bound, not only the defaults.

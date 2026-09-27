@@ -19,7 +19,7 @@ cargo clippy --workspace --all-targets                   # expected: no warnings
 swift test --package-path apps/menubar                   # Swift tests
 swift build --package-path apps/menubar                  # build the menu bar app only
 scripts/build-app.sh                                     # build/LocalRouter.app, ad-hoc signed
-scripts/install.sh --user --launch                       # build and install to ~/Applications
+scripts/install.sh --user --launch                       # build and install LocalRouter-dev.app to ~/Applications
 scripts/publish.sh [--patch|--minor|--major|--set X.Y.Z] # release to GitHub (needs .env.notarize)
 ```
 
@@ -142,6 +142,15 @@ list, so a new tool needs that test changed on purpose.
   case-insensitive disk; paths live in `BundleLayout` (Swift) and
   `scripts/build-app.sh`.
 - Bundle id `dev.localrouter.app`, LaunchAgent label `dev.localrouter.app.daemon`.
+- **Instances** (ADR 04): `scripts/build-app.sh --suffix -dev` builds
+  `LocalRouter-dev.app`, which runs next to the release with its own names,
+  folders and ports (7080/7443). Every name is the release name plus the
+  suffix; `libs/core/src/instance.rs`, `Instance.swift` and `release-lib.sh`
+  hold the rule, checked against `api/instance-names.json`. The daemon and CLI
+  read the suffix from their own file names, so never rename them in the
+  bundle. `scripts/install.sh` installs the `-dev` instance by default and
+  never touches `LocalRouter.app` unless given `--suffix ""`. A suffixed
+  instance never updates itself; `release.sh` refuses a suffix.
 - The version has one source: `[workspace.package] version` in `Cargo.toml`;
   `build-app.sh` renders it into `Info.plist`.
 - Releases follow VibeViewer's scripts: Developer ID signing with hardened

@@ -10,7 +10,7 @@ instead of ports:
 
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
 setup and no `/etc/hosts` change.
-
+{{COOKIE_NOTE}}
 This page is for a coding agent. If the user sent you here, add LocalRouter to
 the project in the current folder: follow the steps below, then tell the user
 the new URLs.

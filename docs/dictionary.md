@@ -204,13 +204,15 @@ the password. The daemon never sets it.
 | Term | Meaning |
 |---|---|
 | **LocalRouter** | The whole product. |
-| **daemon**, `localrouterd` | The background program, written in Rust. One per user. It listens on ports 80 and 443, holds the route table, and is the only program that writes the data folder. |
+| **daemon**, `localrouterd` | The background program, written in Rust. One per user and instance. The release listens on ports 80 and 443 (a suffixed instance on 7080 and 7443 by default), holds the route table, and is the only program that writes the data folder. |
 | **CLI**, `localrouter` | The command-line tool, written in Rust. Holds no state. |
 | **MCP shim**, `localrouter mcp` | The same binary, started by a coding agent. It turns MCP tool calls into socket calls. Holds no state. It never starts a daemon. |
 | **app**, `LocalRouter.app` | The menu bar app, written in Swift. Shows Domains, Logs, Settings and Help. Starts the daemon at login. Holds no state. |
 | **core**, `localrouter-core` | The Rust library in `libs/core` with routes, proxy, TLS, request log and API types. |
 | **client** | Any program that talks to the daemon over the socket: the CLI, the MCP shim, the app. |
-| **data folder** | `~/Library/Application Support/LocalRouter/`, or `$LOCALROUTER_HOME` when that is set (tests use it). |
+| **data folder** | `~/Library/Application Support/LocalRouter<suffix>/`, or `$LOCALROUTER_HOME` when that is set (tests use it). |
+| **instance** | One complete copy of LocalRouter: app, daemon, CLI, data folder, CA, links and ports. The release is one instance; a local build can be another, next to it ([ADR 04](adr/04-build-instances-2026-09-27/README.md)). |
+| **suffix** (instance suffix) | Fixed when the bundle is built: empty for the release, `-dev` for a local build. Every name of an instance is the release name plus the suffix: `LocalRouter-dev.app`, `localrouterd-dev`, `localrouter-dev`, `dev.localrouter.app-dev`, `LocalRouter-dev.md`. The daemon and the CLI read it from their own file names, the app from `LRInstanceSuffix` in `Info.plist`. It is never in `config.json`, because `config.json` is in the folder the suffix chooses. |
 
 ## Interfaces
 
@@ -292,7 +294,7 @@ Decided in [ADR 02](adr/02-distribution-and-self-update-2026-09-26/README.md).
 | **Gatekeeper**, `spctl` | The macOS component that decides whether signed code or an image may open. The updater asks it about each downloaded DMG. |
 | **ad-hoc signed** | Signed without a certificate (`codesign --sign -`). Local builds from `scripts/install.sh` are ad-hoc and never update themselves. |
 | **self-update** | The app checks `releases/latest`, downloads the DMG after a click, checks it, and a detached **install script** swaps the bundle and restarts the daemon. |
-| **bundle layout** | Where programs live in `LocalRouter.app`: `Contents/MacOS/LocalRouter` (app), `Contents/MacOS/localrouterd` (daemon), `Contents/Helpers/localrouter` (CLI). The CLI is not in `MacOS` because `localrouter` and `LocalRouter` are one name on a case-insensitive disk. |
-| **Install Command Line Tool** | The menu command that links `~/.local/bin/localrouter` to the bundled CLI. |
-| **Install Claude Code Instructions** | The menu command that links `~/.claude/LocalRouter.md` to the note in the bundle (`Contents/Resources/LocalRouter.md`) and adds `@LocalRouter.md` as the first line of `~/.claude/CLAUDE.md`. It replaces only a link into a LocalRouter bundle, and does nothing without `~/.claude`. |
+| **bundle layout** | Where programs live in `LocalRouter.app`: `Contents/MacOS/LocalRouter` (app), `Contents/MacOS/localrouterd<suffix>` (daemon), `Contents/Helpers/localrouter<suffix>` (CLI). The CLI is not in `MacOS` because `localrouter` and `LocalRouter` are one name on a case-insensitive disk. |
+| **Install Command Line Tool** | The menu command that links `~/.local/bin/localrouter<suffix>` to the bundled CLI. |
+| **Install Claude Code Instructions** | The menu command that links `~/.claude/LocalRouter<suffix>.md` to the note in the bundle (`Contents/Resources/LocalRouter.md`) and adds `@LocalRouter<suffix>.md` as the first line of `~/.claude/CLAUDE.md`. It replaces only its own instance's link into a LocalRouter bundle, and does nothing without `~/.claude`. |
 | **`.env.notarize`** | Notary credentials at the repository root, ignored by git, read by the release scripts and never exported. |

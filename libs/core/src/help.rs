@@ -72,7 +72,18 @@ fn fill(template: &str, instance: &Instance, http_port: Option<u16>, https_port:
             instance.cli()
         )
     };
+    // Browsers keep cookies by name, not by port (ADR 04, manifest blast radius).
+    let cookies = if instance.is_release() {
+        String::new()
+    } else {
+        format!(
+            "\nBrowsers share cookies between ports: a login on `shop.localhost` also shows up on \
+             `shop.localhost{}`, and the other way round.\n",
+            port_part(https, 443)
+        )
+    };
     template
+        .replace("{{COOKIE_NOTE}}", &cookies)
         .replace("{{INSTANCE_NOTE}}", &instance_note(instance, Some(https)))
         .replace("{{STEP7_NOTE}}", &step7)
         .replace("{{APP}}", &instance.app_name())
