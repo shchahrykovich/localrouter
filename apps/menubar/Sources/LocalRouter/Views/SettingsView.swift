@@ -40,29 +40,23 @@ struct SettingsView: View {
                     Text("Start the daemon to create the CA.").foregroundStyle(.secondary)
                 }
             }
-            Section("Daemon") {
-                if let s = model.status {
-                    LabeledContent("Version", value: s.daemonVersion)
-                    LabeledContent("HTTP", value: s.http.port.map(String.init) ?? "not listening")
-                    LabeledContent("HTTPS", value: s.https.port.map(String.init) ?? "not listening")
-                    ForEach(s.http.errors + s.https.errors, id: \.self) { e in
+            // Shown only when something is wrong with the daemon.
+            let errors = (model.status?.http.errors ?? []) + (model.status?.https.errors ?? [])
+            let routesFileProblem = model.status?.routesFileProblem
+            if model.status == nil || !errors.isEmpty || routesFileProblem != nil || model.serviceNote != nil {
+                Section("Daemon") {
+                    if model.status == nil {
+                        Text(model.daemonProblem ?? "Not running").foregroundStyle(.secondary)
+                    }
+                    ForEach(errors, id: \.self) { e in
                         Text(e).foregroundStyle(.red).font(.caption)
                     }
-                    if let p = s.routesFileProblem { Text(p).foregroundStyle(.orange).font(.caption) }
-                } else {
-                    Text(model.daemonProblem ?? "Not running").foregroundStyle(.secondary)
+                    if let p = routesFileProblem { Text(p).foregroundStyle(.orange).font(.caption) }
+                    if let note = model.serviceNote {
+                        Text(note).font(.caption)
+                        Button("Open Login Items") { model.openLoginItems() }
+                    }
                 }
-                if let note = model.serviceNote {
-                    Text(note).font(.caption)
-                    Button("Open Login Items") { model.openLoginItems() }
-                }
-            }
-            Section("Command line and agents") {
-                Button("Install Command Line Tool…") { model.installCLI() }
-                Text("Links ~/.local/bin/localrouter to this app.").font(.caption).foregroundStyle(.secondary)
-                Button("Install Claude Code Instructions…") { model.installClaude() }
-                Text("Links ~/.claude/LocalRouter.md to this app and adds @LocalRouter.md at the top of ~/.claude/CLAUDE.md.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Updates") {
                 LabeledContent("This version", value: model.version)

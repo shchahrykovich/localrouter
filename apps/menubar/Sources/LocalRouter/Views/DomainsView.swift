@@ -21,8 +21,16 @@ struct DomainsView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            List(model.routes) { view in
-                RouteRow(view: view)
+            List(RouteGroup.group(model.routes)) { group in
+                Section {
+                    ForEach(group.routes) { view in RouteRow(view: view) }
+                } header: {
+                    HStack {
+                        Text(group.project)
+                        Spacer()
+                        Text("\(group.routes.count)").foregroundStyle(.secondary)
+                    }
+                }
             }
             .listStyle(.inset)
         }

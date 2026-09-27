@@ -60,7 +60,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseDown || event?.modifierFlags.contains(.control) == true {
             popover.performClose(nil)
-            DispatchQueue.main.async { self.showMenu() }
+            // The button calls this on mouse-down and tracks the mouse until
+            // mouse-up in the event tracking run loop mode. A block on the main
+            // queue runs in that mode too, so the menu would open during the
+            // tracking and take its mouse-up; the button would then take the
+            // next real click as its mouse-up. The default mode runs only
+            // after the tracking ends.
+            RunLoop.main.perform(inModes: [.default]) { MainActor.assumeIsolated { self.showMenu() } }
         } else if popover.isShown {
             popover.performClose(nil)
         } else if Date().timeIntervalSince(closedAt) > 0.3 {
