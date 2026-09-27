@@ -1,6 +1,10 @@
 # ADR 04. Build instances: a dev build next to the release
 
-**Status:** Proposed on 2026-09-27. Nothing is built. Keeps ADR 01's rules: only
+**Status:** Built on 2026-09-27 with drift (see the manifest's
+[Actual Change Manifest](07-semantic-change-manifest.md#actual-change-manifest)).
+Automated tests pass (181 Rust, 85 Swift). Manual tests M1 and M4 are done on a
+real Mac with the release installed; M2, M3, M5 and M6 are open, and the change
+is not released yet. Keeps ADR 01's rules: only
 `.localhost` names ([01-domain-tld.md](../01-project-setup-2026-09-26/01-domain-tld.md)),
 no root rights ([README](../01-project-setup-2026-09-26/README.md)).
 

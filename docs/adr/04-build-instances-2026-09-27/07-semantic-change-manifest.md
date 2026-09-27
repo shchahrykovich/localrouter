@@ -3,10 +3,11 @@
 ## 1. Manifest status
 
 ```text
-Manifest status: PLANNED
+Manifest status: IMPLEMENTED_WITH_DRIFT
 ```
 
-Intended behaviour only. Nothing here is built.
+Sections 1 to 14 are the plan, unchanged. What was built is in the
+[Actual Change Manifest](#actual-change-manifest) at the end.
 
 ## 2. Semantic change summary
 
@@ -408,3 +409,140 @@ Infrastructure rollback
 External side effects
   none.
 ```
+
+---
+
+# Actual Change Manifest
+
+Re-analysed on 2026-09-27 from the built system (commits `fe310ec` to
+`5dd344b`), not from the plan.
+
+## Artifacts, as built
+
+```text
+Domain objects
++ Instance (libs/core/src/instance.rs), Instance (LocalRouterKit/Instance.swift)
++ api/instance-names.json, read by Rust (instance.rs tests) and Swift (InstanceTests)
+
+Templates
++ libs/core/src/note.md   (moved from scripts/LocalRouter.md)
++ libs/core/src/mcp.md    (the MCP instructions, moved out of mcp.rs)
+~ libs/core/src/help.md   (placeholders, instance note, cookie note, Step 7 note)
+
+CLI
++ <cli> guide
++ <cli> note              (hidden; used by build-app.sh)
+~ <cli> status            first line names the instance and "(from LOCALROUTER_HOME)"
+
+Swift kit
++ Uninstaller, DaemonSection, Updater.disabledReason, Instance.bundleProblem
+
+Scripts
+~ build-app.sh --suffix, install.sh --suffix (default -dev), release.sh refuses --suffix
+
+Tests
++ libs/core/tests/no_fixed_names.rs, NoFixedNamesTests.swift (source scans)
++ InstanceTests, InstanceFilesTests, DaemonSectionTests (Swift)
++ E1c instances_journey (apps/cli/tests/e2e.rs)
+```
+
+## Runtime effects, as built
+
+Every planned effect exists. Two effects were not planned:
+
+```text
+CALL (unexpected)
+type:                   LaunchAgent unregister + register (SMAppService)
+target:                 the instance's daemon registration
+trigger:                an ad-hoc build starts, its daemon is registered, and it does not answer within 2 s
+cardinality:            at most once per app start
+write_idempotent:       yes
+producer_deterministic: yes
+destructive:            no
+reversible:             yes
+
+CALL (removed)
+type:                   launchctl kickstart -k after install.sh replaces the bundle
+now:                    launchctl bootout of the instance's job before the bundle is replaced
+```
+
+## Plan vs Actual
+
+```text
+                                   Planned    Actual
+Domain concept (instance)            +1         +1    ✓
+CLI commands                         +1         +2    ⚠  guide, and the hidden note
+Socket methods                        0          0    ✓
+MCP tools                             0          0    ✓
+config.json defaults by instance      +1         +1    ✓
+set_config reads the file             ~1         ~1    ✓  plus two changes, see drift
+Info.plist key                        +1         +1    ✓
+Templates                             ~3         ~3    ✓  in libs/core, not scripts/
+LaunchAgent re-registration            0         +1    ⚠
+External side effects                  0          0    ✓
+New dependencies                       0          0    ✓
+```
+
+## Architectural drift
+
+```text
+~ Different: the Claude Code note is a template in libs/core/src/note.md, printed
+  by the bundled CLI (`<cli> note`), not rendered by sed in build-app.sh.
+  status: ACCEPTED
+  reason: one implementation fills every text, so the shell copy of the names
+          cannot drift from Rust (reduces risk R1). build-app.sh also stops when
+          the note's title does not name the instance it builds.
+
++ Unexpected: build-app.sh writes the note to a temp file and moves it into the
+  bundle. Writing from the bundled CLI straight into the new bundle failed with
+  "Input/output error" on every run inside build-app.sh, never by hand. Cause
+  unknown.
+  status: ACCEPTED
+
++ Unexpected: an ad-hoc app registers its daemon again when it does not answer
+  2 s after start, and install.sh removes the old job (bootout) instead of
+  restarting it (kickstart). Found by M1: after a reinstall, launchd refused to
+  start the rebuilt daemon ("spawn failed", exit 78, "needs LWCR update"). With
+  kickstart the re-registration failed one time in three; with bootout it
+  worked in 5 of 5 reinstalls. Without --launch, the daemon now starts when the
+  app is opened. Release builds are signed by team and are not affected.
+  status: ACCEPTED
+
++ Unexpected: restart_needed compares with the ports the daemon started with.
+  T4 showed it was false after a second set_config call although the new port
+  was never bound.
+  status: ACCEPTED
+
++ Unexpected: set_config refuses a config.json that does not parse, instead of
+  replacing it.
+  status: ACCEPTED (a hand edit with a typo is not lost)
+
++ Unexpected: Step 7 of the help page keeps the release names in a suffixed
+  instance, with a sentence that says why: project files are shared with people
+  who run the release. The render test (T5) skips Step 7 and the instance note
+  on purpose.
+  status: ACCEPTED
+
+~ Different: the 103-byte socket limit holds for user names up to 28 characters
+  with the longest suffix, not for any length (01 said "keeps the socket path
+  under the limit"). A longer path is refused at start, as before.
+  status: ACCEPTED (01 corrected)
+
+~ Different: the source scans first looked only for "localrouter ",
+  "router.localhost" and "LocalRouter.md". M1 found fixed names they missed
+  ("Open LocalRouter.app or run localrouterd.", the daemon's own messages). The
+  scans now also look for "localrouterd" and "LocalRouter.app".
+  status: ACCEPTED
+
+- Missing: manual tests M2 (trust the dev CA in a browser), M3 (Claude Code with
+  both notes), M5 (uninstall the dev instance) and M6 (release smoke test), and
+  the UI part of M4 (how the Daemon section looks).
+  status: FIX_REQUIRED before the next release
+```
+
+## Invariants, as built
+
+All twelve are enforced by the tests named in the plan. I6 and I7 still have no
+automated test (no shell test tool): I6 was checked by M1, I7 by running
+`scripts/release.sh --suffix -dev`, which stops with "a release has no instance
+suffix".

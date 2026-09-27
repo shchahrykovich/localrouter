@@ -254,3 +254,37 @@ everywhere else.
 | I10 uninstall is per instance | T10 | M5 |
 | I11 Rust and Swift agree | T1, T9 | — |
 | I12 Daemon section rule | T12 | M4 |
+
+## Results
+
+Run on 2026-09-27 on the maintainer's Mac, with the signed release 0.1.7
+installed in `/Applications`.
+
+### M1. Install next to the release: done
+
+| Check | Result |
+|---|---|
+| Two apps | `/Applications/LocalRouter.app` (release) and `~/Applications/LocalRouter-dev.app` ✓ |
+| Two daemons | `localrouterd` and `localrouterd-dev` in `ps` ✓ |
+| Ports | release 80 and 443, dev 7080 and 7443 (`lsof`) ✓ |
+| Folders | `LocalRouter` and `LocalRouter-dev` in Application Support and Logs ✓ |
+| Dev CA | `LocalRouter-dev CA 5dacc921`, not trusted until the user trusts it ✓ |
+| A request | `adr04-check` on the dev instance answered through `https://adr04-check.localhost:7443` with the dev CA; the release answered 404 for the same name ✓ |
+| Reinstall | only the dev app was replaced; the release daemon kept pid 88098 through seven reinstalls ✓ |
+| Found | after a reinstall the dev daemon did not start (launchd "spawn failed", exit 78); fixed, see the manifest's drift |
+| Found | the help page title and the "not running" message named the release; fixed, and the source scans now look for more words |
+| Not checked | the menu bar icons and the login item list (UI) |
+
+### M4. Ports by hand: done without the UI
+
+| Check | Result |
+|---|---|
+| Edit the dev `config.json` to 7081 and 7444, then call `set_config {allow_lan: false}` on the dev socket | the file kept 7081 and 7444; the reply said `restart_needed: true` ✓ |
+| `launchctl kickstart -k gui/$(id -u)/dev.localrouter.app-dev.daemon` | `localrouter-dev status` showed 7081 and 7444 ✓ |
+| Settings shows the section and the restart line | not checked (UI) |
+
+The ports were set back to 7080 and 7443 after the test.
+
+### Open
+
+M2, M3, M5 and M6, and the UI parts of M1 and M4.
