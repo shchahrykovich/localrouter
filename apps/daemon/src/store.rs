@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::Path;
 
 use localrouter_core::config::Config;
+use localrouter_core::instance::Instance;
 use localrouter_core::routes::Route;
 use serde::{Deserialize, Serialize};
 
@@ -40,15 +41,32 @@ pub fn load_routes(path: &Path) -> Loaded<Vec<Route>> {
     })
 }
 
-pub fn load_config(path: &Path) -> Loaded<Config> {
-    load(path, |text| serde_json::from_str(text).map_err(|e| e.to_string()))
+/// The instance's defaults stand in for a missing or broken file, so a
+/// suffixed daemon never falls back to ports 80 and 443 (ADR 04, I9).
+pub fn load_config(path: &Path, instance: &Instance) -> Loaded<Config> {
+    load_or(path, || Config::defaults_for(instance), |text| Config::parse(text, instance))
+}
+
+/// `config.json` as it is on disk now, for a change that must keep hand
+/// edits (ADR 04, I8). `Ok(None)` when there is no file. Unlike
+/// `load_config`, a file that does not parse is left where it is.
+pub fn read_config(path: &Path, instance: &Instance) -> Result<Option<Config>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Config::parse(&text, instance).map(Some).map_err(|why| format!("{} does not parse: {why}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
 }
 
 fn load<T: Default>(path: &Path, parse: impl Fn(&str) -> Result<T, String>) -> Loaded<T> {
+    load_or(path, T::default, parse)
+}
+
+fn load_or<T>(path: &Path, default: impl Fn() -> T, parse: impl Fn(&str) -> Result<T, String>) -> Loaded<T> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::default(),
-        Err(e) => return Loaded { value: T::default(), problem: Some(format!("cannot read {}: {e}", path.display())) },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded { value: default(), problem: None },
+        Err(e) => return Loaded { value: default(), problem: Some(format!("cannot read {}: {e}", path.display())) },
     };
     match parse(&text) {
         Ok(value) => Loaded { value, problem: None },
@@ -60,7 +78,7 @@ fn load<T: Default>(path: &Path, parse: impl Fn(&str) -> Result<T, String>) -> L
             } else {
                 format!("{} did not load ({why})", path.display())
             };
-            Loaded { value: T::default(), problem: Some(problem) }
+            Loaded { value: default(), problem: Some(problem) }
         }
     }
 }
@@ -216,8 +234,46 @@ mod tests {
     #[test]
     fn missing_file_is_empty_without_problem() {
         let dir = tempfile::tempdir().unwrap();
-        let loaded = load_config(&dir.path().join("config.json"));
+        let loaded = load_config(&dir.path().join("config.json"), &Instance::release());
         assert_eq!(loaded.value, Config::default());
         assert!(loaded.problem.is_none());
+    }
+
+    fn dev() -> Instance {
+        Instance::new("-dev").unwrap()
+    }
+
+    // ADR 04, T3, I9: no path gives a suffixed instance ports 80 and 443.
+    #[test]
+    fn a_suffixed_instance_gets_its_own_ports_when_the_file_is_missing_or_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let missing = load_config(&path, &dev());
+        assert_eq!((missing.value.http_port, missing.value.https_port), (7080, 7443));
+
+        fs::write(&path, "{ not json").unwrap();
+        let broken = load_config(&path, &dev());
+        assert_eq!((broken.value.http_port, broken.value.https_port), (7080, 7443));
+        assert!(broken.problem.unwrap().contains("moved to"));
+        assert!(!path.exists(), "a broken file is moved aside, as before");
+
+        fs::write(&path, r#"{"https_port": 7444}"#).unwrap();
+        let partial = load_config(&path, &dev());
+        assert_eq!((partial.value.http_port, partial.value.https_port), (7080, 7444));
+    }
+
+    // ADR 04, I8: set_config reads the file without moving a broken one aside.
+    #[test]
+    fn read_config_leaves_a_broken_file_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        assert_eq!(read_config(&path, &dev()), Ok(None));
+        fs::write(&path, "{ not json").unwrap();
+        assert!(read_config(&path, &dev()).unwrap_err().contains("does not parse"));
+        assert!(path.exists());
+        fs::write(&path, r#"{"allow_lan": true}"#).unwrap();
+        let c = read_config(&path, &dev()).unwrap().unwrap();
+        assert!(c.allow_lan);
+        assert_eq!(c.http_port, 7080);
     }
 }

@@ -21,14 +21,21 @@ impl Daemon {
 
     /// Start with ports 0; `prepare` may write files into the folder first.
     fn start_with(prepare: impl FnOnce(&Path)) -> Self {
+        Self::start_program(Path::new(env!("CARGO_BIN_EXE_localrouterd")), |dir| {
+            std::fs::write(
+                dir.join("config.json"),
+                json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100}).to_string(),
+            )
+            .unwrap();
+            prepare(dir);
+        })
+    }
+
+    /// Start `program` with a fresh LOCALROUTER_HOME that `prepare` fills.
+    fn start_program(program: &Path, prepare: impl FnOnce(&Path)) -> Self {
         let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100}).to_string(),
-        )
-        .unwrap();
         prepare(dir.path());
-        let child = Command::new(env!("CARGO_BIN_EXE_localrouterd"))
+        let child = Command::new(program)
             .env("LOCALROUTER_HOME", dir.path())
             .env("LOCALROUTER_LOG", "warn")
             .stderr(Stdio::null())
@@ -251,6 +258,39 @@ fn set_config_is_saved_and_applied() {
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(d.dir.path().join("config.json")).unwrap()).unwrap();
     assert_eq!(saved["log_size"], 5);
     assert_eq!(c.call("set_config", json!({"https_port": 8443}))["restart_needed"], true);
+}
+
+fn read_config(d: &Daemon) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(d.dir.path().join("config.json")).unwrap()).unwrap()
+}
+
+/// ADR 04, T4, I8: ports are edited only by hand in config.json. A later
+/// Settings switch must not put the old ports back.
+#[test]
+fn set_config_keeps_a_hand_edit_of_config_json() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let mut edited = read_config(&d);
+    edited["https_port"] = json!(7444);
+    std::fs::write(d.dir.path().join("config.json"), edited.to_string()).unwrap();
+
+    let r = c.call("set_config", json!({"allow_lan": true}));
+    let saved = read_config(&d);
+    assert_eq!(saved["https_port"], 7444, "the hand edit was undone: {saved}");
+    assert_eq!(saved["allow_lan"], true);
+    assert_eq!(r["restart_needed"], true, "the file's ports differ from the ports the daemon started with");
+}
+
+/// ADR 04, T4: a switch that touches no port needs no restart, also after
+/// an earlier call changed a port (the daemon still runs on its start ports).
+#[test]
+fn restart_needed_compares_with_the_start_ports() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    assert_eq!(c.call("set_config", json!({"fallback": false}))["restart_needed"], false);
+    assert_eq!(c.call("set_config", json!({"https_port": 8443}))["restart_needed"], true);
+    assert_eq!(c.call("set_config", json!({"fallback": true}))["restart_needed"], true, "8443 is still not bound");
+    assert_eq!(c.call("set_config", json!({"https_port": 0}))["restart_needed"], false);
 }
 
 // T12: TCP route listeners
@@ -510,4 +550,44 @@ fn a_request_reaches_the_path_route_and_the_log_names_it() {
     let entries = c.call("get_logs", json!({"host": "shop", "limit": 10}))["entries"].clone();
     let routes: Vec<_> = entries.as_array().unwrap().iter().map(|e| e["route"].as_str().unwrap().to_string()).collect();
     assert_eq!(routes, ["shop/blog", "shop"]);
+}
+
+// ADR 04, T3: a daemon named localrouterd-dev is the -dev instance.
+
+/// The daemon binary copied under the name of a suffixed instance. The
+/// instance comes from the program's own file name.
+fn renamed_daemon(suffix: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new().prefix("lrbin").tempdir().unwrap();
+    let program = dir.path().join(format!("localrouterd{suffix}"));
+    std::fs::copy(env!("CARGO_BIN_EXE_localrouterd"), &program).unwrap();
+    (dir, program)
+}
+
+#[test]
+fn a_dev_daemon_writes_its_own_default_ports() {
+    let (_bin, program) = renamed_daemon("-dev");
+    let d = Daemon::start_program(&program, |_| {});
+    let saved = read_config(&d);
+    assert_eq!((saved["http_port"].clone(), saved["https_port"].clone()), (json!(7080), json!(7443)));
+    let r = d.client().call("get_config", json!({}));
+    assert_eq!(r["http_port"], 7080, "{r}");
+}
+
+#[test]
+fn a_dev_daemon_keeps_an_existing_config_as_written() {
+    let (_bin, program) = renamed_daemon("-dev");
+    let written = "{\"version\":1,\"http_port\":0,\"https_port\":0,\"fallback\":false,\"allow_lan\":false,\"log_size\":7}\n";
+    let d = Daemon::start_program(&program, |dir| std::fs::write(dir.join("config.json"), written).unwrap());
+    assert_eq!(std::fs::read_to_string(d.dir.path().join("config.json")).unwrap(), written);
+}
+
+#[test]
+fn a_daemon_with_a_bad_suffix_stops_before_it_makes_a_folder() {
+    let (_bin, program) = renamed_daemon("-Dev");
+    let home = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
+    let data = home.path().join("data");
+    let out = Command::new(&program).env("LOCALROUTER_HOME", &data).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid instance suffix"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!data.exists());
 }

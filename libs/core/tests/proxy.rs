@@ -12,6 +12,7 @@ use hyper::{Request, Response, StatusCode, Version};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use localrouter_core::api::{CaState, CaStatus, PortStatus, StatusResult};
 use localrouter_core::logs::{LogEntry, RequestLog};
+use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Route, RouteTable};
@@ -184,7 +185,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
     });
 
     let dir = tempfile::tempdir().unwrap();
-    let ca = match LocalCa::load_or_create(&Paths::under(dir.path().to_path_buf())) {
+    let ca = match LocalCa::load_or_create(&Paths::under(dir.path().to_path_buf()), &Instance::release()) {
         CaLoad::Ready(ca) => *ca,
         CaLoad::Broken(why) => panic!("{why}"),
     };

@@ -21,6 +21,7 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use time::OffsetDateTime;
 
+use crate::instance::Instance;
 use crate::paths::Paths;
 use crate::routes::{HELP_HOST, host_key};
 
@@ -71,10 +72,10 @@ impl LocalCa {
 
     /// Load `ca/`, or create it when it does not exist. Never replaces an
     /// existing CA: a damaged one is reported as [`CaLoad::Broken`].
-    pub fn load_or_create(paths: &Paths) -> CaLoad {
+    pub fn load_or_create(paths: &Paths, instance: &Instance) -> CaLoad {
         remove_leftover_tmp_dirs(&paths.data);
         if !paths.ca_dir().exists() {
-            return match Self::create(paths) {
+            return match Self::create(paths, instance) {
                 Ok(ca) => CaLoad::Ready(Box::new(ca)),
                 Err(e) => CaLoad::Broken(format!("could not create the CA: {e}")),
             };
@@ -99,10 +100,11 @@ impl LocalCa {
 
     /// Create a new CA into `ca.tmp-<pid>/`, then rename the folder to `ca/`,
     /// so `ca/` either holds both files or does not exist.
-    fn create(paths: &Paths) -> Result<Self, TlsError> {
+    fn create(paths: &Paths, instance: &Instance) -> Result<Self, TlsError> {
         fs::create_dir_all(&paths.data)?;
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
-        let common_name = format!("LocalRouter CA {}", short_id(&key));
+        // The instance's name, so two CAs in one keychain tell which is which (ADR 04).
+        let common_name = format!("{} {}", instance.ca_name_prefix(), short_id(&key));
 
         let mut params = CertificateParams::default();
         let mut dn = DistinguishedName::new();
@@ -137,11 +139,11 @@ impl LocalCa {
     }
 
     /// Delete the CA and make a new one. Only for an explicit user action.
-    pub fn reset(paths: &Paths) -> Result<Self, TlsError> {
+    pub fn reset(paths: &Paths, instance: &Instance) -> Result<Self, TlsError> {
         if paths.ca_dir().exists() {
             fs::remove_dir_all(paths.ca_dir())?;
         }
-        Self::create(paths)
+        Self::create(paths, instance)
     }
 
     /// A 90-day certificate for exactly one name.
@@ -369,19 +371,27 @@ mod tests {
     #[test]
     fn new_ca_key_is_private_from_the_start() {
         let (_d, p) = paths();
-        let ca = ready(LocalCa::load_or_create(&p));
+        let ca = ready(LocalCa::load_or_create(&p, &Instance::release()));
         let mode = fs::metadata(p.ca_key()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert!(ca.common_name().starts_with("LocalRouter CA "));
         assert!(fs::read_to_string(p.ca_pem()).unwrap().contains("BEGIN CERTIFICATE"));
     }
 
+    // ADR 04, T13: two CAs in one keychain tell which instance they belong to.
+    #[test]
+    fn a_suffixed_instance_names_its_ca() {
+        let (_d, p) = paths();
+        let ca = ready(LocalCa::load_or_create(&p, &Instance::new("-dev").unwrap()));
+        assert!(ca.common_name().starts_with("LocalRouter-dev CA "), "{}", ca.common_name());
+    }
+
     #[test]
     fn existing_ca_is_loaded_not_replaced() {
         let (_d, p) = paths();
-        let first = ready(LocalCa::load_or_create(&p));
+        let first = ready(LocalCa::load_or_create(&p, &Instance::release()));
         let pem = fs::read(p.ca_pem()).unwrap();
-        let second = ready(LocalCa::load_or_create(&p));
+        let second = ready(LocalCa::load_or_create(&p, &Instance::release()));
         assert_eq!(first.common_name(), second.common_name());
         assert_eq!(pem, fs::read(p.ca_pem()).unwrap());
     }
@@ -390,10 +400,10 @@ mod tests {
     #[test]
     fn damaged_ca_is_reported_and_left_alone() {
         let (_d, p) = paths();
-        ready(LocalCa::load_or_create(&p));
+        ready(LocalCa::load_or_create(&p, &Instance::release()));
         fs::remove_file(p.ca_key()).unwrap();
         let pem = fs::read(p.ca_pem()).unwrap();
-        match LocalCa::load_or_create(&p) {
+        match LocalCa::load_or_create(&p, &Instance::release()) {
             CaLoad::Broken(why) => assert!(why.contains("ca.key"), "{why}"),
             CaLoad::Ready(_) => panic!("a damaged CA must not load"),
         }
@@ -405,15 +415,15 @@ mod tests {
     fn leftover_tmp_folder_is_deleted() {
         let (_d, p) = paths();
         fs::create_dir_all(p.data.join("ca.tmp-123")).unwrap();
-        ready(LocalCa::load_or_create(&p));
+        ready(LocalCa::load_or_create(&p, &Instance::release()));
         assert!(!p.data.join("ca.tmp-123").exists());
     }
 
     #[test]
     fn reset_makes_a_new_ca() {
         let (_d, p) = paths();
-        let old = ready(LocalCa::load_or_create(&p));
-        let new = LocalCa::reset(&p).unwrap();
+        let old = ready(LocalCa::load_or_create(&p, &Instance::release()));
+        let new = LocalCa::reset(&p, &Instance::release()).unwrap();
         assert_ne!(old.common_name(), new.common_name());
     }
 
@@ -421,7 +431,7 @@ mod tests {
     #[test]
     fn leaf_has_one_name_server_auth_and_90_days() {
         let (_d, p) = paths();
-        let ca = ready(LocalCa::load_or_create(&p));
+        let ca = ready(LocalCa::load_or_create(&p, &Instance::release()));
         let leaf = ca.issue_leaf("feat.shop.localhost").unwrap();
         assert_eq!(leaf.cert.len(), 2, "leaf plus CA");
         let (_, cert) = X509Certificate::from_der(&leaf.cert[0]).unwrap();
@@ -452,7 +462,7 @@ mod tests {
     #[test]
     fn store_refuses_foreign_names_and_names_without_route() {
         let (_d, p) = paths();
-        let ca = ready(LocalCa::load_or_create(&p));
+        let ca = ready(LocalCa::load_or_create(&p, &Instance::release()));
         let allow: AllowName = Arc::new(|name: &str| name.ends_with("shop.localhost"));
         let store = CertStore::new(Some(ca), allow);
         assert!(store.cert_for("feat.shop.localhost").is_some());

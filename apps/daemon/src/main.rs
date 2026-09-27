@@ -65,7 +65,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match runtime.block_on(run(paths)) {
+    match runtime.block_on(run(paths, instance)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
@@ -88,17 +88,17 @@ fn init_logging(paths: &Paths) {
     }
 }
 
-async fn run(paths: Paths) -> anyhow::Result<()> {
-    tracing::info!("localrouterd {DAEMON_VERSION} starting, data in {}", paths.data.display());
+async fn run(paths: Paths, instance: Instance) -> anyhow::Result<()> {
+    tracing::info!("{} {DAEMON_VERSION} starting, data in {}", instance.daemon_program(), paths.data.display());
     let (pids, mut exited) = pidwatch::PidWatch::start()?;
-    let (ca, ca_problem) = match LocalCa::load_or_create(&paths) {
+    let (ca, ca_problem) = match LocalCa::load_or_create(&paths, &instance) {
         CaLoad::Ready(ca) => (Some(*ca), None),
         CaLoad::Broken(why) => {
             tracing::error!("HTTPS is off: {why}. Run `localrouter ca reset` to make a new CA.");
             (None, Some(why))
         }
     };
-    let daemon = Daemon::load(paths, pids, ca, ca_problem);
+    let daemon = Daemon::load(paths, instance, pids, ca, ca_problem);
     daemon.start_http_listeners()?;
     daemon.start_saved_tcp_routes();
     let listener = socket::bind(&daemon)?;

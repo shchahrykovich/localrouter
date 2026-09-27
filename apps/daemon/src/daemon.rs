@@ -16,6 +16,7 @@ use localrouter_core::api::{
 };
 use localrouter_core::config::Config;
 use localrouter_core::logs::RequestLog;
+use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
@@ -68,6 +69,10 @@ struct Problems {
 
 pub struct Daemon {
     pub paths: Paths,
+    pub instance: Instance,
+    /// The ports in config.json when the daemon started. Ports are bound
+    /// once, so a restart is needed while config.json names other ports.
+    start_ports: (u16, u16),
     pub shared: Arc<Shared>,
     pub log: Arc<RequestLog>,
     pub certs: Arc<CertStore>,
@@ -91,8 +96,9 @@ fn route_err(e: RouteError) -> ApiError {
 
 impl Daemon {
     /// Load config, CA and routes. Does not bind anything yet.
-    pub fn load(paths: Paths, pids: PidWatch, ca: Option<LocalCa>, ca_problem: Option<String>) -> Arc<Self> {
-        let config = store::load_config(&paths.config());
+    pub fn load(paths: Paths, instance: Instance, pids: PidWatch, ca: Option<LocalCa>, ca_problem: Option<String>) -> Arc<Self> {
+        let config = store::load_config(&paths.config(), &instance);
+        let start_ports = (config.value.http_port, config.value.https_port);
         let shared = Arc::new(Shared {
             routes: RwLock::new(RouteTable::new()),
             config: RwLock::new(config.value.clone()),
@@ -154,6 +160,8 @@ impl Daemon {
             });
             Self {
                 paths,
+                instance,
+                start_ports,
                 shared,
                 log,
                 certs,
@@ -564,8 +572,11 @@ impl Daemon {
 
     pub async fn set_config(&self, p: SetConfigParams) -> Result<SetConfigResult, ApiError> {
         let _guard = self.write.lock().await;
-        let old = self.config();
-        let mut new = old.clone();
+        // Start from the file, not from memory: ports are edited there by
+        // hand, and a Settings switch must not put the old ones back (ADR 04,
+        // I8). A file that does not parse is refused rather than replaced.
+        let on_disk = store::read_config(&self.paths.config(), &self.instance).map_err(|why| err(ErrorCode::Io, why))?;
+        let mut new = on_disk.unwrap_or_else(|| self.config());
         if let Some(v) = p.http_port {
             new.http_port = v;
         }
@@ -591,13 +602,13 @@ impl Daemon {
             .map_err(|e| err(ErrorCode::Io, format!("could not save config.json: {e}")))?;
         *self.shared.config.write().unwrap() = new.clone();
         self.log.set_capacity(new.log_size);
-        let restart_needed = new.http_port != old.http_port || new.https_port != old.https_port;
+        let restart_needed = (new.http_port, new.https_port) != self.start_ports;
         Ok(SetConfigResult { config: new, restart_needed })
     }
 
     pub async fn reset_ca(&self) -> Result<ResetCaResult, ApiError> {
         let _guard = self.write.lock().await;
-        let ca = LocalCa::reset(&self.paths).map_err(|e| err(ErrorCode::CaUnavailable, format!("could not make a new CA: {e}")))?;
+        let ca = LocalCa::reset(&self.paths, &self.instance).map_err(|e| err(ErrorCode::CaUnavailable, format!("could not make a new CA: {e}")))?;
         let common_name = ca.common_name().to_string();
         self.certs.set_ca(Some(ca));
         self.problems.lock().unwrap().ca = None;
