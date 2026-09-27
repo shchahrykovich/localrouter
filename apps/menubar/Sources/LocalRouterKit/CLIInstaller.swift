@@ -1,17 +1,22 @@
 // "Install Command Line Tool": a symlink ~/.local/bin/localrouter pointing
 // into the app bundle, so the terminal and `claude mcp add` can find it.
-// Decision U4 (ADR 01): ~/.local/bin, no admin password.
+// Decision U4 (ADR 01): ~/.local/bin, no admin password. Each instance has
+// its own link: localrouter-dev for -dev (ADR 04).
 
 import Foundation
 
-/// Where the bundled programs live inside LocalRouter.app.
+/// Where the bundled programs live inside LocalRouter.app. The daemon and
+/// the CLI carry the instance's suffix in their names; they read their
+/// instance from it (ADR 04).
 public enum BundleLayout {
     /// The Swift app's own executable (CFBundleExecutable).
     public static let appExecutable = "Contents/MacOS/LocalRouter"
     /// The daemon, started by the LaunchAgent (BundleProgram).
-    public static let daemon = "Contents/MacOS/localrouterd"
+    public static func daemon(for instance: Instance) -> String { "Contents/MacOS/\(instance.daemonProgram)" }
     /// The command-line tool and MCP server.
-    public static let cli = "Contents/Helpers/localrouter"
+    public static func cli(for instance: Instance) -> String { "Contents/Helpers/\(instance.cli)" }
+    public static var daemon: String { daemon(for: .current) }
+    public static var cli: String { cli(for: .current) }
     /// The note for Claude Code, linked into ~/.claude.
     public static let claudeNote = "Contents/Resources/LocalRouter.md"
 }
@@ -39,23 +44,40 @@ public struct CLIInstaller {
     public var tool: URL
     public var binDir: URL
     public var pathVariable: String
+    public var instance: Instance
 
     /// The bundled tool of the running app and ~/.local/bin.
-    public init(bundle: Bundle = .main,
+    public init(bundle: Bundle = .main, instance: Instance = .current,
                 binDir: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
                 pathVariable: String = ProcessInfo.processInfo.environment["PATH"] ?? "") {
-        self.tool = bundle.bundleURL.appendingPathComponent(BundleLayout.cli)
+        self.tool = bundle.bundleURL.appendingPathComponent(BundleLayout.cli(for: instance))
         self.binDir = binDir
         self.pathVariable = pathVariable
+        self.instance = instance
     }
 
-    public init(tool: URL, binDir: URL, pathVariable: String) {
+    public init(tool: URL, binDir: URL, pathVariable: String, instance: Instance = .current) {
         self.tool = tool
         self.binDir = binDir
         self.pathVariable = pathVariable
+        self.instance = instance
     }
 
-    public var link: URL { binDir.appendingPathComponent("localrouter") }
+    /// `localrouter` for the release, `localrouter-dev` for -dev.
+    public var link: URL { binDir.appendingPathComponent(instance.cli) }
+
+    /// A link into any bundle's CLI of this instance, wherever the bundle is.
+    func isOurs(_ destination: String) -> Bool {
+        destination.hasSuffix("/" + BundleLayout.cli(for: instance))
+    }
+
+    /// Remove the link if it is ours (uninstall).
+    public func uninstall() {
+        let fm = FileManager.default
+        if let dest = try? fm.destinationOfSymbolicLink(atPath: link.path), isOurs(dest) {
+            try? fm.removeItem(at: link)
+        }
+    }
 
     /// Make or refresh the link. Never replaces anything that is not a link
     /// into a LocalRouter bundle.
@@ -69,7 +91,7 @@ public struct CLIInstaller {
         }
         if let existing = try? fm.destinationOfSymbolicLink(atPath: link.path) {
             if existing == tool.path { return .installed(link: link, onPath: onPath) }
-            guard existing.hasSuffix("/" + BundleLayout.cli) else { throw Failure.occupied(link) }
+            guard isOurs(existing) else { throw Failure.occupied(link) }
             try? fm.removeItem(at: link)
         } else if fm.fileExists(atPath: link.path) {
             throw Failure.occupied(link)

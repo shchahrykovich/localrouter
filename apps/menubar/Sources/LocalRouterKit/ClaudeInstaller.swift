@@ -6,6 +6,8 @@
 //   2. A name that is taken is left alone: only a link into some
 //      LocalRouter bundle is replaced. ~/.claude is edited by hand.
 //   3. No ~/.claude folder means no Claude Code here: nothing is created.
+//   4. Each instance has its own note and line: LocalRouter-dev.md and
+//      @LocalRouter-dev.md for -dev (ADR 04).
 
 import Foundation
 
@@ -32,27 +34,30 @@ public struct ClaudeInstaller {
         }
     }
 
-    public static let noteName = "LocalRouter.md"
-    /// The line in CLAUDE.md that imports the note. Claude Code reads the
-    /// name relative to the folder CLAUDE.md is in.
-    public static let importLine = "@\(noteName)"
+    /// The line in CLAUDE.md that imports an instance's note. Claude Code
+    /// reads the name relative to the folder CLAUDE.md is in.
+    public static func importLine(for instance: Instance) -> String { "@\(instance.note)" }
 
     public var note: URL
     public var claudeDir: URL
+    public var instance: Instance
 
     /// The note of the running app and ~/.claude.
-    public init(bundle: Bundle = .main,
+    public init(bundle: Bundle = .main, instance: Instance = .current,
                 claudeDir: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")) {
         self.note = bundle.bundleURL.appendingPathComponent(BundleLayout.claudeNote)
         self.claudeDir = claudeDir
+        self.instance = instance
     }
 
-    public init(note: URL, claudeDir: URL) {
+    public init(note: URL, claudeDir: URL, instance: Instance = .current) {
         self.note = note
         self.claudeDir = claudeDir
+        self.instance = instance
     }
 
-    public var link: URL { claudeDir.appendingPathComponent(Self.noteName) }
+    public var importLine: String { Self.importLine(for: instance) }
+    public var link: URL { claudeDir.appendingPathComponent(instance.note) }
     public var claudeMD: URL { claudeDir.appendingPathComponent("CLAUDE.md") }
 
     /// Link the note, then make sure CLAUDE.md imports it. The line is added
@@ -116,11 +121,11 @@ public struct ClaudeInstaller {
             // replace what the user has.
             throw Failure.io("cannot read \(claudeMD.path): \(error.localizedDescription)")
         }
-        guard let text = Self.withImport(existing) else { return false }
+        guard let text = Self.withImport(existing, line: importLine) else { return false }
         do {
             try Data(text.utf8).write(to: file, options: .atomic)
         } catch {
-            throw Failure.io("cannot add \(Self.importLine) to \(claudeMD.path): \(error.localizedDescription)")
+            throw Failure.io("cannot add \(importLine) to \(claudeMD.path): \(error.localizedDescription)")
         }
         return true
     }
@@ -128,11 +133,11 @@ public struct ClaudeInstaller {
     /// CLAUDE.md with the import line added as the first line, or nil when a
     /// line already is the import. A sentence that only mentions it does not
     /// count. The rest of the file follows unchanged.
-    static func withImport(_ existing: String) -> String? {
+    static func withImport(_ existing: String, line: String = importLine(for: .release)) -> String? {
         if existing.split(separator: "\n", omittingEmptySubsequences: false)
-            .contains(where: { $0.trimmingCharacters(in: .whitespaces) == importLine }) {
+            .contains(where: { $0.trimmingCharacters(in: .whitespaces) == line }) {
             return nil
         }
-        return importLine + "\n" + existing
+        return line + "\n" + existing
     }
 }

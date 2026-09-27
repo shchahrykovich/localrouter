@@ -31,12 +31,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.target = self
             button.action = #selector(clicked)
             button.sendAction(on: [.leftMouseDown, .rightMouseDown])
-            button.toolTip = isDev ? "LocalRouter (development build)" : "LocalRouter"
+            let name = Instance.current.appName
+            button.toolTip = BuildKind.current == .dev ? "\(name) (development build)" : name
         }
         trackIcon()
     }
 
-    private let isDev = BuildKind.current == .dev
+    /// Orange icon: a local build, or any instance that is not the release.
+    private let isDev = BuildKind.current == .dev || !Instance.current.isRelease
 
     /// Redraw the icon whenever `model.running` changes.
     private func trackIcon() {
@@ -94,7 +96,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let menu = NSMenu()
         menu.addItem(menuItem("Open LocalRouter", #selector(openWindow)))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Open Agent Instructions (\(AgentHelp.host))", #selector(openAgentHelp)))
+        let helpHost = model.agentHelpURL.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: "")
+        menu.addItem(menuItem("Open Agent Instructions (\(helpHost))", #selector(openAgentHelp)))
         menu.addItem(menuItem("Copy Prompt for a Coding Agent", #selector(copyAgentPrompt)))
         menu.addItem(menuItem("Copy MCP Command", #selector(copyMCPCommand)))
         menu.addItem(.separator())

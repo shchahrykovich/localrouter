@@ -31,7 +31,7 @@ final class AppModel {
     private var refreshTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
 
-    static let daemonPlist = "\(Updater.daemonLabel).plist"
+    static let daemonPlist = "\(Instance.current.daemonLabel).plist"
     private let daemonService = SMAppService.agent(plistName: AppModel.daemonPlist)
 
     var version: String {
@@ -71,7 +71,13 @@ final class AppModel {
     /// Start the daemon at login, as a LaunchAgent inside the bundle.
     func registerDaemon() {
         guard inBundle else {
-            serviceNote = "Running outside an app bundle: start localrouterd yourself."
+            serviceNote = "Running outside an app bundle: start \(Instance.current.daemonProgram) yourself."
+            return
+        }
+        // A daemon with another suffix would use another folder and ports
+        // than this app (ADR 04, 01).
+        if let problem = Instance.currentProblem ?? Instance.current.bundleProblem(Bundle.main.bundleURL) {
+            serviceNote = problem
             return
         }
         switch daemonService.status {
@@ -253,14 +259,23 @@ final class AppModel {
     var mcpCommand: String {
         let link = CLIInstaller().link
         let installed = (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil
-        return "claude mcp add localrouter -- \(installed ? link.path : "localrouter") mcp"
+        let cli = Instance.current.cli
+        return "claude mcp add \(cli) -- \(installed ? link.path : cli) mcp"
     }
 
     // MARK: Agent instructions
 
-    /// router.localhost, served by the daemon.
+    /// router.localhost, served by the daemon, on its bound ports; the
+    /// instance's default ports while the daemon is not running.
     var agentHelpURL: String {
-        AgentHelp.url(httpPort: status?.http.port, httpsPort: status?.https.port)
+        guard let status else { return Instance.current.defaultHelpURL }
+        return AgentHelp.url(httpPort: status.http.port, httpsPort: status.https.port)
+    }
+
+    /// `:7443` after a host in an https URL, or nothing on port 443.
+    var httpsPortPart: String {
+        let port = status?.https.port ?? Instance.current.defaultPorts.https
+        return port == 443 ? "" : ":\(port)"
     }
 
     var agentPrompt: String { AgentHelp.prompt(url: agentHelpURL) }
@@ -269,6 +284,10 @@ final class AppModel {
 
     func checkForUpdates(manual: Bool) async {
         if case .downloading = update { return }
+        if let reason = Updater.disabledReason(for: .current) {
+            update = manual ? .failed(reason) : .idle
+            return
+        }
         update = .checking
         do {
             let release = try await Updater.latest(currentVersion: version)
@@ -283,7 +302,7 @@ final class AppModel {
     }
 
     func installUpdate(_ release: Updater.Release) async {
-        if let obstacle = Updater.obstacle(appURL: Bundle.main.bundleURL) {
+        if let obstacle = Updater.disabledReason(for: .current) ?? Updater.obstacle(appURL: Bundle.main.bundleURL) {
             update = .failed(obstacle)
             return
         }
@@ -307,17 +326,10 @@ final class AppModel {
         busy = true
         _ = await runTool(["untrust"])
         try? await daemonService.unregister()
-        let fm = FileManager.default
-        try? fm.removeItem(at: Paths.dataDir)
-        try? fm.removeItem(at: Paths.logsDir)
-        let link = CLIInstaller().link
-        if let dest = try? fm.destinationOfSymbolicLink(atPath: link.path), dest.hasSuffix("/" + BundleLayout.cli) {
-            try? fm.removeItem(at: link)
-        }
-        ClaudeInstaller().uninstall()
+        Uninstaller().removeFiles()
         busy = false
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
-        message = "LocalRouter is uninstalled. Move LocalRouter.app to the Trash."
+        message = "\(Instance.current.appName) is uninstalled. Move \(Instance.current.appName).app to the Trash."
         try? await Task.sleep(for: .seconds(4))
         NSApp.terminate(nil)
     }

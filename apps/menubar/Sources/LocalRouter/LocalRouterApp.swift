@@ -66,7 +66,7 @@ struct MainView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("LocalRouter").font(.headline)
+            Text(Instance.current.appName).font(.headline)
             Spacer()
             if let s = model.status {
                 Text("\(s.routes) routes").foregroundStyle(.secondary).font(.caption)

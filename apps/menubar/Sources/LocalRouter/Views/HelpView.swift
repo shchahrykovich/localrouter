@@ -3,6 +3,7 @@ import SwiftUI
 
 struct HelpView: View {
     @Environment(AppModel.self) private var model
+    private let cli = Instance.current.cli
 
     var body: some View {
         ScrollView {
@@ -18,18 +19,18 @@ struct HelpView: View {
                     .font(.caption).foregroundStyle(.secondary)
 
                 Text("Add routes from a terminal").font(.headline).padding(.top, 6)
-                CopyLine(text: "localrouter add shop 5173")
-                CopyLine(text: "localrouter add feat-login.shop 5174")
-                CopyLine(text: "localrouter add db.shop 55001 --tcp --listen 15432")
-                Text("HTTP routes: https://shop.localhost. TCP routes: db.shop.localhost:15432.")
+                CopyLine(text: "\(cli) add shop 5173")
+                CopyLine(text: "\(cli) add feat-login.shop 5174")
+                CopyLine(text: "\(cli) add db.shop 55001 --tcp --listen 15432")
+                Text("HTTP routes: https://shop.localhost\(model.httpsPortPart). TCP routes: db.shop.localhost:15432.")
                     .font(.caption).foregroundStyle(.secondary)
 
                 Text("HTTPS outside Safari and Chrome").font(.headline).padding(.top, 6)
                 Text("Firefox: open about:config and set security.enterprise_roots.enabled to true.")
                 Text("Node.js:")
-                CopyLine(text: "export NODE_EXTRA_CA_CERTS=\"$(localrouter ca-path)\"")
+                CopyLine(text: "export NODE_EXTRA_CA_CERTS=\"$(\(cli) ca-path)\"")
                 Text("Python requests:")
-                CopyLine(text: "export REQUESTS_CA_BUNDLE=\"$(localrouter ca-path)\"")
+                CopyLine(text: "export REQUESTS_CA_BUNDLE=\"$(\(cli) ca-path)\"")
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)

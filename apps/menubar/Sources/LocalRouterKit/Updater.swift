@@ -7,7 +7,14 @@ import Security
 
 public enum Updater {
     public static let repo = "shchahrykovich/localrouter"
-    public static let daemonLabel = "dev.localrouter.app.daemon"
+    public static var daemonLabel: String { Instance.current.daemonLabel }
+
+    /// Why this instance must not update itself, or nil. A suffixed instance
+    /// would be replaced by the release DMG, which has no suffix (ADR 04, I5).
+    /// Checked before any network call.
+    public static func disabledReason(for instance: Instance) -> String? {
+        instance.isRelease ? nil : "Updates are off in \(instance.appName). Build it again with scripts/install.sh."
+    }
     public static var latestURL: URL { URL(string: "https://api.github.com/repos/\(repo)/releases/latest")! }
     public static var releasesPage: URL { URL(string: "https://github.com/\(repo)/releases/latest")! }
 

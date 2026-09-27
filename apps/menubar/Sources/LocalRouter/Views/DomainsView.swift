@@ -11,7 +11,7 @@ struct DomainsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("No routes yet.").font(.headline)
                 Text("Add one from a terminal:")
-                CopyLine(text: "localrouter add shop 5173")
+                CopyLine(text: "\(Instance.current.cli) add shop 5173")
                 Text("Or let a coding agent do it:")
                 CopyLine(text: model.mcpCommand)
                 Text("Then paste this into the agent in your project folder:")

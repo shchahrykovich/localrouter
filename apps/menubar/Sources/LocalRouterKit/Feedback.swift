@@ -21,15 +21,16 @@ public struct Feedback: Equatable, Sendable {
     public static func cliInstalled(link: URL, onPath: Bool, pathHint: String) -> Feedback {
         onPath
             ? Feedback(title: "Command line tool installed",
-                       detail: "\(link.path) links to this app. Open a new terminal and run: localrouter status")
+                       detail: "\(link.path) links to this app. Open a new terminal and run: \(link.lastPathComponent) status")
             : Feedback(title: "Command line tool installed",
                        detail: "\(link.path) links to this app, but \(link.deletingLastPathComponent().path) is not on PATH. Add it with:\n\(pathHint)")
     }
 
     public static func claudeInstalled(link: URL, claudeMD: URL, importAdded: Bool) -> Feedback {
+        // The link is named after the note, so its name gives the import line.
         Feedback(title: "Claude Code instructions installed",
                  detail: importAdded
-                     ? "\(link.path) links to this app, and \(ClaudeInstaller.importLine) is now the first line of \(claudeMD.path). New Claude Code sessions read it."
+                     ? "\(link.path) links to this app, and @\(link.lastPathComponent) is now the first line of \(claudeMD.path). New Claude Code sessions read it."
                      : "\(link.path) links to this app. \(claudeMD.path) already reads it.")
     }
 

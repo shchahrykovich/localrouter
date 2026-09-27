@@ -3,21 +3,24 @@
 import Foundation
 
 public enum Paths {
-    /// The data folder: $LOCALROUTER_HOME, or ~/Library/Application Support/LocalRouter.
-    public static var dataDir: URL {
-        if let home = ProcessInfo.processInfo.environment["LOCALROUTER_HOME"], !home.isEmpty {
-            return URL(fileURLWithPath: home)
+    /// $LOCALROUTER_HOME wins, so tests never touch ~/Library. Otherwise each
+    /// instance has its own folders: LocalRouter, LocalRouter-dev (ADR 04).
+    public static func resolve(instance: Instance, localHome: String?, home: URL) -> (data: URL, logs: URL) {
+        if let localHome, !localHome.isEmpty {
+            let root = URL(fileURLWithPath: localHome)
+            return (root, root.appendingPathComponent("logs"))
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/LocalRouter")
+        return (home.appendingPathComponent(instance.dataFolder), home.appendingPathComponent(instance.logsFolder))
     }
 
-    public static var logsDir: URL {
-        if let home = ProcessInfo.processInfo.environment["LOCALROUTER_HOME"], !home.isEmpty {
-            return URL(fileURLWithPath: home).appendingPathComponent("logs")
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/LocalRouter")
+    private static var resolved: (data: URL, logs: URL) {
+        resolve(instance: .current, localHome: ProcessInfo.processInfo.environment["LOCALROUTER_HOME"],
+                home: FileManager.default.homeDirectoryForCurrentUser)
     }
+
+    /// The data folder of the running instance.
+    public static var dataDir: URL { resolved.data }
+    public static var logsDir: URL { resolved.logs }
 
     public static var socket: URL { dataDir.appendingPathComponent("daemon.sock") }
     public static var caPem: URL { dataDir.appendingPathComponent("ca/ca.pem") }
