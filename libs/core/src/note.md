@@ -1,10 +1,10 @@
-# LocalRouter
+# {{APP}}
 
-LocalRouter runs on this Mac. It gives local dev servers names instead of
+{{INSTANCE_NOTE}}{{APP}} runs on this Mac. It gives local dev servers names instead of
 ports:
 
-- HTTP: `https://shop.localhost` goes to `http://127.0.0.1:5173`
-- HTTP by path: `https://shop.localhost/blog` goes to one dev server, and the
+- HTTP: `https://shop.localhost{{HTTPS}}` goes to `http://127.0.0.1:5173`
+- HTTP by path: `https://shop.localhost{{HTTPS}}/blog` goes to one dev server, and the
   rest of `shop.localhost` to another
 - TCP: `db.shop.localhost:15432` goes to `127.0.0.1:5432` (databases, caches)
 
@@ -12,7 +12,7 @@ macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
 setup and no `/etc/hosts` change.
 
 You are reading this because the user chose **Install Claude Code
-Instructions…** in the LocalRouter menu bar app.
+Instructions…** in the {{APP}} menu bar app.
 
 ## When to use it
 
@@ -31,19 +31,23 @@ have it.
 
 1. MCP tools `register_route`, `list_routes`, `find_free_port` and the others,
    if you have them.
-2. The command line tool: `localrouter status`, `localrouter list`,
-   `localrouter add <host> <port> [--path /blog]`, `localrouter which <url>`.
-   It is usually `~/.local/bin/localrouter`.
+2. The command line tool: `{{CLI}} status`, `{{CLI}} list`,
+   `{{CLI}} add <host> <port> [--path /blog]`, `{{CLI}} which <url>`.
+   It is usually `~/.local/bin/{{CLI}}`.
 3. Neither works: ask the user to choose **Install Command Line Tool…** in the
-   LocalRouter menu.
+   {{APP}} menu.
 
 ## Full instructions
 
-The running app serves the full guide, with its current status and routes:
+The command line tool prints the full guide, with the current ports, status
+and routes:
 
 ```
-curl -s http://router.localhost
+{{CLI}} guide
 ```
+
+If `{{CLI}}` is not found, run `curl -s {{DEFAULT_HELP_URL}}`. If that fails
+too, ask the user to choose **Install Command Line Tool…** in the {{APP}} menu.
 
 Read it before you add the first route in a project. It covers names, path
 routes, TCP routes, branches and worktrees, HTTPS trust, and what to write in
@@ -55,10 +59,10 @@ the project.
 - Main server: the project folder name. Other servers go under it: `api.shop`.
 - Branch or worktree: the branch first, `feat-login.shop`, registered with
   `owner_pid` of the dev server so the route goes away when the server stops.
-- Path routes: `localrouter add shop 3001 --path /blog`. The app must live
+- Path routes: `{{CLI}} add shop 3001 --path /blog`. The app must live
   under that path (Next.js `basePath`, Vite `base`), or use `--strip-path` for
   a server that answers at `/`.
 - Ask the user before you change `basePath`, `base` or `assetPrefix`: they
   change the production build too.
-- Run `localrouter list` first. Adding a host and path that exist replaces that
+- Run `{{CLI}} list` first. Adding a host and path that exist replaces that
   route.

@@ -1,17 +1,89 @@
-//! The page at `router.localhost`: instructions for a coding agent, in
-//! Markdown, with the daemon status and the current routes filled in.
+//! The texts people and coding agents read: the page at `router.localhost`
+//! (with the daemon status and the routes filled in), the Claude Code note,
+//! and the MCP server instructions. Each names its own instance: its CLI, its
+//! help URL and its ports (ADR 04, I4).
 
 use crate::api::{CaState, PortStatus, StatusResult};
+use crate::instance::{Instance, help_url, port_part};
 use crate::routes::{Protocol, Route};
 
 const TEMPLATE: &str = include_str!("help.md");
+const NOTE: &str = include_str!("note.md");
+const MCP_INSTRUCTIONS: &str = include_str!("mcp.md");
 
-/// The help page text. `https_port` is the bound HTTPS port, if any.
-pub fn render(routes: &[Route], https_port: Option<u16>, status: Option<&StatusResult>) -> String {
-    TEMPLATE
+/// The help page text. The ports are the bound ones, if any.
+pub fn render(
+    instance: &Instance,
+    routes: &[Route],
+    http_port: Option<u16>,
+    https_port: Option<u16>,
+    status: Option<&StatusResult>,
+) -> String {
+    fill(TEMPLATE, instance, http_port, https_port)
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
         .replace("{{STATUS}}", &status_table(status))
         .replace("{{ROUTES}}", &route_list(routes, https_port))
+}
+
+/// The Claude Code note, linked into `~/.claude`. It is made when the bundle
+/// is built, so it names only the default ports and points to `<cli> guide`
+/// for the real ones.
+pub fn render_note(instance: &Instance) -> String {
+    fill(NOTE, instance, None, None)
+}
+
+/// The MCP server's instructions. They name no port: the reply of
+/// `register_route` has the exact URL.
+pub fn mcp_instructions(instance: &Instance) -> String {
+    fill(MCP_INSTRUCTIONS, instance, None, None).trim_end().to_string()
+}
+
+/// The sentence a suffixed instance puts first, so an agent that reads the
+/// notes of two instances knows which one to use (ADR 04, gap G1). Empty for
+/// the release.
+pub fn instance_note(instance: &Instance, https_port: Option<u16>) -> String {
+    if instance.is_release() {
+        return String::new();
+    }
+    let release = Instance::release();
+    let https = https_port.unwrap_or(instance.default_ports().1);
+    format!(
+        "> This is **{}**, a development build of LocalRouter next to the release. Use `{}` only when the user asks for \
+         the dev build or gives a URL with port `:{https}`. For everything else use the release: `{}`.\n\n",
+        instance.app_name(),
+        instance.cli(),
+        release.cli(),
+    )
+}
+
+/// Placeholders every text shares. Ports missing from `http_port` and
+/// `https_port` are the instance's defaults.
+fn fill(template: &str, instance: &Instance, http_port: Option<u16>, https_port: Option<u16>) -> String {
+    let (default_http, default_https) = instance.default_ports();
+    let http = http_port.unwrap_or(default_http);
+    let https = https_port.unwrap_or(default_https);
+    let step7 = if instance.is_release() {
+        String::new()
+    } else {
+        format!(
+            "Project files are shared with people who run the release, so write the release names there: `{}`, and \
+             URLs without `:{https}`. `{}` is only for you, on this Mac.\n\n",
+            Instance::release().cli(),
+            instance.cli()
+        )
+    };
+    template
+        .replace("{{INSTANCE_NOTE}}", &instance_note(instance, Some(https)))
+        .replace("{{STEP7_NOTE}}", &step7)
+        .replace("{{APP}}", &instance.app_name())
+        .replace("{{CLI}}", &instance.cli())
+        .replace("{{DAEMON_LABEL}}", &instance.daemon_label())
+        .replace("{{HELP_URL}}", &help_url(Some(http), Some(https)))
+        .replace("{{DEFAULT_HELP_URL}}", &instance.default_help_url())
+        .replace("{{HTTP_PORT}}", &http.to_string())
+        .replace("{{HTTPS_PORT}}", &https.to_string())
+        .replace("{{HTTP}}", &port_part(http, 80))
+        .replace("{{HTTPS}}", &port_part(https, 443))
 }
 
 fn status_table(status: Option<&StatusResult>) -> String {
@@ -125,7 +197,7 @@ mod tests {
     #[test]
     fn status_shows_ports_ca_and_trust() {
         let s = status(Some(80), &["cannot bind 0.0.0.0:443: address in use"], Some(false));
-        let page = render(&[], None, Some(&s));
+        let page = render(&Instance::release(), &[], None, None, Some(&s));
         assert!(page.contains("| HTTP | on, port 80 |"), "{page}");
         assert!(page.contains("| HTTPS | off: cannot bind 0.0.0.0:443: address in use |"), "{page}");
         assert!(page.contains("| Local CA | ready, LocalRouter CA 1234 |"), "{page}");
@@ -139,7 +211,7 @@ mod tests {
         s.https.port = Some(443);
         s.ca.state = CaState::Broken;
         s.ca.problem = Some("ca.key is missing".into());
-        let page = render(&[], Some(443), Some(&s));
+        let page = render(&Instance::release(), &[], None, Some(443), Some(&s));
         assert!(page.contains("| HTTPS | on, port 443 |"), "{page}");
         assert!(page.contains("| Local CA | broken: ca.key is missing |"), "{page}");
         assert!(page.contains("| CA trusted by macOS | unknown |"), "{page}");
@@ -147,13 +219,13 @@ mod tests {
 
     #[test]
     fn missing_status_says_so() {
-        let page = render(&[], Some(443), None);
+        let page = render(&Instance::release(), &[], None, Some(443), None);
         assert!(page.contains("Status is not available."), "{page}");
     }
 
     #[test]
     fn no_routes_leaves_no_placeholder() {
-        let page = render(&[], Some(443), None);
+        let page = render(&Instance::release(), &[], None, Some(443), None);
         assert!(page.starts_with("# LocalRouter"));
         assert!(page.contains("No routes yet."));
         assert!(!page.contains("{{"), "{page}");
@@ -170,7 +242,7 @@ mod tests {
         feat.persistent = false;
         feat.owner_pid = Some(42);
 
-        let page = render(&[shop, db, feat], Some(443), None);
+        let page = render(&Instance::release(), &[shop, db, feat], None, Some(443), None);
         assert!(page.contains("- `https://shop.localhost` goes to `http://127.0.0.1:5173` (persistent) - main dev server"), "{page}");
         assert!(page.contains("- `db.shop.localhost:15432` goes to `tcp://127.0.0.1:5432` (tcp, session)"), "{page}");
         assert!(page.contains("- `https://feat.shop.localhost` goes to `http://127.0.0.1:5174` (owned)"), "{page}");
@@ -183,14 +255,14 @@ mod tests {
         let mut api = route("shop", Protocol::Http, "http://127.0.0.1:8000", None);
         api.path = Some("/api".into());
         api.strip_path = true;
-        let page = render(&[blog, api], Some(443), None);
+        let page = render(&Instance::release(), &[blog, api], None, Some(443), None);
         assert!(page.contains("- `https://shop.localhost/blog` goes to `http://127.0.0.1:3001` (persistent)"), "{page}");
         assert!(page.contains("- `https://shop.localhost/api` goes to `http://127.0.0.1:8000` (strip, persistent)"), "{page}");
     }
 
     #[test]
     fn https_port_other_than_443_is_in_the_url() {
-        let page = render(&[route("shop", Protocol::Http, "http://127.0.0.1:5173", None)], Some(8443), None);
+        let page = render(&Instance::release(), &[route("shop", Protocol::Http, "http://127.0.0.1:5173", None)], None, Some(8443), None);
         assert!(page.contains("`https://shop.localhost:8443`"), "{page}");
     }
 }

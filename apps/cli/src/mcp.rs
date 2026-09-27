@@ -1,4 +1,5 @@
-//! `localrouter mcp`: MCP server over stdio for coding agents.
+//! `localrouter mcp`: MCP server over stdio for coding agents. Its name and
+//! instructions come from the instance (ADR 04): `localrouter-dev mcp`.
 //!
 //! Exactly six tools (invariant I13). Each call opens the daemon socket, so the
 //! shim holds no state and never starts a daemon (ADR 01, change 5).
@@ -6,6 +7,8 @@
 use std::path::PathBuf;
 
 use localrouter_core::api::{self, FindFreePortParams, GetLogsParams, HostParams};
+use localrouter_core::help;
+use localrouter_core::instance::Instance;
 use localrouter_core::routes::{Protocol, Route};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -14,19 +17,6 @@ use rmcp::{ErrorData, ServerHandler, ServiceExt, schemars, tool, tool_handler, t
 use serde::Deserialize;
 
 use crate::client::Client;
-
-const INSTRUCTIONS: &str = "LocalRouter gives local servers stable names instead of ports.\n\
-HTTP dev servers get https://<name>.localhost (ports 80 and 443 are shared and chosen by name).\n\
-Databases and other TCP services get <name>.localhost:<listen_port> (one loopback port per route).\n\
-Typical flow: call find_free_port, start the dev server on that port, then register_route with a note \
-that says what the route is for. For a git branch or worktree use one label in front of the project: \
-feat-login.shop (labels are a-z, 0-9 and '-'). Set owner_pid to the dev server's process id to remove the \
-route automatically when it exits. Tell the user the URL from the reply.\n\
-Several apps of one site can share a name. register_route with path \"/blog\" sends /blog and /blog/... to that \
-server; the route without a path gets every other path. The app must serve under that path (Next.js basePath, \
-Vite base), or set strip_path for a server that answers at /. basePath, base and assetPrefix also change the \
-production build: ask the user before you change them. `localrouter which <url>` shows which route answers a URL.\n\
-Step-by-step setup for a project, the current routes and the HTTP/HTTPS status: curl -s http://router.localhost";
 
 // Unknown arguments are refused, not dropped: an argument this server does not
 // know would otherwise be lost without a word (ADR 03, manifest B2).
@@ -136,6 +126,7 @@ pub struct NoArgs {}
 #[derive(Clone)]
 pub struct LocalRouterMcp {
     socket: PathBuf,
+    instance: Instance,
     tool_router: ToolRouter<Self>,
 }
 
@@ -149,8 +140,8 @@ fn error_result(message: impl ToString) -> CallToolResult {
 
 #[tool_router]
 impl LocalRouterMcp {
-    pub fn new(socket: PathBuf) -> Self {
-        Self { socket, tool_router: Self::tool_router() }
+    pub fn new(socket: PathBuf, instance: Instance) -> Self {
+        Self { socket, instance, tool_router: Self::tool_router() }
     }
 
     async fn call(&self, method: &str, params: impl serde::Serialize) -> CallToolResult {
@@ -204,13 +195,13 @@ the route without a path.")]
 impl ServerHandler for LocalRouterMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("localrouter", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_server_info(Implementation::new(self.instance.cli(), env!("CARGO_PKG_VERSION")))
+            .with_instructions(help::mcp_instructions(&self.instance))
     }
 }
 
-pub async fn run(socket: PathBuf) -> anyhow::Result<()> {
-    let service = LocalRouterMcp::new(socket).serve(rmcp::transport::stdio()).await?;
+pub async fn run(socket: PathBuf, instance: Instance) -> anyhow::Result<()> {
+    let service = LocalRouterMcp::new(socket, instance).serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

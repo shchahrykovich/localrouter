@@ -1,0 +1,6 @@
+{{INSTANCE_NOTE}}LocalRouter gives local servers stable names instead of ports.
+HTTP dev servers get https://<name>.localhost URLs; the reply of register_route has the exact URL, with the port when it is not the default one.
+Databases and other TCP services get <name>.localhost:<listen_port> (one loopback port per route).
+Typical flow: call find_free_port, start the dev server on that port, then register_route with a note that says what the route is for. For a git branch or worktree use one label in front of the project: feat-login.shop (labels are a-z, 0-9 and '-'). Set owner_pid to the dev server's process id to remove the route automatically when it exits. Tell the user the URL from the reply.
+Several apps of one site can share a name. register_route with path "/blog" sends /blog and /blog/... to that server; the route without a path gets every other path. The app must serve under that path (Next.js basePath, Vite base), or set strip_path for a server that answers at /. basePath, base and assetPrefix also change the production build: ask the user before you change them. `{{CLI}} which <url>` shows which route answers a URL.
+Step-by-step setup for a project, the current routes and the HTTP/HTTPS status: run `{{CLI}} guide`.

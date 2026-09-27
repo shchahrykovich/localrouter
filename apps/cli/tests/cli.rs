@@ -252,3 +252,73 @@ fn strip_path_serves_a_server_that_answers_at_the_root() {
     let (_, out, _) = d.cli(&["list"]);
     assert!(out.contains("(strip)"), "{out}");
 }
+
+// ADR 04, T7: a CLI named localrouter-dev is the -dev instance.
+
+#[test]
+fn a_dev_cli_names_itself_in_help() {
+    let (_bin, dev) = common::renamed_cli("-dev");
+    let out = Command::new(&dev).arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("Usage: localrouter-dev"), "{help}");
+}
+
+#[test]
+fn a_dev_cli_status_names_the_instance_and_its_folder() {
+    let d = Daemon::start();
+    let (_bin, dev) = common::renamed_cli("-dev");
+    let (ok, out, err) = d.cli_as(&dev, &["status"]);
+    assert!(ok, "{err}");
+    let first = out.lines().next().unwrap();
+    assert!(first.starts_with("LocalRouter-dev "), "{out}");
+    assert!(first.contains(&d.home().display().to_string()), "{out}");
+    assert!(first.ends_with("(from LOCALROUTER_HOME)"), "{out}");
+}
+
+#[test]
+fn guide_prints_the_help_page_with_the_bound_ports_and_routes() {
+    let d = Daemon::start();
+    let (_bin, dev) = common::renamed_cli("-dev");
+    let (ok, _, err) = d.cli_as(&dev, &["add", "shop", "5173"]);
+    assert!(ok, "{err}");
+    let http = d.status()["http"]["port"].as_u64().unwrap();
+    let (ok, guide, err) = d.cli_as(&dev, &["guide"]);
+    assert!(ok, "{err}");
+    assert!(guide.contains(&format!("curl -s http://router.localhost:{http}`")), "{guide}");
+    assert!(guide.contains("localrouter-dev add shop 5173"), "{guide}");
+    assert!(guide.contains("shop.localhost"), "the route list: {guide}");
+}
+
+#[test]
+fn guide_works_without_a_daemon() {
+    let home = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_localrouter"))
+        .arg("guide")
+        .env("LOCALROUTER_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let guide = String::from_utf8_lossy(&out.stdout);
+    assert!(guide.contains("Status is not available."), "{guide}");
+    assert!(guide.contains("curl -s http://router.localhost`"), "{guide}");
+}
+
+#[test]
+fn note_prints_the_claude_note_of_the_instance() {
+    let (_bin, dev) = common::renamed_cli("-dev");
+    let out = Command::new(&dev).arg("note").output().unwrap();
+    let note = String::from_utf8_lossy(&out.stdout);
+    assert!(note.starts_with("# LocalRouter-dev"), "{note}");
+    assert!(note.contains("localrouter-dev guide"), "{note}");
+}
+
+#[test]
+fn a_cli_with_a_bad_suffix_stops_before_it_makes_a_folder() {
+    let (_bin, bad) = common::renamed_cli("-Dev");
+    let home = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
+    let data = home.path().join("data");
+    let out = Command::new(&bad).args(["status"]).env("LOCALROUTER_HOME", &data).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid instance suffix"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!data.exists());
+}

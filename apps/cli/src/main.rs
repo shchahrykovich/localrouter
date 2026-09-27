@@ -7,12 +7,13 @@ mod trust;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use localrouter_core::api::{
     self, GetLogsParams, GetLogsResult, HostParams, ListRoutesResult, RegisterRouteResult, ResetCaResult,
     StatusResult, SubscribeLogsParams, UnregisterRouteResult,
 };
 use localrouter_core::config::Config;
+use localrouter_core::help;
 use localrouter_core::logs::LogEntry;
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
@@ -106,8 +107,13 @@ enum Command {
         #[command(subcommand)]
         command: CaCommand,
     },
+    /// Print the full guide for coding agents, with the current ports, status and routes.
+    Guide,
     /// Run the MCP server over stdio (for coding agents).
     Mcp,
+    /// Print the Claude Code note of this instance (used when the app is built).
+    #[command(hide = true)]
+    Note,
 }
 
 #[derive(Subcommand)]
@@ -129,12 +135,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let cli = Cli::parse();
+    // Usage lines and errors name this instance's command: localrouter-dev.
+    // clap wants a static name; one short string per process is leaked.
+    let name: &'static str = Box::leak(instance.cli().into_boxed_str());
+    let matches = Cli::command().name(name).bin_name(name).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
     match runtime.block_on(run(cli.command, instance)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("localrouter: {e:#}");
+            eprintln!("{name}: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -147,7 +157,25 @@ async fn connect(paths: &Paths) -> Result<Client, ClientError> {
 async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
     let paths = Paths::from_env(&instance);
     match command {
-        Command::Mcp => mcp::run(paths.socket()).await,
+        Command::Mcp => mcp::run(paths.socket(), instance).await,
+        Command::Note => {
+            print!("{}", help::render_note(&instance));
+            Ok(())
+        }
+        Command::Guide => {
+            // Without a daemon the guide still helps: it says so in its status.
+            let (routes, status) = match connect(&paths).await {
+                Ok(mut c) => {
+                    let list: ListRoutesResult = c.call("list_routes", api::Empty {}).await?;
+                    let status: StatusResult = c.call("status", api::Empty {}).await?;
+                    (list.routes.into_iter().map(|v| v.route).collect(), Some(status))
+                }
+                Err(_) => (vec![], None),
+            };
+            let (http, https) = status.as_ref().map_or((None, None), |s| (s.http.port, s.https.port));
+            print!("{}", help::render(&instance, &routes, http, https, status.as_ref()));
+            Ok(())
+        }
         Command::CaPath => {
             println!("{}", paths.ca_pem().display());
             Ok(())
@@ -230,7 +258,7 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
                 return Ok(());
             }
             if r.routes.is_empty() {
-                println!("No routes. Add one with: localrouter add shop 5173");
+                println!("No routes. Add one with: {} add shop 5173", instance.cli());
             }
             for v in &r.routes {
                 let up = match v.upstream_up {
@@ -269,7 +297,7 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&s)?);
                 return Ok(());
             }
-            print_status(&s);
+            print_status(&instance, &s);
             Ok(())
         }
         Command::Trust => {
@@ -283,7 +311,7 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
                 Err(_) => None,
             };
             trust::untrust(&paths.ca_pem(), cn.as_deref())?;
-            println!("Removed the LocalRouter CA from the login keychain.");
+            println!("Removed the {} CA from the login keychain.", instance.app_name());
             Ok(())
         }
         Command::Ca { command: CaCommand::Reset { yes } } => {
@@ -295,14 +323,21 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
             let s: StatusResult = c.call("status", api::Empty {}).await?;
             trust::untrust(&paths.ca_pem(), s.ca.common_name.as_deref()).context("could not remove the old CA")?;
             let r: ResetCaResult = c.call("reset_ca", api::Empty {}).await?;
-            println!("New CA: {}. Run `localrouter trust` to trust it.", r.common_name);
+            println!("New CA: {}. Run `{} trust` to trust it.", r.common_name, instance.cli());
             Ok(())
         }
     }
 }
 
-fn print_status(s: &StatusResult) {
-    println!("LocalRouter {} (pid {}), data in {}", s.daemon_version, s.pid, s.data_dir);
+fn print_status(instance: &Instance, s: &StatusResult) {
+    // The instance and its folder, so LOCALROUTER_HOME in a shell cannot hide
+    // which daemon answered (ADR 04, gap G4).
+    let home = if std::env::var_os(localrouter_core::paths::HOME_ENV).is_some_and(|h| !h.is_empty()) {
+        " (from LOCALROUTER_HOME)"
+    } else {
+        ""
+    };
+    println!("{} {} (pid {}), data in {}{home}", instance.app_name(), s.daemon_version, s.pid, s.data_dir);
     for (name, p) in [("HTTP ", &s.http), ("HTTPS", &s.https)] {
         match p.port {
             Some(port) => println!("{name}  port {port}"),
@@ -314,7 +349,7 @@ fn print_status(s: &StatusResult) {
     }
     let trusted = match s.ca.trusted {
         Some(true) => "trusted",
-        Some(false) => "NOT trusted: run `localrouter trust`",
+        Some(false) => &format!("NOT trusted: run `{} trust`", instance.cli()),
         None => "trust unknown",
     };
     match s.ca.state {

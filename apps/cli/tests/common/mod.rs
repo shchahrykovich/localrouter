@@ -64,7 +64,12 @@ impl Daemon {
 
     /// Run the CLI against this daemon.
     pub fn cli(&self, args: &[&str]) -> (bool, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_localrouter"))
+        self.cli_as(Path::new(env!("CARGO_BIN_EXE_localrouter")), args)
+    }
+
+    /// Run `program` (for example a CLI copied as `localrouter-dev`) against this daemon.
+    pub fn cli_as(&self, program: &Path, args: &[&str]) -> (bool, String, String) {
+        let out = Command::new(program)
             .args(args)
             .env("LOCALROUTER_HOME", self.home())
             .output()
@@ -84,4 +89,13 @@ impl Drop for Daemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// ADR 04: the CLI copied under a suffixed name. The instance comes from the
+/// program's own file name, so `localrouter-dev` is the `-dev` instance.
+pub fn renamed_cli(suffix: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new().prefix("lrbin").tempdir().unwrap();
+    let program = dir.path().join(format!("localrouter{suffix}"));
+    std::fs::copy(env!("CARGO_BIN_EXE_localrouter"), &program).unwrap();
+    (dir, program)
 }

@@ -168,6 +168,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
     let source = Arc::new(Table { routes: RwLock::new(table), https_port: Some(https.port()) });
     let log = Arc::new(RequestLog::new(100));
     let proxy = Arc::new(Proxy {
+        instance: Instance::release(),
         routes: source.clone(),
         log: log.clone(),
         tls_client: tls::insecure_loopback_client_config(),

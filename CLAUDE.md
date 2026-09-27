@@ -103,6 +103,10 @@ list, so a new tool needs that test changed on purpose.
   lookup with `libs/core/src/help.md` (status and routes filled in by
   `help.rs`), and `CertStore` always issues its certificate. Validation refuses
   the host key `router`. Keep `help.md` in step with the CLI and MCP tools.
+- **Texts name their instance** (ADR 04): `help.md`, `note.md` and `mcp.md` in
+  `libs/core/src` are templates (`{{CLI}}`, `{{HELP_URL}}`, `{{HTTPS}}` …)
+  filled by `help.rs`. Never write `localrouter `, `router.localhost` or
+  `LocalRouter.md` into a string; `libs/core/tests/no_fixed_names.rs` fails on it.
 - **Owned routes (`owner_pid`) are never saved**; persistent + owner_pid is
   refused.
 - **A route is keyed by host plus path** (ADR 03). Never look up, replace or
@@ -131,8 +135,9 @@ list, so a new tool needs that test changed on purpose.
 
 - `LocalRouter.app/Contents/MacOS/LocalRouter` (Swift), `Contents/MacOS/localrouterd`
   (LaunchAgent `BundleProgram`), `Contents/Helpers/localrouter` (CLI),
-  `Contents/Resources/LocalRouter.md` (the Claude Code note, from
-  `scripts/LocalRouter.md`; keep it in step with `help.md`). The CLI
+  `Contents/Resources/LocalRouter.md` (the Claude Code note, printed by the
+  bundled CLI's hidden `note` command from `libs/core/src/note.md`; keep it in
+  step with `help.md`). The CLI
   is not in `MacOS/` because `localrouter` and `LocalRouter` are one file on a
   case-insensitive disk; paths live in `BundleLayout` (Swift) and
   `scripts/build-app.sh`.

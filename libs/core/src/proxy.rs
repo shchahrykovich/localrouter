@@ -23,6 +23,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 use crate::api::StatusResult;
+use crate::instance::Instance;
 use crate::logs::{LogEntry, RequestLog};
 use crate::routes::{HELP_HOST, Route, Scheme, host_key};
 
@@ -39,12 +40,18 @@ pub trait RouteSource: Send + Sync {
     fn all(&self) -> Vec<Route>;
     /// The HTTPS port actually bound, for `https_only` redirects.
     fn https_port(&self) -> Option<u16>;
+    /// The HTTP port actually bound, for the help page.
+    fn http_port(&self) -> Option<u16> {
+        None
+    }
 }
 
 /// The daemon status, for the help page. `None` when it is not available.
 pub type StatusFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<StatusResult>> + Send>> + Send + Sync>;
 
 pub struct Proxy {
+    /// Names the CLI, help URL and ports in the pages the proxy writes.
+    pub instance: Instance,
     pub routes: Arc<dyn RouteSource>,
     pub log: Arc<RequestLog>,
     pub tls_client: Arc<rustls::ClientConfig>,
@@ -94,10 +101,10 @@ impl Proxy {
                 Some(status) => status().await,
                 None => None,
             };
-            help(&self.routes.all(), self.routes.https_port(), status.as_ref())
+            help(&self.instance, &self.routes.all(), self.routes.http_port(), self.routes.https_port(), status.as_ref())
         } else {
             match self.routes.lookup(&host, req.uri().path()) {
-                None => not_found(&host, &self.routes.all()),
+                None => not_found(&self.instance, &host, &self.routes.all()),
                 Some(route) => {
                     answered_by = Some(route.key().to_string());
                     if scheme == ClientScheme::Http && route.https_only {
@@ -303,11 +310,18 @@ fn page(status: StatusCode, title: &str, body_html: String) -> Response<Body> {
 
 /// `router.localhost`: Markdown for coding agents, sent as plain text so a
 /// browser shows it instead of downloading it.
-fn help(routes: &[Route], https_port: Option<u16>, status: Option<&StatusResult>) -> Response<Body> {
+fn help(
+    instance: &Instance,
+    routes: &[Route],
+    http_port: Option<u16>,
+    https_port: Option<u16>,
+    status: Option<&StatusResult>,
+) -> Response<Body> {
+    let text = crate::help::render(instance, routes, http_port, https_port, status);
     Response::builder()
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Full::new(Bytes::from(crate::help::render(routes, https_port, status))).map_err(|never| match never {}).boxed())
+        .body(Full::new(Bytes::from(text)).map_err(|never| match never {}).boxed())
         .expect("static response parts are valid")
 }
 
@@ -315,21 +329,33 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-fn not_found(host: &str, routes: &[Route]) -> Response<Body> {
+/// `:7443` when the request named a port, so links stay on the instance
+/// that answered.
+fn request_port(host: &str) -> &str {
+    match host.rfind(':') {
+        Some(i) if host[i + 1..].bytes().all(|b| b.is_ascii_digit()) && i + 1 < host.len() => &host[i..],
+        _ => "",
+    }
+}
+
+fn not_found(instance: &Instance, host: &str, routes: &[Route]) -> Response<Body> {
+    let port = escape(request_port(host));
     let mut list = String::new();
     for r in routes {
         let name = escape(&r.full_name());
         let item = match r.listen_port {
             Some(port) => format!("<li><code>{name}:{port}</code> (tcp) → <code>{}</code></li>", escape(&r.target)),
             None => {
+                // The link keeps the port the request came in on.
                 let at = escape(&r.full_name_and_path());
-                format!("<li><a href=\"//{at}/\">{at}</a> → <code>{}</code></li>", escape(&r.target))
+                let path = escape(r.path.as_deref().unwrap_or(""));
+                format!("<li><a href=\"//{name}{port}{path}/\">{at}</a> → <code>{}</code></li>", escape(&r.target))
             }
         };
         list.push_str(&item);
     }
     if list.is_empty() {
-        list = "<li>No routes yet. Add one with <code>localrouter add shop 5173</code>.</li>".into();
+        list = format!("<li>No routes yet. Add one with <code>{} add shop 5173</code>.</li>", escape(&instance.cli()));
     }
     let known = if host_key(host).is_some() { "" } else { " It is not a .localhost name." };
     page(
@@ -337,7 +363,7 @@ fn not_found(host: &str, routes: &[Route]) -> Response<Body> {
         "No route for this name",
         format!(
             "<p>No route matches <code>{}</code>.{known}</p><h2>Routes</h2><ul>{list}</ul>\
-             <p>Instructions for coding agents: <a href=\"//{HELP_HOST}.localhost/\">{HELP_HOST}.localhost</a></p>",
+             <p>Instructions for coding agents: <a href=\"//{HELP_HOST}.localhost{port}/\">{HELP_HOST}.localhost{port}</a></p>",
             escape(host)
         ),
     )
@@ -374,6 +400,35 @@ fn redirect_to_https(host: &str, path: &str, https_port: Option<u16>) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn body_text(resp: Response<Body>) -> String {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let bytes = rt.block_on(resp.into_body().collect()).unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    // ADR 04, T5: the 404 page keeps the port the request came in on, so its
+    // links stay on the instance that answered, and it names that CLI.
+    #[test]
+    fn not_found_links_stay_on_the_request_port() {
+        let dev = Instance::new("-dev").unwrap();
+        let page = body_text(not_found(&dev, "nope.localhost:7443", &[]));
+        assert!(page.contains("href=\"//router.localhost:7443/\""), "{page}");
+        assert!(page.contains("<code>localrouter-dev add shop 5173</code>"), "{page}");
+        let shop: Route = serde_json::from_str(r#"{"host":"shop","path":"/blog","target":"http://127.0.0.1:1"}"#).unwrap();
+        let page = body_text(not_found(&dev, "nope.localhost:7443", &[shop]));
+        assert!(page.contains("href=\"//shop.localhost:7443/blog/\""), "{page}");
+        let page = body_text(not_found(&Instance::release(), "nope.localhost", &[]));
+        assert!(page.contains("href=\"//router.localhost/\""), "{page}");
+        assert!(page.contains("<code>localrouter add shop 5173</code>"), "{page}");
+    }
+
+    #[test]
+    fn request_port_reads_the_port_of_a_host_header() {
+        assert_eq!(request_port("shop.localhost:7443"), ":7443");
+        assert_eq!(request_port("shop.localhost"), "");
+        assert_eq!(request_port("shop.localhost:"), "");
+    }
 
     #[test]
     fn hop_headers_are_removed_and_named_ones_too() {

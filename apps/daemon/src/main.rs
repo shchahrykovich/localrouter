@@ -94,7 +94,7 @@ async fn run(paths: Paths, instance: Instance) -> anyhow::Result<()> {
     let (ca, ca_problem) = match LocalCa::load_or_create(&paths, &instance) {
         CaLoad::Ready(ca) => (Some(*ca), None),
         CaLoad::Broken(why) => {
-            tracing::error!("HTTPS is off: {why}. Run `localrouter ca reset` to make a new CA.");
+            tracing::error!("HTTPS is off: {why}. Run `{} ca reset` to make a new CA.", instance.cli());
             (None, Some(why))
         }
     };

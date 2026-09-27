@@ -72,8 +72,10 @@ if [[ ! -f "$icon_cache" || "$ROOT/scripts/make-icon.swift" -nt "$icon_cache" ]]
     rm -rf "$tmp"
 fi
 cp "$icon_cache" "$APP/Contents/Resources/AppIcon.icns"
-# The note that Install Claude Code Instructions… links into ~/.claude.
-cp "$ROOT/scripts/LocalRouter.md" "$APP/Contents/Resources/LocalRouter.md"
+# The note that Install Claude Code Instructions… links into ~/.claude. The
+# bundled CLI prints it, filled in for this instance (ADR 04).
+"$APP/Contents/Helpers/localrouter" note > "$APP/Contents/Resources/LocalRouter.md"
+[[ -s "$APP/Contents/Resources/LocalRouter.md" ]] || lr_die "the CLI printed no Claude Code note"
 
 lr_say "Signing ($([[ "$identity" == "-" ]] && echo ad-hoc || echo "Developer ID"))"
 if [[ "$identity" == "-" ]]; then

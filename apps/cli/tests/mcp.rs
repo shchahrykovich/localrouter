@@ -13,7 +13,11 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 
 async fn mcp_client(home: &std::path::Path) -> RunningService<rmcp::RoleClient, ()> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_localrouter"));
+    mcp_client_as(std::path::Path::new(env!("CARGO_BIN_EXE_localrouter")), home).await
+}
+
+async fn mcp_client_as(program: &std::path::Path, home: &std::path::Path) -> RunningService<rmcp::RoleClient, ()> {
+    let mut cmd = Command::new(program);
     cmd.arg("mcp").env("LOCALROUTER_HOME", home);
     let transport = TokioChildProcess::new(cmd).unwrap();
     ().serve(transport).await.unwrap()
@@ -150,5 +154,30 @@ async fn path_routes_through_mcp_and_unknown_arguments_are_refused() {
     assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["removed"], false, "I28");
     let r = call(&client, "unregister_route", json!({"host": "shop", "path": "/blog"})).await;
     assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["removed"], true);
+    client.cancel().await.unwrap();
+}
+
+// ADR 04, T8: the MCP server of localrouter-dev names the dev instance.
+#[tokio::test]
+async fn a_dev_mcp_server_names_the_dev_instance() {
+    let d = Daemon::start();
+    let (_bin, dev) = common::renamed_cli("-dev");
+    let client = mcp_client_as(&dev, d.home()).await;
+    let info = client.peer_info().expect("server info");
+    assert_eq!(info.server_info.as_ref().map(|s| s.name.as_str()), Some("localrouter-dev"));
+    let instructions = info.instructions.clone().unwrap_or_default();
+    assert!(instructions.contains("`localrouter-dev guide`"), "{instructions}");
+    assert!(instructions.contains("only when the user asks"), "{instructions}");
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 6);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_release_mcp_server_keeps_its_name() {
+    let d = Daemon::start();
+    let client = mcp_client(d.home()).await;
+    let info = client.peer_info().expect("server info");
+    assert_eq!(info.server_info.as_ref().map(|s| s.name.as_str()), Some("localrouter"));
+    assert!(!info.instructions.clone().unwrap_or_default().contains("development build"));
     client.cancel().await.unwrap();
 }

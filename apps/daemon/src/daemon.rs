@@ -50,6 +50,9 @@ impl RouteSource for Shared {
     fn https_port(&self) -> Option<u16> {
         Some(self.https_port.load(Ordering::Relaxed)).filter(|&p| p != 0)
     }
+    fn http_port(&self) -> Option<u16> {
+        Some(self.http_port.load(Ordering::Relaxed)).filter(|&p| p != 0)
+    }
 }
 
 struct TcpHandle {
@@ -149,6 +152,7 @@ impl Daemon {
         Arc::new_cyclic(|this: &Weak<Self>| {
             let this = this.clone();
             let proxy = Arc::new(Proxy {
+                instance: instance.clone(),
                 routes: shared.clone(),
                 log: log.clone(),
                 tls_client: localrouter_core::tls::insecure_loopback_client_config(),
