@@ -24,35 +24,37 @@ use tracing_subscriber::util::SubscriberInitExt;
 use crate::daemon::{DAEMON_VERSION, Daemon};
 
 fn main() -> ExitCode {
-    if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("localrouterd {DAEMON_VERSION}");
-        return ExitCode::SUCCESS;
-    }
     // Before any folder is opened: a bad suffix must not create one (ADR 04, I3).
     let instance = match Instance::of_this_program() {
         Ok(instance) => instance,
         Err(e) => {
-            eprintln!("localrouterd: {e}");
+            eprintln!("{}: {e}", program_name());
             return ExitCode::from(2);
         }
     };
+    // Messages name this program: localrouterd-dev for the -dev instance.
+    let name = instance.daemon_program();
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("{name} {DAEMON_VERSION}");
+        return ExitCode::SUCCESS;
+    }
     let paths = Paths::from_env(&instance);
     if let Some(problem) = paths.socket_path_problem() {
-        eprintln!("localrouterd: {problem}");
+        eprintln!("{name}: {problem}");
         return ExitCode::from(2);
     }
     if let Err(e) = std::fs::create_dir_all(&paths.data) {
-        eprintln!("localrouterd: cannot create {}: {e}", paths.data.display());
+        eprintln!("{name}: cannot create {}: {e}", paths.data.display());
         return ExitCode::from(2);
     }
     let _lock = match lock::acquire(&paths.lock()) {
         Ok(lock) => lock,
         Err(lock::LockError::AlreadyRunning) => {
-            eprintln!("localrouterd: already running for {}", paths.data.display());
+            eprintln!("{name}: already running for {}", paths.data.display());
             return ExitCode::from(3);
         }
         Err(lock::LockError::Io(e)) => {
-            eprintln!("localrouterd: cannot lock {}: {e}", paths.lock().display());
+            eprintln!("{name}: cannot lock {}: {e}", paths.lock().display());
             return ExitCode::from(2);
         }
     };
@@ -61,7 +63,7 @@ fn main() -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("localrouterd: {e}");
+            eprintln!("{name}: {e}");
             return ExitCode::from(2);
         }
     };
@@ -69,10 +71,18 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
-            eprintln!("localrouterd: {e:#}");
+            eprintln!("{name}: {e:#}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// This program's file name, for errors before the instance is known.
+fn program_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| Instance::release().daemon_program())
 }
 
 fn init_logging(paths: &Paths) {

@@ -1,4 +1,4 @@
-# LocalRouter
+# {{APP}}
 
 {{INSTANCE_NOTE}}{{APP}} {{VERSION}} runs on this Mac. It gives local dev servers names
 instead of ports:

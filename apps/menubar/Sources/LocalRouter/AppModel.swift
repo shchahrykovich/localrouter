@@ -52,6 +52,7 @@ final class AppModel {
         registerDaemon()
         if inBundle, let problem = OpenAtLogin().turnOnAtFirstLaunch() { message = problem }
         refreshTask = Task { [weak self] in
+            await self?.registerAgainIfStale()
             while !Task.isCancelled {
                 await self?.refresh()
                 try? await Task.sleep(for: .seconds(3))
@@ -93,6 +94,24 @@ final class AppModel {
             } catch {
                 serviceNote = "Could not start the daemon: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// An ad-hoc build gets a new signature each time it is built. After
+    /// scripts/install.sh replaces the app, launchd keeps the launch
+    /// constraint of the old registration and refuses to start the new
+    /// daemon ("spawn failed", exit 78, "needs LWCR update"). Registering
+    /// again records the new signature. Release builds are signed by team and
+    /// are not affected.
+    private func registerAgainIfStale() async {
+        guard inBundle, BuildKind.current == .dev, daemonService.status == .enabled else { return }
+        try? await Task.sleep(for: .seconds(2))
+        guard (try? await client.status()) == nil else { return }
+        do {
+            try await daemonService.unregister()
+            try daemonService.register()
+        } catch {
+            serviceNote = "Could not start the daemon again: \(error.localizedDescription)"
         }
     }
 

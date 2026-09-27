@@ -9,12 +9,15 @@
 
 use std::path::{Path, PathBuf};
 
-const WORDS: [&str; 3] = ["localrouter ", "router.localhost", "LocalRouter.md"];
+const WORDS: [&str; 5] = ["localrouter ", "localrouterd", "router.localhost", "LocalRouter.md", "LocalRouter.app"];
 
 /// Lines that may name the release on purpose, with the reason.
-const ALLOWED: [(&str, &str); 1] = [
+const ALLOWED: [(&str, &str); 3] = [
     // An internal function's doc comment, not shown to anyone.
     ("apps/cli/src/main.rs", "/// The `localrouter which` report"),
+    // The rule itself: the release's program names.
+    ("libs/core/src/instance.rs", "const DAEMON_PROGRAM: &str = \"localrouterd\";"),
+    ("libs/core/src/instance.rs", "#[error(\"cannot tell the instance from the program name"),
 ];
 
 fn root() -> PathBuf {

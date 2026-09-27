@@ -7,7 +7,7 @@ import Foundation
 import XCTest
 
 final class NoFixedNamesTests: XCTestCase {
-    private let words = ["localrouter ", "router.localhost", "LocalRouter.md"]
+    private let words = ["localrouter ", "localrouterd", "router.localhost", "LocalRouter.md", "LocalRouter.app"]
 
     /// Lines that may name these on purpose, with the reason.
     private let allowed: [(file: String, contains: String)] = [
@@ -15,6 +15,10 @@ final class NoFixedNamesTests: XCTestCase {
         ("AgentHelp.swift", "public static let host = \"router.localhost\""),
         // The note's file name inside every bundle; the link in ~/.claude is per instance.
         ("CLIInstaller.swift", "public static let claudeNote = \"Contents/Resources/LocalRouter.md\""),
+        // The rule itself.
+        ("Instance.swift", "public var daemonProgram: String { \"localrouterd\\(suffix)\" }"),
+        // The release DMG; the updater runs only in the release (Updater.disabledReason).
+        ("Updater.swift", "SRC=\"$MOUNT/LocalRouter.app\""),
     ]
 
     func testNoSourceWritesAFixedInstanceName() throws {

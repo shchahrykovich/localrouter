@@ -60,6 +60,7 @@ fn the_release_texts_name_the_release() {
     assert!(page.contains("claude mcp add localrouter -- ~/.local/bin/localrouter mcp"));
     assert!(page.contains("curl -s http://router.localhost`"));
     assert!(page.contains("https://shop.localhost` goes to"));
+    assert!(page.starts_with("# LocalRouter\n"));
     assert!(note.contains("localrouter guide"));
     assert!(note.contains("curl -s http://router.localhost`"), "the note keeps a fallback when the CLI is missing (G5)");
     assert!(mcp.contains("`localrouter guide`"));
@@ -122,6 +123,8 @@ fn dev_texts_say_when_to_use_the_dev_instance() {
     assert!(page.contains("Project files are shared with people who run the release"), "Step 7 says why it keeps the release names");
     assert!(page.contains("launchctl kickstart -k gui/$(id -u)/dev.localrouter.app-dev.daemon"));
     assert!(page.contains("Browsers share cookies between ports"), "the dev page warns about shared cookies");
+    assert!(page.starts_with("# LocalRouter-dev\n"), "the title names the instance");
+    assert!(render_note(&dev()).starts_with("# LocalRouter-dev\n"));
     let release = render(&Instance::release(), &[], Some(80), Some(443), None);
     assert!(!release.contains("Browsers share cookies between ports"));
 }

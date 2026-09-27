@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use localrouter_core::api::{self, API_VERSION, ApiError, Event, HelloParams, HelloResult, Request, Response};
+use localrouter_core::instance::Instance;
 use localrouter_core::logs::LogEntry;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -10,11 +11,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
-pub const NOT_RUNNING: &str = "LocalRouter is not running. Open LocalRouter.app or run localrouterd.";
+/// Names this program's instance: "LocalRouter-dev is not running. Open
+/// LocalRouter-dev.app or run localrouterd-dev." (ADR 04).
+fn not_running() -> String {
+    let i = Instance::of_this_program().unwrap_or_else(|_| Instance::release());
+    format!("{i} is not running. Open {i}.app or run {}.", i.daemon_program())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("{NOT_RUNNING}")]
+    #[error("{}", not_running())]
     NotRunning,
     #[error("{0}")]
     Api(ApiError),
