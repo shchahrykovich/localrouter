@@ -36,9 +36,17 @@ mkdir -p "$dest_dir"
 dest="$dest_dir/$app_name.app"
 # Only this instance: its bundle id, its app, its daemon.
 osascript -e "tell application id \"$(lr_bundle_id "$suffix")\" to quit" >/dev/null 2>&1 || true
+# An ad-hoc build has a new signature each time, and launchd refuses to start
+# the new daemon under the old registration ("spawn failed", exit 78). Remove
+# the old job; the app registers the daemon again when it starts and finds it
+# not running (AppModel.registerAgainIfStale).
+launchctl bootout "gui/$(id -u)/$(lr_daemon_label "$suffix")" >/dev/null 2>&1 || true
 rm -rf "$dest"
 ditto "$ROOT/build/$app_name.app" "$dest"
-launchctl kickstart -k "gui/$(id -u)/$(lr_daemon_label "$suffix")" >/dev/null 2>&1 || true
 lr_say "Installed $dest"
-[[ $launch == 1 ]] && open "$dest"
+if [[ $launch == 1 ]]; then
+    open "$dest"
+else
+    lr_say "Open $app_name to start its daemon."
+fi
 exit 0
