@@ -14,6 +14,7 @@ mod tcp_listen;
 
 use std::process::ExitCode;
 
+use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::tls::{CaLoad, LocalCa};
 use tracing_subscriber::EnvFilter;
@@ -27,7 +28,15 @@ fn main() -> ExitCode {
         println!("localrouterd {DAEMON_VERSION}");
         return ExitCode::SUCCESS;
     }
-    let paths = Paths::from_env();
+    // Before any folder is opened: a bad suffix must not create one (ADR 04, I3).
+    let instance = match Instance::of_this_program() {
+        Ok(instance) => instance,
+        Err(e) => {
+            eprintln!("localrouterd: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let paths = Paths::from_env(&instance);
     if let Some(problem) = paths.socket_path_problem() {
         eprintln!("localrouterd: {problem}");
         return ExitCode::from(2);

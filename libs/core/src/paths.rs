@@ -2,7 +2,10 @@
 //!
 //! `LOCALROUTER_HOME` replaces both folders, so tests never touch `~/Library`.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+use crate::instance::Instance;
 
 pub const HOME_ENV: &str = "LOCALROUTER_HOME";
 
@@ -16,17 +19,18 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Paths from `LOCALROUTER_HOME`, or the standard macOS folders.
-    pub fn from_env() -> Self {
-        match std::env::var_os(HOME_ENV) {
-            Some(home) if !home.is_empty() => Self::under(PathBuf::from(home)),
-            _ => {
-                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-                Self {
-                    data: home.join("Library/Application Support/LocalRouter"),
-                    logs: home.join("Library/Logs/LocalRouter"),
-                }
-            }
+    /// Paths from `LOCALROUTER_HOME`, or the macOS folders of this instance.
+    pub fn from_env(instance: &Instance) -> Self {
+        Self::resolve(instance, std::env::var_os(HOME_ENV), std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default())
+    }
+
+    /// `LOCALROUTER_HOME` wins over the instance, so tests and `cargo run`
+    /// never touch `~/Library` (ADR 04). Otherwise each instance has its own
+    /// folders: `LocalRouter` for the release, `LocalRouter-dev` for `-dev`.
+    pub fn resolve(instance: &Instance, local_home: Option<OsString>, home: PathBuf) -> Self {
+        match local_home {
+            Some(dir) if !dir.is_empty() => Self::under(PathBuf::from(dir)),
+            _ => Self { data: home.join(instance.data_folder()), logs: home.join(instance.logs_folder()) },
         }
     }
 
@@ -69,5 +73,43 @@ impl Paths {
                 self.socket().display()
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_instance_has_its_own_folders() {
+        let home = PathBuf::from("/Users/u");
+        let dev = Paths::resolve(&Instance::new("-dev").unwrap(), None, home.clone());
+        assert_eq!(dev.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter-dev"));
+        assert_eq!(dev.logs, PathBuf::from("/Users/u/Library/Logs/LocalRouter-dev"));
+        let release = Paths::resolve(&Instance::release(), None, home);
+        assert_eq!(release.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter"));
+        assert_eq!(release.logs, PathBuf::from("/Users/u/Library/Logs/LocalRouter"));
+    }
+
+    #[test]
+    fn localrouter_home_wins_over_the_instance() {
+        for suffix in ["", "-dev"] {
+            let p = Paths::resolve(&Instance::new(suffix).unwrap(), Some("/tmp/lr1".into()), PathBuf::from("/Users/u"));
+            assert_eq!(p.data, PathBuf::from("/tmp/lr1"));
+            assert_eq!(p.logs, PathBuf::from("/tmp/lr1/logs"));
+        }
+        // An empty LOCALROUTER_HOME counts as not set, as before.
+        let p = Paths::resolve(&Instance::release(), Some("".into()), PathBuf::from("/Users/u"));
+        assert_eq!(p.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter"));
+    }
+
+    /// With the longest suffix the socket path fits for user names up to 28
+    /// characters; a longer one is refused at start with a clear message.
+    #[test]
+    fn the_longest_suffix_fits_user_names_up_to_28_characters() {
+        let longest = Instance::new("-abcdefghijklmno").unwrap();
+        let at = |n: usize| Paths::resolve(&longest, None, PathBuf::from(format!("/Users/{}", "u".repeat(n))));
+        assert_eq!(at(28).socket_path_problem(), None, "{}", at(28).socket().display());
+        assert!(at(29).socket_path_problem().is_some());
     }
 }

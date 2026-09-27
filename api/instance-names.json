@@ -1,0 +1,70 @@
+{
+  "comment": "ADR 04: every name of an instance, derived from its suffix. Read by libs/core/src/instance.rs and InstanceTests.swift, so the Rust and Swift copies of the names stay equal. The empty suffix is the release and must equal the names LocalRouter always had.",
+  "rows": [
+    {
+      "suffix": "",
+      "app_name": "LocalRouter",
+      "bundle_id": "dev.localrouter.app",
+      "daemon_label": "dev.localrouter.app.daemon",
+      "daemon_program": "localrouterd",
+      "cli": "localrouter",
+      "data_folder": "Library/Application Support/LocalRouter",
+      "logs_folder": "Library/Logs/LocalRouter",
+      "note": "LocalRouter.md",
+      "mcp_name": "localrouter",
+      "ca_name_prefix": "LocalRouter CA",
+      "http_port": 80,
+      "https_port": 443,
+      "default_help_url": "http://router.localhost"
+    },
+    {
+      "suffix": "-dev",
+      "app_name": "LocalRouter-dev",
+      "bundle_id": "dev.localrouter.app-dev",
+      "daemon_label": "dev.localrouter.app-dev.daemon",
+      "daemon_program": "localrouterd-dev",
+      "cli": "localrouter-dev",
+      "data_folder": "Library/Application Support/LocalRouter-dev",
+      "logs_folder": "Library/Logs/LocalRouter-dev",
+      "note": "LocalRouter-dev.md",
+      "mcp_name": "localrouter-dev",
+      "ca_name_prefix": "LocalRouter-dev CA",
+      "http_port": 7080,
+      "https_port": 7443,
+      "default_help_url": "http://router.localhost:7080"
+    },
+    {
+      "suffix": "-test2",
+      "app_name": "LocalRouter-test2",
+      "bundle_id": "dev.localrouter.app-test2",
+      "daemon_label": "dev.localrouter.app-test2.daemon",
+      "daemon_program": "localrouterd-test2",
+      "cli": "localrouter-test2",
+      "data_folder": "Library/Application Support/LocalRouter-test2",
+      "logs_folder": "Library/Logs/LocalRouter-test2",
+      "note": "LocalRouter-test2.md",
+      "mcp_name": "localrouter-test2",
+      "ca_name_prefix": "LocalRouter-test2 CA",
+      "http_port": 7080,
+      "https_port": 7443,
+      "default_help_url": "http://router.localhost:7080"
+    },
+    {
+      "suffix": "-abcdefghijklmno",
+      "app_name": "LocalRouter-abcdefghijklmno",
+      "bundle_id": "dev.localrouter.app-abcdefghijklmno",
+      "daemon_label": "dev.localrouter.app-abcdefghijklmno.daemon",
+      "daemon_program": "localrouterd-abcdefghijklmno",
+      "cli": "localrouter-abcdefghijklmno",
+      "data_folder": "Library/Application Support/LocalRouter-abcdefghijklmno",
+      "logs_folder": "Library/Logs/LocalRouter-abcdefghijklmno",
+      "note": "LocalRouter-abcdefghijklmno.md",
+      "mcp_name": "localrouter-abcdefghijklmno",
+      "ca_name_prefix": "LocalRouter-abcdefghijklmno CA",
+      "http_port": 7080,
+      "https_port": 7443,
+      "default_help_url": "http://router.localhost:7080"
+    }
+  ],
+  "invalid": ["dev", "-", "-Dev", "-dev.1", "-my_build", "-dev/x", "-abcdefghijklmnop", " -dev"]
+}

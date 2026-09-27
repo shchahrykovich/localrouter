@@ -77,7 +77,7 @@ builds `localrouterd`; it gets a helper `renamed(binary, suffix)`.
 | `instance.rs` | T1: from a file name: `localrouterd-dev` → `-dev`, `localrouter` → `""`, `localrouter-dev` → `-dev`, `localrouterd` → `""`, `something` → error |
 | `paths.rs` | T2: suffix `-dev` and `HOME=/Users/u` → `/Users/u/Library/Application Support/LocalRouter-dev`, logs `/Users/u/Library/Logs/LocalRouter-dev` |
 | `paths.rs` | T2: `LOCALROUTER_HOME` set → that folder for every suffix |
-| `paths.rs` | T2: the socket path for the longest allowed suffix and a 40-character user name stays under 103 bytes |
+| `paths.rs` | T2: with the longest allowed suffix, a 28-character user name fits the 103-byte socket limit and a 29-character one is reported by `socket_path_problem` |
 | `tls.rs` | T13: a CA made for `-dev` has a common name starting `LocalRouter-dev CA `; for `""` it starts `LocalRouter CA ` (today's test at `tls.rs:375` stays) |
 
 ### Core: config defaults

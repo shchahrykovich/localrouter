@@ -14,6 +14,7 @@ use localrouter_core::api::{
 };
 use localrouter_core::config::Config;
 use localrouter_core::logs::LogEntry;
+use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::routes::{Explanation, Protocol, Route, RouteTable, Step};
 
@@ -120,9 +121,17 @@ enum CaCommand {
 }
 
 fn main() -> ExitCode {
+    // Before any folder is opened: a bad suffix must not create one (ADR 04, I3).
+    let instance = match Instance::of_this_program() {
+        Ok(instance) => instance,
+        Err(e) => {
+            eprintln!("localrouter: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
-    match runtime.block_on(run(cli.command)) {
+    match runtime.block_on(run(cli.command, instance)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("localrouter: {e:#}");
@@ -135,8 +144,8 @@ async fn connect(paths: &Paths) -> Result<Client, ClientError> {
     Client::connect(&paths.socket(), "cli").await
 }
 
-async fn run(command: Command) -> anyhow::Result<()> {
-    let paths = Paths::from_env();
+async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
+    let paths = Paths::from_env(&instance);
     match command {
         Command::Mcp => mcp::run(paths.socket()).await,
         Command::CaPath => {

@@ -49,8 +49,10 @@ change (invariant I1 in the [manifest](07-semantic-change-manifest.md)).
 
 **Rule for a suffix:** empty, or `-` followed by 1 to 15 characters from `a-z`
 and `0-9`. Examples: `-dev`, `-test2`. Refused: `dev` (no dash), `-Dev`,
-`-dev.1`, `-my_build`. The length limit keeps the socket path under the macOS
-limit of 103 bytes (`paths.rs:9`).
+`-dev.1`, `-my_build`. The length limit keeps the socket path within the macOS
+limit of 103 bytes (`paths.rs:9`) for user names up to 28 characters, even with
+the longest suffix. A longer path is refused at start with a clear message, as
+today (`socket_path_problem`).
 
 ### Where the suffix lives
 

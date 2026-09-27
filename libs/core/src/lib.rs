@@ -5,6 +5,7 @@
 pub mod api;
 pub mod config;
 pub mod help;
+pub mod instance;
 pub mod logs;
 pub mod paths;
 pub mod proxy;
