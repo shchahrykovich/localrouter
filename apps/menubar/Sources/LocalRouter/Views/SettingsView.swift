@@ -7,10 +7,25 @@ struct SettingsView: View {
     @State private var allowLan = false
     @State private var loaded = false
     @State private var confirmUninstall = false
+    @State private var openAtLogin = false
+    @State private var loginNote: String?
     @AppStorage("autoUpdate") private var autoUpdate = true
 
     var body: some View {
         Form {
+            Section("General") {
+                Toggle("Open at login", isOn: $openAtLogin)
+                    .disabled(!model.inBundle)
+                    .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
+                Text(model.inBundle
+                    ? "Starts LocalRouter when you log in, so it works after a restart. The daemon starts at login either way."
+                    : "Only an app bundle can open at login.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let note = loginNote {
+                    Text(note).font(.caption)
+                    Button("Open Login Items") { model.openLoginItems() }
+                }
+            }
             Section("Routing") {
                 Toggle("Subdomain fallback", isOn: $fallback)
                     .onChange(of: fallback) { _, on in if loaded { Task { await model.setFallback(on) } } }
@@ -74,11 +89,28 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .task {
+            readOpenAtLogin()
             if let c = await model.config {
                 fallback = c.fallback
                 allowLan = c.allowLan
             }
             loaded = true
         }
+    }
+
+    private func readOpenAtLogin() {
+        guard model.inBundle else { return }
+        let login = OpenAtLogin()
+        openAtLogin = login.isOn
+        loginNote = login.note
+    }
+
+    /// Acts only when the switch differs from what macOS has, so reading the
+    /// state back does not start a second change.
+    private func setOpenAtLogin(_ on: Bool) {
+        guard model.inBundle, on != OpenAtLogin().isOn else { return }
+        if let problem = OpenAtLogin().choose(on) { model.message = problem }
+        // Show what macOS did, which is not always what was asked.
+        readOpenAtLogin()
     }
 }

@@ -30,10 +30,6 @@ struct HelpView: View {
                 CopyLine(text: "export NODE_EXTRA_CA_CERTS=\"$(localrouter ca-path)\"")
                 Text("Python requests:")
                 CopyLine(text: "export REQUESTS_CA_BUNDLE=\"$(localrouter ca-path)\"")
-
-                Text("Why .localhost").font(.headline).padding(.top, 6)
-                Text("macOS resolves every *.localhost name to this Mac by itself, so LocalRouter needs no DNS server and no admin rights for names.")
-                    .foregroundStyle(.secondary)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)

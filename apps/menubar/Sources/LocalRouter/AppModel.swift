@@ -50,6 +50,7 @@ final class AppModel {
         guard !started else { return }
         started = true
         registerDaemon()
+        if inBundle, let problem = OpenAtLogin().turnOnAtFirstLaunch() { message = problem }
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
