@@ -20,6 +20,8 @@ while [[ $# -gt 0 ]]; do
         --set) bump="set"; set_to="$2"; shift 2 ;;
         --no-bump) bump="none"; shift ;;
         --notarize) notarize=1; shift ;;
+        # A release is always the instance without a suffix (ADR 04, I7).
+        --suffix) lr_die "a release has no instance suffix; build a dev instance with scripts/install.sh" ;;
         *) lr_die "unknown option $1" ;;
     esac
 done

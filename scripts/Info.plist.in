@@ -5,9 +5,11 @@
     <key>CFBundleIdentifier</key>
     <string>@BUNDLE_ID@</string>
     <key>CFBundleName</key>
-    <string>LocalRouter</string>
+    <string>@APP_NAME@</string>
     <key>CFBundleDisplayName</key>
-    <string>LocalRouter</string>
+    <string>@APP_NAME@</string>
+    <key>LRInstanceSuffix</key>
+    <string>@SUFFIX@</string>
     <key>CFBundleExecutable</key>
     <string>LocalRouter</string>
     <key>CFBundlePackageType</key>

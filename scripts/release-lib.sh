@@ -4,8 +4,9 @@
 # Developer ID by keychain hash, notary credentials from the environment or
 # from .env.notarize at the repository root (never exported).
 
+# The release's names. An instance with a suffix (ADR 04) adds it to each:
+# the names come from the functions below, which match instance.rs.
 LR_BUNDLE_ID="dev.localrouter.app"
-LR_DAEMON_LABEL="dev.localrouter.app.daemon"
 LR_GH_REPO="${LR_GH_REPO:-shchahrykovich/localrouter}"
 LR_MIN_MACOS="14.0"
 
@@ -78,4 +79,16 @@ lr_notary_credentials() {
 }
 
 lr_die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# An instance suffix: empty for the release, or "-" and 1 to 15 of a-z, 0-9.
+#   lr_check_suffix <suffix>
+lr_check_suffix() {
+    [[ -z "$1" || "$1" =~ ^-[a-z0-9]{1,15}$ ]] ||
+        lr_die "invalid instance suffix \"$1\": use \"\" or \"-\" followed by 1 to 15 of a-z and 0-9, like \"-dev\""
+}
+
+# Names of the instance with this suffix.
+lr_app_name() { printf 'LocalRouter%s' "$1"; }
+lr_bundle_id() { printf '%s%s' "$LR_BUNDLE_ID" "$1"; }
+lr_daemon_label() { printf '%s%s.daemon' "$LR_BUNDLE_ID" "$1"; }
 lr_say() { printf '==> %s\n' "$*"; }
