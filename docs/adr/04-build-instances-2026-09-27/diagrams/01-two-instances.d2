@@ -1,0 +1,36 @@
+...@_palette
+# Render with --layout elk: dagre puts the browser label on the CLI edge.
+direction: right
+title: "Two instances on one Mac" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+browser: "Browser, curl" { class: ext }
+agent: "Claude Code" { class: ext }
+
+release: "Release: LocalRouter.app" {
+  style.fill: "#f7f9fc"
+  cli: "localrouter\n(CLI, MCP)" { class: step }
+  d: "localrouterd\n:80, :443" { class: step }
+  data: "LocalRouter/\nconfig, routes, CA" { class: write }
+  cli -> d
+  d -> data
+}
+
+dev: "Dev: LocalRouter-dev.app" {
+  style.fill: "#f7f9fc"
+  cli: "localrouter-dev\n(CLI, MCP)" { class: ins }
+  d: "localrouterd-dev\n:7080, :7443" { class: ins }
+  data: "LocalRouter-dev/\nconfig, routes, CA" { class: write }
+  cli -> d
+  d -> data
+}
+
+servers: "Dev servers\non loopback" { class: ext }
+
+agent -> release.cli: "localrouter mcp"
+agent -> dev.cli: "localrouter-dev mcp"
+browser -> release.d: "shop.localhost"
+browser -> dev.d: "shop.localhost:7443"
+release.d -> servers
+dev.d -> servers
+
+legend: "Green = new in this ADR. Each CLI talks to its own daemon over its own daemon.sock. Each instance has its own data folder, CA and ports.\nBoth answer every *.localhost name; the port decides which one gets the request." { near: bottom-center; shape: text; style.font-size: 13 }

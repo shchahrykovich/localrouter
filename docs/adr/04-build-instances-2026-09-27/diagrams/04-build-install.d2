@@ -1,0 +1,20 @@
+...@_palette
+direction: down
+title: "Which script builds which instance" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+publish: "publish.sh\n(Developer ID)" { class: term }
+install: "install.sh\n(ad-hoc)" { class: term }
+build: "build-app.sh\n--suffix S" { class: step }
+rel: "LocalRouter.app\nsuffix empty\nupdater on" { class: upd }
+dev: "LocalRouter-dev.app\nsuffix -dev\nupdater off" { class: ins }
+gh: "GitHub release" { class: ext }
+apps: "~/Applications or\n/Applications" { class: write }
+
+publish -> build: "no suffix"
+install -> build: "-dev by default"
+build -> rel
+build -> dev
+rel -> gh
+dev -> apps: "never replaces\nLocalRouter.app"
+
+legend: "Green = new, blue = changed. Today install.sh builds LocalRouter.app and replaces the release.\nAfter this ADR it builds LocalRouter-dev.app unless it is given --suffix \"\" on purpose." { near: bottom-center; shape: text; style.font-size: 13 }

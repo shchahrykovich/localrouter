@@ -1,0 +1,20 @@
+...@_palette
+direction: down
+title: "How a program finds its data folder" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+start: "Program starts:\napp, daemon or CLI" { class: term }
+home: "LOCALROUTER_HOME\nset?" { class: dec }
+temp: "Use that folder\n(tests, cargo run)" { class: skip }
+name: "Read the suffix:\ndaemon, CLI: own file name\napp: Info.plist" { class: ins }
+valid: "Suffix valid?\n-[a-z0-9]+" { class: dec }
+folder: "LocalRouter + suffix\nin Application Support\nand Logs" { class: ins }
+refuse: "Exit with\na clear error" { class: del }
+
+start -> home
+home -> temp: "yes"
+home -> name: "no"
+name -> valid
+valid -> folder: "yes, or empty"
+valid -> refuse: "no"
+
+legend: "Green = new. The suffix is fixed when the bundle is built; nothing reads it from config.json,\nbecause config.json lives inside the folder the suffix chooses." { near: bottom-center; shape: text; style.font-size: 13 }

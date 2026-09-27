@@ -1,0 +1,20 @@
+...@_palette
+direction: down
+title: "Flow C (changed): a setting changes after a hand edit" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "User switches\nAllow LAN access" { class: term }
+r: "Read config.json\nfrom disk" { class: ins }
+m: "Change only\nallow_lan" { class: step }
+w: "Replace config.json;\nhand-edited ports stay" { class: upd }
+d: "File ports differ\nfrom bound ports?" { class: dec }
+n: "Reply restart_needed;\nSettings shows restart" { class: upd }
+o: "Reply ok" { class: step }
+file: "config.json" { class: write }
+
+a -> r -> m -> w -> d
+r -> file
+w -> file
+d -> n: "yes"
+d -> o: "no"
+
+legend: "Green = new, blue = changed. Today the daemon writes its in-memory config, which it read at start,\nso a port edited by hand since then is silently put back." { near: bottom-center; shape: text; style.font-size: 13 }

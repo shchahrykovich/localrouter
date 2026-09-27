@@ -1,0 +1,24 @@
+...@_palette
+direction: down
+title: "Flow A (new): first start of the dev daemon" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "localrouterd-dev starts:\nsuffix -dev from own name,\nfolder LocalRouter-dev, lock" { class: ins }
+c: "config.json\nexists?" { class: dec }
+w: "Write config.json\nports 7080, 7443" { class: ins }
+r: "Read config.json" { class: step }
+ca: "Create CA if missing\nname LocalRouter-dev CA" { class: ins }
+b: "Bind ports from config;\nserve router.localhost:7080" { class: upd }
+cfg: "config.json" { class: write }
+cafile: "ca/" { class: write }
+
+a -> c
+c -> w: "no"
+c -> r: "yes"
+w -> cfg
+r -> cfg
+w -> ca
+r -> ca
+ca -> cafile
+ca -> b
+
+legend: "Green = new, blue = changed. The release daemon runs the same steps with no suffix:\nfolder LocalRouter, default ports 80 and 443, CA name LocalRouter CA, as today." { near: bottom-center; shape: text; style.font-size: 13 }

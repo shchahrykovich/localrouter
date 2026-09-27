@@ -1,0 +1,45 @@
+...@_palette
+direction: right
+title: "Inside view: which files change" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+core: "libs/core" {
+  style.fill: "#f7f9fc"
+  inst: "instance.rs\nsuffix, names, URLs" { class: ins }
+  paths: "paths.rs\nfolder by suffix" { class: upd }
+  help: "help.rs, help.md\ntemplate" { class: upd }
+  cfg: "config.rs\ndefault ports" { class: upd }
+}
+daemon: "apps/daemon" {
+  style.fill: "#f7f9fc"
+  main: "main.rs\ninstance at start" { class: upd }
+}
+cli: "apps/cli" {
+  style.fill: "#f7f9fc"
+  main: "main.rs\nguide, texts" { class: upd }
+  mcp: "mcp.rs\ntexts, name" { class: upd }
+}
+kit: "LocalRouterKit" {
+  style.fill: "#f7f9fc"
+  inst: "Instance.swift\nsuffix, names" { class: ins }
+  inst2: "BundleLayout,\ninstallers, Paths" { class: upd }
+  upd: "Updater\noff with suffix" { class: upd }
+}
+app: "LocalRouter app" {
+  style.fill: "#f7f9fc"
+  views: "Settings, Help,\nDomains, menu" { class: upd }
+}
+scripts: "scripts" {
+  style.fill: "#f7f9fc"
+  build: "build-app.sh\n--suffix" { class: upd }
+  install: "install.sh\n-dev default" { class: upd }
+}
+
+core.inst -> core.paths
+core.inst -> core.help
+daemon.main -> core.inst
+cli.main -> core.inst
+kit.inst -> kit.inst2
+app.views -> kit.inst
+scripts.install -> scripts.build
+
+legend: "Green = new file, blue = grows. The Rust and Swift instance types are two copies of one rule, like the API types;\na shared test table in api/instance-names.json keeps them in step." { near: bottom-center; shape: text; style.font-size: 13 }

@@ -1,0 +1,33 @@
+...@_palette
+direction: right
+title: "Every help text is filled from the instance" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+inst: "Instance\nsuffix + bound ports" { class: ins }
+
+daemon: "Daemon fills" {
+  style.fill: "#f7f9fc"
+  help: "router.localhost page\nand 404 page" { class: upd }
+}
+cli: "CLI fills" {
+  style.fill: "#f7f9fc"
+  msg: "--help, messages,\nnew guide command" { class: upd }
+  mcp: "MCP instructions\nand server name" { class: upd }
+}
+app: "App fills" {
+  style.fill: "#f7f9fc"
+  ui: "Help tab, empty list,\ncopy prompt, MCP command" { class: upd }
+  inst2: "CLI and Claude\ninstallers" { class: upd }
+}
+build: "build-app.sh fills" {
+  style.fill: "#f7f9fc"
+  note: "Claude Code note\nnames the CLI only" { class: upd }
+}
+
+inst -> daemon.help
+inst -> cli.msg
+inst -> cli.mcp
+inst -> app.ui
+inst -> app.inst2
+inst -> build.note: "suffix only"
+
+legend: "Blue = text that today says localrouter or router.localhost and becomes a template.\nA test renders every text for suffix -dev and ports 7080/7443 and fails on a name without them." { near: bottom-center; shape: text; style.font-size: 13 }

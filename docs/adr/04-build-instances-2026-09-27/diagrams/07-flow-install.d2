@@ -1,0 +1,19 @@
+...@_palette
+direction: right
+title: "Flow B (changed): install buttons of the dev app" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+user: "User clicks\nInstall… in\nLocalRouter-dev" { class: term }
+cli: "Link\nlocalrouter-dev" { class: upd }
+note: "Link\nLocalRouter-dev.md" { class: upd }
+imp: "Add line\n@LocalRouter-dev.md" { class: upd }
+bin: "~/.local/bin" { class: write }
+claude: "~/.claude" { class: write }
+md: "CLAUDE.md" { class: write }
+agent: "Agent reads note,\nruns localrouter-dev guide" { class: ext }
+
+user -> cli -> bin
+user -> note -> claude
+note -> imp -> md
+md -> agent
+
+legend: "Blue = changed: today the names are fixed to localrouter and LocalRouter.md.\nThe release app's links and line are never touched by the dev app, and the other way round." { near: bottom-center; shape: text; style.font-size: 13 }
