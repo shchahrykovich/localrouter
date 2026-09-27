@@ -1,5 +1,6 @@
 //! E1: the main journey through the real binaries, with checks along the way.
 //! E1b (ADR 03): the path-route journey, the same way.
+//! E1c (ADR 04): a dev instance next to the release, the same way.
 //!
 //! Replaced in CI (covered by manual tests M1, M3, M6): ports 80/443 (random
 //! ports), the macOS `*.localhost` resolver (reqwest `resolve`), keychain trust
@@ -323,4 +324,67 @@ async fn path_journey() {
     assert_eq!(out.trim(), "removed shop; shop/api, shop/blog remain");
     assert_eq!(j.get("shop", "/x").await.0, 404);
     j.mcp.cancel().await.unwrap();
+}
+
+/// GET https://<name>:<port><path>, trusting only `ca`.
+async fn https_get(ca: &std::path::Path, name: &str, port: u16, path: &str) -> Value {
+    let pem = std::fs::read(ca).unwrap();
+    let client = reqwest::Client::builder()
+        .tls_certs_only([reqwest::Certificate::from_pem(&pem).unwrap()])
+        .resolve(name, SocketAddr::from(([127, 0, 0, 1], port)))
+        .build()
+        .unwrap();
+    let resp = client.get(format!("https://{name}:{port}{path}")).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "{name}:{port}{path}");
+    serde_json::from_str(&resp.text().await.unwrap()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn instances_journey() {
+    // 1. Two dev servers with the same name in both instances.
+    let (release_server, _r) = tagged_upstream("release").await;
+    let (dev_server, _d) = tagged_upstream("dev").await;
+
+    // 2. The release daemon and a dev daemon, each with its own folder.
+    //    Check: both run at once; the dev one does not exit "already running".
+    let release = Daemon::start();
+    let (_bin, dev_daemon) = common::renamed_daemon("-dev");
+    let dev = Daemon::start_program(&dev_daemon, &[]);
+    let (_cli_bin, dev_cli) = common::renamed_cli("-dev");
+
+    // 3. The same name in each. Check: each list shows only its own route.
+    assert!(release.cli(&["add", "shop", &release_server.to_string()]).0);
+    let (ok, _, err) = dev.cli_as(&dev_cli, &["add", "shop", &dev_server.to_string()]);
+    assert!(ok, "{err}");
+    let (_, release_list, _) = release.cli(&["list", "--json"]);
+    let (_, dev_list, _) = dev.cli_as(&dev_cli, &["list", "--json"]);
+    let target = |list: &str| serde_json::from_str::<Value>(list).unwrap()["routes"][0]["target"].clone();
+    assert_eq!(target(&release_list), json!(format!("http://127.0.0.1:{release_server}")));
+    assert_eq!(target(&dev_list), json!(format!("http://127.0.0.1:{dev_server}")));
+
+    // 4. One name, two ports: the port picks the instance.
+    let port = |d: &Daemon, scheme: &str| d.status()[scheme]["port"].as_u64().unwrap() as u16;
+    let release_https = port(&release, "https");
+    let dev_https = port(&dev, "https");
+    assert_eq!(https_get(&release.home().join("ca/ca.pem"), "shop.localhost", release_https, "/").await["tag"], "release");
+    assert_eq!(https_get(&dev.home().join("ca/ca.pem"), "shop.localhost", dev_https, "/").await["tag"], "dev");
+
+    // 5. The dev help page names the dev CLI and its own port.
+    let dev_http = port(&dev, "http");
+    let page = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{dev_http}/"))
+        .header("host", "router.localhost")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("`localrouter-dev list`"), "{page}");
+    assert!(page.contains(&format!("curl -s http://router.localhost:{dev_http}`")), "{page}");
+    assert!(page.contains("LocalRouter-dev CA "), "the dev CA carries the instance name: {page}");
+
+    // 6. The release stops. Check: the dev instance still answers.
+    drop(release);
+    assert_eq!(https_get(&dev.home().join("ca/ca.pem"), "shop.localhost", dev_https, "/x").await["path"], "/x");
 }

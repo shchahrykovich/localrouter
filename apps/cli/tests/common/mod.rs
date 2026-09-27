@@ -36,7 +36,11 @@ impl Daemon {
     }
 
     pub fn start_env(env: &[(&str, &str)]) -> Self {
-        let daemon = build_daemon();
+        Self::start_program(&build_daemon(), env)
+    }
+
+    /// Start `program`, for example the daemon copied as `localrouterd-dev`.
+    pub fn start_program(daemon: &Path, env: &[(&str, &str)]) -> Self {
         let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.json"),
@@ -97,5 +101,13 @@ pub fn renamed_cli(suffix: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new().prefix("lrbin").tempdir().unwrap();
     let program = dir.path().join(format!("localrouter{suffix}"));
     std::fs::copy(env!("CARGO_BIN_EXE_localrouter"), &program).unwrap();
+    (dir, program)
+}
+
+/// ADR 04: the daemon copied under a suffixed name (`localrouterd-dev`).
+pub fn renamed_daemon(suffix: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new().prefix("lrbin").tempdir().unwrap();
+    let program = dir.path().join(format!("localrouterd{suffix}"));
+    std::fs::copy(build_daemon(), &program).unwrap();
     (dir, program)
 }
