@@ -7,6 +7,8 @@ ports:
 - HTTP by path: `https://shop.localhost{{HTTPS}}/blog` goes to one dev server, and the
   rest of `shop.localhost` to another
 - TCP: `db.shop.localhost:15432` goes to `127.0.0.1:5432` (databases, caches)
+- Folder: `https://report.shop.localhost{{HTTPS}}` serves the files of a folder,
+  with no dev server
 
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
 setup and no `/etc/hosts` change.
@@ -21,6 +23,9 @@ the {{APP}} menu bar app (Claude Code or Codex).
   does not take the main one's port or URL.
 - The project is one site made of several apps split by path (`/blog`,
   `/admin`): one name, one route per path.
+- You wrote HTML, built a site or made a report, and the user should open it:
+  serve its folder (`--folder`, or MCP `folder` with an absolute path). No
+  server is needed.
 - The project's `AGENTS.md`, `CLAUDE.md` or README has a "Local URLs (LocalRouter)" section:
   use the names listed there.
 
@@ -32,7 +37,8 @@ have it.
 1. MCP tools `register_route`, `list_routes`, `find_free_port` and the others,
    if you have them.
 2. The command line tool: `{{CLI}} status`, `{{CLI}} list`,
-   `{{CLI}} add <host> <port> [--path /blog]`, `{{CLI}} which <url>`.
+   `{{CLI}} add <host> <port> [--path /blog]`,
+   `{{CLI}} add <host> --folder <dir>`, `{{CLI}} which <url>`.
    It is usually `~/.local/bin/{{CLI}}`.
 3. Neither works: ask the user to choose **Install Command Line Tool…** in the
    {{APP}} menu.

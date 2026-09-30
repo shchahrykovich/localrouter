@@ -1,0 +1,21 @@
+...@_palette
+direction: down
+title: "Flows B and C (changed): register and the up check" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+reg: "B. register_route\nwith file://" { class: term }
+check: "Validate form,\nthen stat the folder" { class: upd }
+table: "Route table" { class: write }
+file: "routes.json\n(if persistent)" { class: write }
+
+list: "C. list_routes" { class: term }
+up: "Up check:\nfolder: stat it\nserver: TCP connect" { class: upd }
+disk: "The folder\non disk" { class: tbl }
+
+reg -> check
+check -> disk: "stat"
+check -> table: "insert"
+table -> file: "same write lock,\nroll back on failure"
+list -> up
+up -> disk: "stat, one per\nfolder route"
+
+legend: "Blue: changed steps. Before ADR 05, register_route never looked at the disk,\nand the up check was only a 200 ms TCP connect to the target." { near: bottom-center; shape: text; style.font-size: 13 }

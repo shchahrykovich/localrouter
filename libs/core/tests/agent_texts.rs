@@ -37,6 +37,18 @@ fn every_agent_text_describes_path_routes_and_asks_before_changing_the_build() {
 }
 
 #[test]
+fn every_agent_text_describes_folder_routes() {
+    for instance in [Instance::release(), dev()] {
+        for (name, text) in texts(&instance, 80, 443) {
+            assert!(text.contains("folder"), "{name} does not mention folder routes");
+            assert!(text.contains("absolute path"), "{name} does not say MCP needs an absolute path");
+        }
+        assert!(render_note(&instance).contains("--folder"), "the note lacks the --folder option");
+        assert!(render(&instance, &[], Some(80), Some(443), None).contains("--folder"), "the help page lacks --folder");
+    }
+}
+
+#[test]
 fn the_help_page_names_both_patterns_and_the_which_command() {
     let page = render(&Instance::release(), &[], Some(80), Some(443), None);
     for word in ["--path", "--strip-path", "assetPrefix", "localrouter which", "Step 4b"] {

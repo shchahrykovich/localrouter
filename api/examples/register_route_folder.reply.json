@@ -1,0 +1,17 @@
+{
+  "id": 10,
+  "result": {
+    "route": {
+      "host": "report.shop",
+      "protocol": "http",
+      "target": "file:///Users/me/shop/coverage",
+      "note": "test coverage report, no dev server",
+      "persistent": true,
+      "urls": [
+        "https://report.shop.localhost",
+        "http://report.shop.localhost"
+      ]
+    },
+    "replaced": false
+  }
+}

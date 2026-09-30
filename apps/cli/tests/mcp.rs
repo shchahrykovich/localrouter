@@ -47,7 +47,7 @@ async fn exactly_six_tools_are_listed() {
     assert_eq!(names, ["find_free_port", "get_logs", "list_routes", "register_route", "status", "unregister_route"]);
     let register = tools.iter().find(|t| t.name == "register_route").unwrap();
     let schema = serde_json::to_value(&register.input_schema).unwrap();
-    for field in ["host", "path", "strip_path", "protocol", "target", "port", "listen_port", "note", "owner_pid", "persistent"] {
+    for field in ["host", "path", "strip_path", "protocol", "target", "port", "folder", "listen_port", "note", "owner_pid", "persistent"] {
         assert!(schema["properties"].get(field).is_some(), "register_route has no {field}: {schema}");
     }
     // ADR 03, I31: unregister_route names a route by host and path.
@@ -179,5 +179,32 @@ async fn the_release_mcp_server_keeps_its_name() {
     let info = client.peer_info().expect("server info");
     assert_eq!(info.server_info.as_ref().map(|s| s.name.as_str()), Some("localrouter"));
     assert!(!info.instructions.clone().unwrap_or_default().contains("development build"));
+    client.cancel().await.unwrap();
+}
+
+// Folder routes through MCP: the folder argument becomes a file:// target.
+#[tokio::test]
+async fn folder_routes_through_mcp() {
+    let d = Daemon::start();
+    let site = tempfile::Builder::new().prefix("lr-site").tempdir().unwrap();
+    let client = mcp_client(d.home()).await;
+
+    let folder = site.path().display().to_string();
+    let r = call(&client, "register_route", json!({"host": "report", "folder": folder})).await;
+    assert!(!is_error(&r), "{}", text(&r));
+    let reg: Value = serde_json::from_str(&text(&r)).unwrap();
+    assert_eq!(reg["route"]["target"], format!("file://{folder}"));
+    assert!(reg["route"]["urls"][0].as_str().unwrap().starts_with("https://report.localhost"));
+
+    for (args, want) in [
+        (json!({"host": "report", "folder": "dist"}), "absolute path"),
+        (json!({"host": "report", "folder": format!("{folder}/nope")}), "cannot open folder"),
+        (json!({"host": "report", "folder": folder, "port": 3000}), "without target and port"),
+        (json!({"host": "report", "folder": folder, "protocol": "tcp"}), "only for http routes"),
+    ] {
+        let r = call(&client, "register_route", args.clone()).await;
+        assert!(is_error(&r), "{args}");
+        assert!(text(&r).contains(want), "{args}: {}", text(&r));
+    }
     client.cancel().await.unwrap();
 }

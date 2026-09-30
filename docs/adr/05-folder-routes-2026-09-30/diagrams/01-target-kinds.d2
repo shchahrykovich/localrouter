@@ -1,0 +1,18 @@
+...@_palette
+direction: down
+title: "One route, two kinds of target" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+req: "Browser asks https://report.localhost/a.html\nthe route is found by name, then path" { class: term }
+kind: "Target starts\nwith file://?" { class: dec }
+fwd: "Forward to the dev server\nhttp://127.0.0.1:5173" { class: step }
+folder: "Answer from the folder\n/Users/me/shop/coverage" { class: ins }
+dev: "Dev server" { class: ext }
+disk: "Files on this Mac" { class: tbl }
+
+req -> kind
+kind -> fwd: "no (as before)"
+kind -> folder: "yes (new)"
+fwd -> dev
+folder -> disk: "read only"
+
+legend: "Green: new in ADR 05. The route lookup, the https_only redirect\nand the request log are the same for both kinds. A folder route is an HTTP route:\nit may have a path, an owner process, a note, and it may be persistent." { near: bottom-center; shape: text; style.font-size: 13 }

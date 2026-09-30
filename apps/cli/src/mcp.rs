@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use localrouter_core::api::{self, FindFreePortParams, GetLogsParams, HostParams};
 use localrouter_core::help;
 use localrouter_core::instance::Instance;
-use localrouter_core::routes::{Protocol, Route};
+use localrouter_core::routes::{FOLDER_SCHEME, Protocol, Route};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -40,6 +40,9 @@ pub struct RegisterArgs {
     /// Shorthand for target: the local port of the server (127.0.0.1).
     #[serde(default)]
     pub port: Option<u16>,
+    /// Serve the files of this folder instead of a server, for example "/Users/me/shop/dist". Absolute path. A folder answers with its index.html, else a file list. Instead of target and port.
+    #[serde(default)]
+    pub folder: Option<String>,
     /// TCP only: the port clients connect to. 0 or missing picks a free port.
     #[serde(default)]
     pub listen_port: Option<u16>,
@@ -64,13 +67,16 @@ impl RegisterArgs {
             "tcp" => Protocol::Tcp,
             other => return Err(format!("unknown protocol \"{other}\": use http or tcp")),
         };
-        let target = match (self.target, self.port) {
-            (Some(t), _) => t,
-            (None, Some(port)) => match protocol {
+        let target = match (self.target, self.port, self.folder) {
+            (Some(t), _, None) => t,
+            (None, Some(port), None) => match protocol {
                 Protocol::Http => format!("http://127.0.0.1:{port}"),
                 Protocol::Tcp => format!("tcp://127.0.0.1:{port}"),
             },
-            (None, None) => return Err("give target or port".into()),
+            // The daemon checks the path: absolute, and a folder that exists.
+            (None, None, Some(folder)) => format!("{FOLDER_SCHEME}{folder}"),
+            (None, None, None) => return Err("give target, port or folder".into()),
+            _ => return Err("give folder without target and port".into()),
         };
         Ok(Route {
             host: self.host,
@@ -154,8 +160,8 @@ impl LocalRouterMcp {
         }
     }
 
-    #[tool(description = "Create or replace a route: a name under .localhost that forwards to a local server. \
-Give path to send only that part of the name to this server. Returns the URLs. Replacing an existing name and \
+    #[tool(description = "Create or replace a route: a name under .localhost that forwards to a local server, \
+or serves the files of a folder (folder). Give path to send only that part of the name to this route. Returns the URLs. Replacing an existing name and \
 path returns replaced=true and the old target.")]
     async fn register_route(&self, Parameters(args): Parameters<RegisterArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(match args.into_route() {

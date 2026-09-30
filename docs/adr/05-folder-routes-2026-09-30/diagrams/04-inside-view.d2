@@ -1,0 +1,32 @@
+...@_palette
+direction: down
+title: "Where folder routes live in the code" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+cli: "apps/cli (localrouter)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  main: "main.rs\n--folder, made absolute" { class: upd }
+  mcp: "mcp.rs\nfolder argument" { class: upd }
+}
+
+daemon: "apps/daemon: daemon.rs\nfolder exists? up?" { class: upd }
+
+core: "libs/core" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  routes: "routes.rs\nfile:// target, checks" { class: upd }
+  proxy: "proxy.rs\nfolder or forward" { class: upd }
+  folder: "folder.rs\nresolve, list, send" { class: ins }
+  texts: "help.md, note.md, mcp.md\nagent texts" { class: upd }
+}
+
+servefile: "tower-http ServeFile\n(new dependency)" { class: ins }
+
+cli.main -> daemon: "socket API 1.2"
+cli.mcp -> daemon: "socket API 1.2"
+daemon -> core.routes: "validate"
+daemon -> core.proxy: "runs"
+core.proxy -> core.folder: "folder route"
+core.folder -> servefile: "one checked file"
+
+legend: "Green: new. Blue: grows. The menu bar app only changes its API version string to 1.2;\nit shows the file:// target as it shows any target. Not shown: tests, api/examples, docs." { near: bottom-center; shape: text; style.font-size: 13 }

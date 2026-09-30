@@ -17,7 +17,7 @@ use localrouter_core::help;
 use localrouter_core::logs::LogEntry;
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
-use localrouter_core::routes::{Explanation, Protocol, Route, RouteTable, Step};
+use localrouter_core::routes::{Explanation, FOLDER_SCHEME, Protocol, Route, RouteTable, Step};
 
 use crate::client::{Client, ClientError};
 
@@ -30,7 +30,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Add or replace a route. HTTP: `add shop 5173`. TCP: `add db.shop 55001 --tcp --listen 15432`.
+    /// Add or replace a route. HTTP: `add shop 5173`. Folder: `add docs --folder ./dist`. TCP: `add db.shop 55001 --tcp --listen 15432`.
     Add {
         /// Name without .localhost, for example shop or feat-login.shop.
         host: String,
@@ -45,6 +45,9 @@ enum Command {
         /// Full target URL: http://, https:// or tcp:// plus a loopback host and a port.
         #[arg(long)]
         target: Option<String>,
+        /// Serve the files of this folder, with no dev server. index.html for a folder, else a file list.
+        #[arg(long, conflicts_with_all = ["port", "target", "tcp", "listen"])]
+        folder: Option<std::path::PathBuf>,
         /// A TCP route (databases, caches) instead of an HTTP route.
         #[arg(long)]
         tcp: bool,
@@ -180,13 +183,14 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
             println!("{}", paths.ca_pem().display());
             Ok(())
         }
-        Command::Add { host, path, strip_path, port, target, tcp, listen, https_only, note, session, owner_pid } => {
+        Command::Add { host, path, strip_path, port, target, folder, tcp, listen, https_only, note, session, owner_pid } => {
             let protocol = if tcp { Protocol::Tcp } else { Protocol::Http };
-            let target = match (target, port) {
-                (Some(t), _) => t,
-                (None, Some(p)) if tcp => format!("tcp://127.0.0.1:{p}"),
-                (None, Some(p)) => format!("http://127.0.0.1:{p}"),
-                (None, None) => bail!("give a port or --target"),
+            let target = match (target, port, folder) {
+                (Some(t), _, _) => t,
+                (None, Some(p), _) if tcp => format!("tcp://127.0.0.1:{p}"),
+                (None, Some(p), _) => format!("http://127.0.0.1:{p}"),
+                (None, None, Some(f)) => folder_target(&f)?,
+                (None, None, None) => bail!("give a port, --target or --folder"),
             };
             if listen.is_some() && !tcp {
                 bail!("--listen is only for TCP routes; add --tcp");
@@ -327,6 +331,17 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// `./dist` → `file:///Users/me/shop/dist`. The daemon has no working
+/// folder, so the path is made absolute here.
+fn folder_target(folder: &std::path::Path) -> anyhow::Result<String> {
+    let abs = std::fs::canonicalize(folder).with_context(|| format!("folder {}", folder.display()))?;
+    if !abs.is_dir() {
+        bail!("{} is not a folder", abs.display());
+    }
+    let abs = abs.to_str().with_context(|| format!("{} is not UTF-8", abs.display()))?;
+    Ok(format!("{FOLDER_SCHEME}{abs}"))
 }
 
 fn print_status(instance: &Instance, s: &StatusResult) {
@@ -514,5 +529,18 @@ mod tests {
         db.listen_port = Some(15432);
         let out = which(&[db], true, "db.shop.localhost:15432");
         assert!(out.starts_with("db.shop.localhost:15432 -> tcp route db.shop -> tcp://127.0.0.1:5432"), "{out}");
+    }
+
+    #[test]
+    fn folder_target_is_absolute_and_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("dist")).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        let t = folder_target(&dir.path().join("x/../dist")).unwrap_err();
+        assert!(t.to_string().contains("folder"), "{t:#}");
+        assert_eq!(folder_target(&dir.path().join("dist/")).unwrap(), format!("file://{}/dist", real.display()));
+        assert!(format!("{:#}", folder_target(&dir.path().join("a.txt")).unwrap_err()).contains("is not a folder"));
+        assert!(format!("{:#}", folder_target(&dir.path().join("nope")).unwrap_err()).contains("nope"));
     }
 }

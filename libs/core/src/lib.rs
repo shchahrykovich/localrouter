@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod config;
+pub mod folder;
 pub mod help;
 pub mod instance;
 pub mod logs;

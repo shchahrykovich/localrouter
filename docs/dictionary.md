@@ -39,7 +39,7 @@ Defined in `libs/core/src/routes.rs` (planned). Decided in
 | `host` | string | The host key, see below. Example: `feat-login.shop`. |
 | `path` | string, optional | HTTP routes only. A path prefix: the route answers this path and every path under it. Example: `/blog`. Absent: the default route of the host. See Path route. |
 | `protocol` | `http` or `tcp` | Default `http`. See Route protocol. |
-| `target` | URL | Where requests go, always a loopback address. `http://` or `https://` for HTTP routes, `tcp://` for TCP routes. Example: `http://127.0.0.1:5174`. |
+| `target` | URL | Where requests go: a loopback address, or a folder. `http://` or `https://` for HTTP routes, `tcp://` for TCP routes, `file://` for a folder route. Example: `http://127.0.0.1:5174`. |
 | `listen_port` | integer | TCP routes only. The loopback port clients connect to. `0` means "pick a free one". |
 | `https_only` | boolean, default `false` | HTTP routes only. Plain HTTP gets a `308` redirect to `https://`. |
 | `strip_path` | boolean, default `false` | Path routes only. Remove the path before the request reaches the target, and send it as `X-Forwarded-Prefix`. |
@@ -66,13 +66,34 @@ again replaces that route. A host can have many routes, one per path. Defined in
 
 A path is for HTTP routes only. A host with a TCP route has no other route.
 
+### Folder route
+
+An HTTP route whose target is `file://` plus the absolute path of a folder, for
+example `file:///Users/me/shop/coverage`. The daemon answers from the folder
+itself; there is no dev server. The path is written as is, without
+percent-encoding. Defined in `libs/core/src/folder.rs`.
+
+| Request | Answer |
+|---|---|
+| a file in the folder | the file, with its content type, `Cache-Control: no-cache`, `Range` and `If-Modified-Since` |
+| a folder, with `/` at the end | its `index.html`, or a list of its files |
+| a folder, without `/` at the end | `308` to the same path with `/` |
+| a name that starts with `.`, or a link out of the folder | `404`, as if it were missing |
+| the folder is gone | `502` |
+| a method other than GET or HEAD | `405` |
+
+A folder path route maps its path to the folder: on `shop` + `/docs`,
+`/docs/a.html` is `a.html` in the folder. The daemon refuses a folder that does
+not exist when the route is registered, but loads a saved one: the disk may
+come back.
+
 ### Route protocol
 
 Decided in [ADR 01, change 7](adr/01-project-setup-2026-09-26/07-protocols.md).
 
 | Protocol | Clients connect to | Route chosen by | Target schemes |
 |---|---|---|---|
-| **`http`** (HTTP route) | shared ports 80 (HTTP) and 443 (HTTPS) | the name: TLS SNI and `Host` header | `http://`, `https://` |
+| **`http`** (HTTP route) | shared ports 80 (HTTP) and 443 (HTTPS) | the name: TLS SNI and `Host` header | `http://`, `https://`, `file://` (folder route) |
 | **`tcp`** (TCP route) | the route's own `listen_port` on `127.0.0.1` and `::1` | the listen port only; the name is not checked | `tcp://` |
 
 Plain TCP (Postgres, Redis) carries no host name, and every `*.localhost` name
@@ -122,7 +143,8 @@ Not stored as separate types. They are names for a common pattern:
 The URL a route forwards to: a scheme, then `127.0.0.1`, `localhost` or `[::1]`,
 then a port. HTTP routes use `http://` or `https://` (the certificate of an
 `https://` dev server is not checked). TCP routes use `tcp://`. Other addresses are refused, so the daemon can never
-forward to another machine.
+forward to another machine. A folder route has `file://` plus an absolute
+folder instead (see Folder route).
 
 ### Route table
 
@@ -238,7 +260,7 @@ the password. The daemon never sets it.
 | **forward** | Send the request to the route's target, with the `Host` header unchanged and `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` added. The path is sent unchanged, except on a `strip_path` route. |
 | **`X-Forwarded-Prefix`** | The header a `strip_path` route adds: the path it removed, for example `/api`. A value sent by the client is replaced. |
 | **peer check** | On each new connection, the daemon checks the address of the other side before it reads any byte. It closes the connection unless the address is loopback or `allow_lan` is on. |
-| **upstream up** | The target port accepts a TCP connection within 200 ms. Shown as the status dot in the app and `upstream_up` in `list_routes`. |
+| **upstream up** | The target port accepts a TCP connection within 200 ms; for a folder route, the folder exists. Shown as the status dot in the app and `upstream_up` in `list_routes`. |
 | **help page** | The page at `router.localhost`, served by the daemon itself. Markdown sent as plain text, for coding agents: setup steps, the status of HTTP, HTTPS and the local CA, and the current routes. No route can use the host key `router`. |
 | **404 page** | The daemon's answer when no route matches. It lists all routes. |
 | **502 page** | The daemon's answer when the target of an HTTP route does not answer within 2 seconds. It shows the target and the note. |

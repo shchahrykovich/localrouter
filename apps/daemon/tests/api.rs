@@ -591,3 +591,50 @@ fn a_daemon_with_a_bad_suffix_stops_before_it_makes_a_folder() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("invalid instance suffix"), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!data.exists());
 }
+
+// Folder routes: target file:// plus a folder the daemon serves itself.
+
+#[test]
+fn folder_route_is_checked_saved_served_and_reported_up() {
+    let site = tempfile::Builder::new().prefix("lr-site").tempdir().unwrap();
+    std::fs::write(site.path().join("index.html"), "<h1>report</h1>").unwrap();
+    let d = Daemon::start();
+    let mut c = d.client();
+
+    let missing = json!({"host": "docs", "target": format!("file://{}/nope", site.path().display())});
+    let v = c.raw("register_route", missing);
+    assert_eq!(v["error"]["code"], "invalid_route", "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("cannot open folder"), "{v}");
+    let file = json!({"host": "docs", "target": format!("file://{}/index.html", site.path().display())});
+    assert!(c.raw("register_route", file)["error"]["message"].as_str().unwrap().contains("is not a folder"));
+    let relative = json!({"host": "docs", "target": "file://site"});
+    assert!(c.raw("register_route", relative)["error"]["message"].as_str().unwrap().contains("absolute path"));
+
+    let target = format!("file://{}/", site.path().display());
+    let reg = c.call("register_route", json!({"host": "docs", "target": target, "persistent": true}));
+    assert_eq!(reg["route"]["target"], format!("file://{}", site.path().display()), "trailing slash removed");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(d.dir.path().join("routes.json")).unwrap()).unwrap();
+    assert_eq!(saved["version"], 1, "a folder route alone keeps version 1, so older daemons skip only that route");
+    assert_eq!(c.call("list_routes", json!({}))["routes"][0]["upstream_up"], true);
+
+    let port = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
+    let mut s = TcpStream::connect(("127.0.0.1", port as u16)).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: docs.localhost\r\nConnection: close\r\n\r\n").unwrap();
+    let mut reply = String::new();
+    s.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(reply.ends_with("<h1>report</h1>"), "{reply}");
+
+    let gone = site.path().to_path_buf();
+    drop(site);
+    assert_eq!(c.call("list_routes", json!({}))["routes"][0]["upstream_up"], false);
+
+    // A saved folder route whose folder is gone still loads after a restart.
+    drop(c);
+    let routes = std::fs::read_to_string(d.dir.path().join("routes.json")).unwrap();
+    drop(d);
+    let d = Daemon::start_with(|dir| std::fs::write(dir.join("routes.json"), &routes).unwrap());
+    let list = d.client().call("list_routes", json!({}));
+    assert_eq!(list["routes"][0]["target"], format!("file://{}", gone.display()));
+    assert_eq!(list["routes"][0]["upstream_up"], false);
+}

@@ -6,8 +6,9 @@ LocalRouter is a macOS menu bar app that gives local dev servers names instead
 of ports: `https://feat-login.shop.localhost` for HTTP, `db.shop.localhost:15432`
 for TCP. Coding agents manage routes through an MCP server. Design and
 decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
-`docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater) and
-`docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path).
+`docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater),
+`docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path) and
+`docs/adr/05-folder-routes-2026-09-30/` (a folder served with no dev server).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 
@@ -53,7 +54,8 @@ browser :80/:443 (by name), TCP clients :<listen_port> (by port) ─────
 ```
 
 - `libs/core` (Rust library): route model and lookup (`routes.rs`), HTTP/HTTPS
-  proxy on hyper (`proxy.rs`), TCP byte copy (`tcp.rs`), local CA and per-name
+  proxy on hyper (`proxy.rs`), folder routes served from disk with
+  tower-http's `ServeFile` (`folder.rs`), TCP byte copy (`tcp.rs`), local CA and per-name
   leaf certificates chosen by SNI (`tls.rs`), request log ring buffer
   (`logs.rs`), socket API types (`api.rs`). No I/O at start; testable alone.
 - `apps/daemon` (`localrouterd`): the **only writer** of the data folder. Binds

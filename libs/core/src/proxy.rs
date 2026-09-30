@@ -4,7 +4,8 @@
 //! the target over a new HTTP/1.1 connection (plain or TLS). WebSocket
 //! upgrades are passed through. See ADR 01, changes 6 and 7. The route is
 //! chosen by name and path, and a `strip_path` route removes its path before
-//! forwarding (ADR 03).
+//! forwarding (ADR 03). A folder route is answered from its folder, with no
+//! forwarding (`folder.rs`).
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
+use http_body_util::{BodyExt, Full, combinators::UnsyncBoxBody};
 use hyper::body::Incoming;
 use hyper::header::{self, HeaderMap, HeaderName, HeaderValue};
 use hyper::{Request, Response, StatusCode, Uri, Version};
@@ -29,7 +30,8 @@ use crate::routes::{HELP_HOST, Route, Scheme, host_key};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-type Body = BoxBody<Bytes, hyper::Error>;
+/// Proxied bodies fail with `hyper::Error`, file bodies with `io::Error`.
+pub(crate) type Body = UnsyncBoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
 /// What the proxy needs from the daemon.
 pub trait RouteSource: Send + Sync {
@@ -109,6 +111,8 @@ impl Proxy {
                     answered_by = Some(route.key().to_string());
                     if scheme == ClientScheme::Http && route.https_only {
                         redirect_to_https(&host, &path, self.routes.https_port())
+                    } else if let Some(folder) = route.folder() {
+                        crate::folder::serve(req, &self.instance, &route, folder, &host).await
                     } else {
                         // A target that fails gives this route's 502; the
                         // request never goes to another route (I25).
@@ -177,12 +181,12 @@ impl Proxy {
                 });
             }
             let (parts, body) = resp.into_parts();
-            return Ok(Response::from_parts(parts, body.boxed()));
+            return Ok(Response::from_parts(parts, body.map_err(Into::into).boxed_unsync()));
         }
 
         let (mut parts, body) = resp.into_parts();
         remove_hop_headers(&mut parts.headers, false);
-        Ok(Response::from_parts(parts, body.boxed()))
+        Ok(Response::from_parts(parts, body.map_err(Into::into).boxed_unsync()))
     }
 }
 
@@ -293,7 +297,7 @@ fn request_host<B>(req: &Request<B>) -> Option<String> {
         .or_else(|| req.uri().authority().map(|a| a.to_string()))
 }
 
-fn page(status: StatusCode, title: &str, body_html: String) -> Response<Body> {
+pub(crate) fn page(status: StatusCode, title: &str, body_html: String) -> Response<Body> {
     let html = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title>\
          <style>body{{font:15px -apple-system,sans-serif;max-width:44em;margin:3em auto;padding:0 1em;color:#222}}\
@@ -304,7 +308,7 @@ fn page(status: StatusCode, title: &str, body_html: String) -> Response<Body> {
         .status(status)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Full::new(Bytes::from(html)).map_err(|never| match never {}).boxed())
+        .body(Full::new(Bytes::from(html)).map_err(|never| match never {}).boxed_unsync())
         .expect("static response parts are valid")
 }
 
@@ -321,11 +325,11 @@ fn help(
     Response::builder()
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Full::new(Bytes::from(text)).map_err(|never| match never {}).boxed())
+        .body(Full::new(Bytes::from(text)).map_err(|never| match never {}).boxed_unsync())
         .expect("static response parts are valid")
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
@@ -393,7 +397,7 @@ fn redirect_to_https(host: &str, path: &str, https_port: Option<u16>) -> Respons
     Response::builder()
         .status(StatusCode::PERMANENT_REDIRECT)
         .header(header::LOCATION, location)
-        .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())
+        .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed_unsync())
         .expect("static response parts are valid")
 }
 

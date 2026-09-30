@@ -16,7 +16,7 @@ use crate::logs::LogEntry;
 use crate::routes::Route;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.1";
+pub const API_VERSION: &str = "1.2";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()

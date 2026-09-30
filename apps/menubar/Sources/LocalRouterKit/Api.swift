@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.1"
+public let apiVersion = "1.2"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }

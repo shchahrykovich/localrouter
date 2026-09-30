@@ -7,6 +7,8 @@ instead of ports:
 - HTTP by path: `https://shop.localhost{{HTTPS}}/blog` goes to `http://127.0.0.1:3001`,
   and every other path of `shop.localhost` to 5173
 - TCP: `db.shop.localhost:15432` goes to `127.0.0.1:5432` (databases, caches)
+- Folder: `https://report.shop.localhost{{HTTPS}}` serves the files of a folder,
+  with no dev server
 
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
 setup and no `/etc/hosts` change.
@@ -41,7 +43,7 @@ Use the first one that works:
 
 | MCP tool | Command line | What it does |
 |---|---|---|
-| `register_route` | `{{CLI}} add <host> <port> [--path /blog]` | Create or replace a route |
+| `register_route` | `{{CLI}} add <host> <port> [--path /blog]`, `{{CLI}} add <host> --folder <dir>` | Create or replace a route |
 | `unregister_route` | `{{CLI}} rm <host> [--path /blog]` | Remove a route |
 | `list_routes` | `{{CLI}} list` | All routes, their URLs, and whether each target is up |
 | `find_free_port` | - | A free TCP port on 127.0.0.1 |
@@ -93,6 +95,27 @@ Other cases:
   `{{CLI}} add db.shop 5432 --tcp --listen 15432`.
   Clients connect to `db.shop.localhost:15432`. A TCP route is chosen by its
   listen port only; the name is for people.
+
+Files with no server: a build folder, a test report, HTML you just wrote:
+
+```
+{{CLI}} add report.shop --folder ./coverage --session
+```
+
+With MCP: `register_route` with `host: "report.shop"` and
+`folder: "/Users/me/shop/coverage"`. MCP needs an absolute path; the command
+line makes a relative one absolute.
+
+- A folder answers with its `index.html`, or else with a list of its files.
+- Names that start with `.` (`.git`, `.env`) are never served, and neither are
+  links that lead out of the folder.
+- Files are read on every request: reload the page to see a change. There is
+  no live reload.
+- With `--path /docs`, `/docs/a.html` is `a.html` in the folder.
+- Only GET and HEAD. For anything more, start a dev server.
+- macOS may keep {{APP}} out of Desktop, Documents, Downloads and iCloud
+  Drive (a `403` page). Use a folder outside them, or ask the user to allow
+  {{APP}} in System Settings > Privacy & Security > Files and Folders.
 
 How long a route lives:
 
@@ -179,7 +202,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://shop.localhost{{HTTP}}/
 ```
 
 - `502` and a LocalRouter page: the dev server does not run, or it listens on
-  another port.
+  another port. For a folder route: the folder is gone.
 - `403`, "Invalid Host header" or "Blocked request": the dev server checks the
   `Host` header. Allow `.localhost`: Vite `server.allowedHosts`,
   webpack-dev-server `allowedHosts`, Django `ALLOWED_HOSTS`, Rails

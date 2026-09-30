@@ -479,3 +479,122 @@ async fn not_found_lists_path_routes_and_logs_no_route() {
     let entries = h.log.recent(None, 10);
     assert!(matches!(entries.last().unwrap(), LogEntry::Http { status: 200, route: None, .. }), "{entries:?}");
 }
+
+// Folder routes: the proxy answers from a folder, with no dev server.
+
+fn site() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("index.html"), "<h1>home</h1>").unwrap();
+    std::fs::write(dir.path().join("app.js"), "console.log(1)").unwrap();
+    std::fs::write(dir.path().join("sub/page.html"), "0123456789").unwrap();
+    std::fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
+    dir
+}
+
+fn folder_target(dir: &tempfile::TempDir) -> String {
+    format!("file://{}", dir.path().display())
+}
+
+async fn send(addr: SocketAddr, req: Request<Empty<Bytes>>) -> (StatusCode, hyper::HeaderMap, String) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+    tokio::spawn(conn);
+    let resp = sender.send_request(req).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn folder_route_serves_files_with_type_and_no_cache() {
+    let dir = site();
+    let h = harness(vec![route("docs", folder_target(&dir))]).await;
+
+    let (status, headers, body) = get(h.http, "docs.localhost", "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "<h1>home</h1>", "index.html for the folder");
+    assert_eq!(headers["content-type"], "text/html; charset=utf-8");
+    assert_eq!(headers["cache-control"], "no-cache");
+    assert!(headers.contains_key("last-modified"));
+
+    let (status, headers, _) = get(h.http, "docs.localhost", "/app.js?v=2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers["content-type"].to_str().unwrap().starts_with("text/javascript"), "{headers:?}");
+
+    let entries = h.log.recent(None, 10);
+    assert!(matches!(&entries[0], LogEntry::Http { status: 200, route: Some(r), .. } if r == "docs"), "{entries:?}");
+}
+
+#[tokio::test]
+async fn folder_route_answers_range_head_and_if_modified_since() {
+    let dir = site();
+    let h = harness(vec![route("docs", folder_target(&dir))]).await;
+
+    let (status, _, body) = get_with(h.http, "docs.localhost", "/sub/page.html", &[("range", "bytes=2-4")]).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, "234");
+
+    let head = Request::head("/sub/page.html").header("host", "docs.localhost").body(Empty::new()).unwrap();
+    let (status, headers, body) = send(h.http, head).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-length"], "10");
+    assert_eq!(body, "");
+
+    let (_, headers, _) = get(h.http, "docs.localhost", "/sub/page.html").await;
+    let modified = headers["last-modified"].to_str().unwrap().to_string();
+    let (status, _, _) = get_with(h.http, "docs.localhost", "/sub/page.html", &[("if-modified-since", &modified)]).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn folder_route_hides_dot_files_and_refuses_other_methods() {
+    let dir = site();
+    let h = harness(vec![route("docs", folder_target(&dir))]).await;
+    for path in ["/.env", "/%2eenv", "/../etc/passwd", "/sub/%2e%2e/%2e%2e/etc/passwd", "/nope.html"] {
+        let (status, _, body) = get(h.http, "docs.localhost", path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert!(!body.contains("SECRET"), "{path}: {body}");
+    }
+    let post = Request::post("/index.html").header("host", "docs.localhost").body(Empty::new()).unwrap();
+    let (status, headers, _) = send(h.http, post).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(headers["allow"], "GET, HEAD");
+}
+
+#[tokio::test]
+async fn folder_path_route_maps_its_path_to_the_folder_and_adds_the_slash() {
+    let dir = site();
+    let up = echo_upstream().await;
+    let h = harness(vec![route("shop", url(up)), at("shop", "/docs", folder_target(&dir))]).await;
+
+    let (status, _, body) = get(h.http, "shop.localhost", "/docs/sub/page.html").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "0123456789"));
+
+    let (status, headers, _) = get(h.http, "shop.localhost", "/docs?x=1").await;
+    assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(headers["location"], "/docs/?x=1");
+
+    let (status, headers, body) = get(h.http, "shop.localhost", "/docs/sub/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "text/html; charset=utf-8");
+    assert!(body.contains("<a href=\"page.html\">page.html</a>"), "a listing without index.html: {body}");
+    assert!(body.contains("<a href=\"../\">"), "{body}");
+
+    let (status, _, body) = get(h.http, "shop.localhost", "/other").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["path"], "/other", "other paths still go to the dev server");
+}
+
+#[tokio::test]
+async fn folder_route_whose_folder_is_gone_gets_a_502_with_the_folder() {
+    let dir = site();
+    let target = folder_target(&dir);
+    let gone = dir.path().display().to_string();
+    drop(dir);
+    let h = harness(vec![route("docs", target)]).await;
+    let (status, _, body) = get(h.http, "docs.localhost", "/").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.contains(&gone), "{body}");
+    assert!(body.contains("test note"), "{body}");
+}

@@ -1,0 +1,22 @@
+...@_palette
+direction: down
+title: "Registering a folder route" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+cli: "localrouter add report\n--folder ./coverage" { class: term }
+mcp: "MCP register_route\nfolder: /Users/me/shop/coverage" { class: term }
+abs: "CLI makes the path absolute\nand checks it is a folder" { class: ins }
+wrap: "MCP writes file:// + folder\n(no disk check here)" { class: ins }
+form: "Daemon checks the form:\nabsolute, no .., not the whole disk" { class: upd }
+exists: "Folder exists\non this Mac?" { class: dec }
+refuse: "Refused:\ninvalid_route" { class: del }
+table: "Route table, and\nroutes.json if persistent" { class: write }
+
+cli -> abs
+mcp -> wrap
+abs -> form: "file:///Users/me/shop/coverage"
+wrap -> form
+form -> refuse: "bad form"
+form -> exists: ok
+exists -> refuse: no
+exists -> table: yes
+legend: "Green: client side, new. Blue: daemon validation, grown. The daemon has no working folder,\nso only the CLI can resolve ./coverage; MCP must send an absolute path.\nA saved folder route loads at start even when its folder is gone: the disk may come back." { near: bottom-center; shape: text; style.font-size: 13 }

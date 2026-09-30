@@ -5,11 +5,15 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::TLD;
 
+/// Target prefix of a folder route: `file://` plus an absolute path, written
+/// as is (no percent-encoding): `file:///Users/me/site`.
+pub const FOLDER_SCHEME: &str = "file://";
 pub const MAX_NOTE_CHARS: usize = 500;
 pub const MAX_LABEL_LEN: usize = 63;
 /// A full DNS name is at most 253 characters; the key leaves room for `.localhost`.
@@ -49,7 +53,8 @@ pub struct Route {
     pub path: Option<String>,
     #[serde(default)]
     pub protocol: Protocol,
-    /// `http://`, `https://` or `tcp://` plus a loopback host and a port.
+    /// `http://`, `https://` or `tcp://` plus a loopback host and a port, or
+    /// `file://` plus the absolute path of a folder (a folder route).
     pub target: String,
     /// TCP routes only: the loopback port clients connect to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +82,11 @@ fn is_false(b: &bool) -> bool {
 impl Route {
     pub fn target_addr(&self) -> Result<TargetAddr, RouteError> {
         TargetAddr::parse(&self.target)
+    }
+
+    /// The folder a folder route serves. `None` for a route to a server.
+    pub fn folder(&self) -> Option<&Path> {
+        self.target.strip_prefix(FOLDER_SCHEME).map(Path::new)
     }
 
     /// The full name clients use, for example `feat-login.shop.localhost`.
@@ -203,8 +213,12 @@ pub enum RouteError {
     HasTld(String),
     #[error("\"{0}\" is reserved: {0}.{TLD} is LocalRouter's help page. Use another name")]
     ReservedHost(String),
-    #[error("target \"{0}\" is not valid: use http://, https:// or tcp:// plus 127.0.0.1, localhost or [::1] and a port")]
+    #[error("target \"{0}\" is not valid: use http://, https:// or tcp:// plus 127.0.0.1, localhost or [::1] and a port, or file:// plus the absolute path of a folder")]
     BadTarget(String),
+    #[error("folder \"{folder}\" is not valid: {reason}")]
+    BadFolder { folder: String, reason: &'static str },
+    #[error("a folder target (file://) is only for http routes")]
+    FolderOnlyForHttp,
     #[error("target \"{0}\" is not a loopback address: only 127.0.0.1, localhost and [::1] are allowed")]
     NotLoopback(String),
     #[error("an http route needs an http:// or https:// target")]
@@ -317,6 +331,34 @@ pub fn normalize_path(path: &str) -> Result<Option<String>, RouteError> {
     Ok(Some(format!("/{rest}")))
 }
 
+/// Check the folder of a folder target and write it in one form:
+/// `file:///Users/me//site/` becomes `file:///Users/me/site`. Does not look
+/// at the disk; the daemon checks that the folder exists.
+pub fn normalize_folder_target(target: &str) -> Result<String, RouteError> {
+    let folder = target.strip_prefix(FOLDER_SCHEME).unwrap_or(target);
+    let bad = |reason| RouteError::BadFolder { folder: folder.to_string(), reason };
+    let path = Path::new(folder);
+    if !path.is_absolute() {
+        return Err(bad("use an absolute path, for example file:///Users/me/site"));
+    }
+    if folder.contains(['\0', '\n', '\r']) {
+        return Err(bad("it contains a control character"));
+    }
+    let mut clean = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::RootDir | Component::Normal(_) => clean.push(c),
+            // `..` would make the path the route shows differ from the one
+            // it serves. (`components` already drops a `.` inside the path.)
+            _ => return Err(bad("use a path without '..' parts")),
+        }
+    }
+    if clean.parent().is_none() {
+        return Err(bad("the whole disk cannot be served; name a folder"));
+    }
+    Ok(format!("{FOLDER_SCHEME}{}", clean.display()))
+}
+
 /// One step of a lookup, for `explain`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
@@ -418,7 +460,13 @@ impl RouteTable {
             Some(p) => normalize_path(&p)?,
             None => None,
         };
-        let target = route.target_addr()?;
+        // `None`: a folder route, which has no address.
+        let target = if route.folder().is_some() {
+            route.target = normalize_folder_target(&route.target)?;
+            None
+        } else {
+            Some(route.target_addr()?)
+        };
         if route.note.chars().count() > MAX_NOTE_CHARS {
             return Err(RouteError::NoteTooLong);
         }
@@ -427,7 +475,7 @@ impl RouteTable {
         }
         match route.protocol {
             Protocol::Http => {
-                if target.scheme == Scheme::Tcp {
+                if target.as_ref().is_some_and(|t| t.scheme == Scheme::Tcp) {
                     return Err(RouteError::HttpNeedsHttpTarget);
                 }
                 if route.listen_port.is_some() {
@@ -443,6 +491,9 @@ impl RouteTable {
                 }
             }
             Protocol::Tcp => {
+                let Some(target) = target else {
+                    return Err(RouteError::FolderOnlyForHttp);
+                };
                 if target.scheme != Scheme::Tcp {
                     return Err(RouteError::TcpNeedsTcpTarget);
                 }
@@ -1011,4 +1062,63 @@ mod tests {
         assert_eq!(t.explain("shop.example.com", "/", true).steps, [Step::NotLocalhost]);
     }
 
+    // Folder routes: target file:// plus an absolute folder.
+
+    fn folder(host: &str, target: &str) -> Route {
+        Route { target: target.into(), ..http(host, 1) }
+    }
+
+    #[test]
+    fn folder_targets_are_normalized() {
+        for (given, want) in [
+            ("file:///Users/me/site", "file:///Users/me/site"),
+            ("file:///Users/me/site/", "file:///Users/me/site"),
+            ("file:///Users/me//my site", "file:///Users/me/my site"),
+            ("file:///Users/./me", "file:///Users/me"),
+        ] {
+            let mut r = folder("docs", given);
+            RouteTable::new().validate(&mut r, RES).unwrap_or_else(|e| panic!("{given}: {e}"));
+            assert_eq!(r.target, want);
+            assert_eq!(r.folder(), Some(Path::new(want.strip_prefix("file://").unwrap())));
+        }
+        assert_eq!(http("shop", 5173).folder(), None);
+    }
+
+    #[test]
+    fn bad_folder_targets_are_refused_with_the_rule() {
+        for (given, reason) in [
+            ("file://site", "absolute path"),
+            ("file://./site", "absolute path"),
+            ("file:///Users/me/../other", "'..'"),
+            ("file:///", "whole disk"),
+            ("file://////", "whole disk"),
+            ("file:///a\nb", "control character"),
+        ] {
+            let err = RouteTable::new().validate(&mut folder("docs", given), RES).unwrap_err();
+            assert!(matches!(err, RouteError::BadFolder { .. }), "{given:?}: {err}");
+            assert!(err.to_string().contains(reason), "{given:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn folder_routes_are_http_routes_and_may_have_a_path() {
+        let mut t = folder("db", "file:///srv/db");
+        t.protocol = Protocol::Tcp;
+        t.listen_port = Some(15432);
+        assert_eq!(RouteTable::new().validate(&mut t, RES), Err(RouteError::FolderOnlyForHttp));
+
+        let mut docs = Route { path: Some("/docs".into()), ..folder("shop", "file:///srv/docs") };
+        RouteTable::new().validate(&mut docs, RES).unwrap();
+        let t = table(&[http("shop", 5173), docs]);
+        assert_eq!(answer(&t, "shop.localhost", "/docs/a.html", true).as_deref(), Some("shop/docs"));
+        assert!(t.serves("shop.localhost", true));
+    }
+
+    #[test]
+    fn bad_target_message_names_the_folder_form() {
+        let mut r = http("shop", 1);
+        r.target = "ftp://x".into();
+        let err = RouteTable::new().validate(&mut r, RES).unwrap_err();
+        assert!(err.to_string().contains("file://"), "{err}");
+    }
 }

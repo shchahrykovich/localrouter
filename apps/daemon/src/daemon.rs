@@ -429,6 +429,15 @@ impl Daemon {
         let _guard = self.write.lock().await;
         let config = self.config();
         self.shared.routes.read().unwrap().validate(&mut route, reserved(&config)).map_err(route_err)?;
+        // A typo in a folder fails now, not as a 502 later. A saved route
+        // whose folder is gone still loads: the disk may come back.
+        if let Some(folder) = route.folder() {
+            match std::fs::metadata(folder) {
+                Ok(m) if m.is_dir() => {}
+                Ok(_) => return Err(err(ErrorCode::InvalidRoute, format!("{} is not a folder", folder.display()))),
+                Err(e) => return Err(err(ErrorCode::InvalidRoute, format!("cannot open folder {}: {e}", folder.display()))),
+            }
+        }
         if let Some(pid) = route.owner_pid
             && !pidwatch::alive(pid)
         {
@@ -525,8 +534,13 @@ impl Daemon {
         let checks: Vec<_> = routes
             .iter()
             .map(|r| {
+                let folder = r.folder().map(|f| f.to_path_buf());
                 let addr = r.target_addr().ok().map(|t| t.socket_addr());
                 tokio::spawn(async move {
+                    // A folder route is up while its folder is there.
+                    if let Some(folder) = folder {
+                        return tokio::fs::metadata(folder).await.is_ok_and(|m| m.is_dir());
+                    }
                     let Some(addr) = addr else { return false };
                     let connect = tokio::net::TcpStream::connect(addr);
                     matches!(tokio::time::timeout(Duration::from_millis(200), connect).await, Ok(Ok(_)))

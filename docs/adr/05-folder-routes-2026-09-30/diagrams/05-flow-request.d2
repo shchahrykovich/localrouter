@@ -1,0 +1,21 @@
+...@_palette
+direction: down
+title: "Flow A (new): a request to a folder route" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+req: "Browser: GET\nreport.localhost/a.html" { class: term }
+proxy: "Proxy: find the route,\nhttps_only redirect" { class: skip }
+resolve: "Resolve the path\n(blocking thread)" { class: ins }
+send: "ServeFile streams\nthe file" { class: ins }
+resp: "Answer to the browser" { class: term }
+
+routes: "Route table\n(memory)" { class: tbl }
+disk: "The folder\non disk" { class: tbl }
+log: "Request log\n(memory ring)" { class: write }
+
+req -> proxy -> resolve -> send -> resp
+proxy -> routes: read
+resolve -> disk: "canonicalize,\nmetadata, list"
+send -> disk: "open, read"
+resp -> log: "one entry,\nroute: report"
+
+legend: "Green: new steps. Grey: unchanged context. Navy: read. Purple: written.\nNothing is written to the folder, and nothing is written to disk by this flow." { near: bottom-center; shape: text; style.font-size: 13 }

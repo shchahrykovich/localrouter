@@ -322,3 +322,34 @@ fn a_cli_with_a_bad_suffix_stops_before_it_makes_a_folder() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("invalid instance suffix"), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!data.exists());
 }
+
+// Folder routes from the command line.
+
+#[test]
+fn folder_route_from_a_relative_path() {
+    let d = Daemon::start();
+    let work = tempfile::Builder::new().prefix("lr-work").tempdir().unwrap();
+    std::fs::create_dir(work.path().join("dist")).unwrap();
+    std::fs::write(work.path().join("dist/index.html"), "<h1>built</h1>").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_localrouter"))
+        .args(["add", "docs", "--folder", "dist", "--session"])
+        .current_dir(work.path())
+        .env("LOCALROUTER_HOME", d.home())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let real = work.path().join("dist").canonicalize().unwrap();
+    assert!(text.contains(&format!("docs.localhost -> file://{}", real.display())), "the CLI sends an absolute path: {text}");
+
+    let (ok, out, _) = d.cli(&["list"]);
+    assert!(ok && out.starts_with("up"), "{out}");
+    assert_eq!(get_body(&d, "docs.localhost", "/"), (200, "<h1>built</h1>".to_string()));
+
+    let (ok, _, err) = d.cli(&["add", "docs", "--folder", "/tmp", "--tcp"]);
+    assert!(!ok && err.contains("cannot be used with"), "{err}");
+    let (ok, _, err) = d.cli(&["add", "docs", "--folder", "/no/such/folder"]);
+    assert!(!ok && err.contains("/no/such/folder"), "{err}");
+    let (ok, _, err) = d.cli(&["add", "docs"]);
+    assert!(!ok && err.contains("--folder"), "{err}");
+}

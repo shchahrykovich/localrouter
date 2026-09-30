@@ -1,0 +1,28 @@
+...@_palette
+direction: down
+title: "How a folder route finds what to send" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+gone: "GET /sub/b%20c.html:\nis the folder there?" { class: dec }
+safe: "A part starts with a dot,\nor it leads out of the folder?" { class: dec }
+isdir: "A folder?" { class: dec }
+slash: "Ends with /?" { class: dec }
+index: "Has index.html?" { class: dec }
+
+e502: "502: the folder\nis not there" { class: del }
+e404: "404: no such file" { class: del }
+r308: "308 to the\nsame path + /" { class: upd }
+file: "Send the file (ServeFile):\ntype, Range, 304, no-cache" { class: ins }
+list: "File list, hidden\nnames left out" { class: ins }
+
+gone -> e502: no
+gone -> safe: yes
+safe -> e404: yes
+safe -> isdir: no
+isdir -> file: no
+isdir -> slash: yes
+slash -> r308: no
+slash -> index: yes
+index -> file: yes
+index -> list: no
+
+legend: "The path is the part below the route path, decoded. Other methods get 405.\nA dot part covers .git, .env and .. (also %2e%2e). Symlinks are followed first,\nso a link out of the folder is a 404, the same as a missing file." { near: bottom-center; shape: text; style.font-size: 13 }
