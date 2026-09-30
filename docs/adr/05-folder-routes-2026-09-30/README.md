@@ -2,8 +2,9 @@
 
 **Status:** Built on 2026-09-30 with small drift (see the manifest's
 [Plan vs Actual](06-semantic-change-manifest.md#plan-vs-actual)). Automated
-tests pass (200 Rust, the Swift suite with 0 failures). Manual test M1 is done;
-M2 to M5 are open, and the change is not released yet.
+tests pass (202 Rust, 95 Swift). Manual test M1 is done; M2 to M5 are open,
+and the change is not released yet. U1 and U2 were settled by the user on
+2026-09-30.
 
 ## Summary
 
@@ -87,12 +88,14 @@ things no change file argues:
    at start. Its next write to `routes.json` writes only the routes it loaded,
    so the folder route is gone for good. Remove folder routes, or keep a copy
    of `routes.json`, before a downgrade.
-2. **Two open points.** Whether macOS privacy rules let the LaunchAgent read
-   Desktop, Documents and Downloads (U1, manual test M3), and whether pages the
-   LAN can see should show local folder paths when `allow_lan` is on (U2).
-3. **What is exposed.** With `allow_lan` on, every folder route is readable
-   from the LAN, and nothing refuses a broad folder such as the home folder
-   (only `/` is refused).
+2. **Two answered points.** macOS keeps the daemon out of Desktop,
+   Documents, Downloads and iCloud Drive (U1). The answer found a bug, now
+   fixed: a refused folder gave 502 "not there" and a refused file an empty
+   404; both are now a 403 page that says what to do. LAN access stays a
+   setting, off by default; with `allow_lan` on, folder routes are reachable
+   from the LAN like every route (U2).
+3. **What is exposed.** Nothing refuses a broad folder such as the home folder
+   (only `/` is refused); dotfiles are still hidden.
 
 ## Why read the test plan
 

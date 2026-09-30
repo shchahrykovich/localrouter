@@ -113,9 +113,10 @@ line makes a relative one absolute.
   no live reload.
 - With `--path /docs`, `/docs/a.html` is `a.html` in the folder.
 - Only GET and HEAD. For anything more, start a dev server.
-- macOS may keep {{APP}} out of Desktop, Documents, Downloads and iCloud
-  Drive (a `403` page). Use a folder outside them, or ask the user to allow
-  {{APP}} in System Settings > Privacy & Security > Files and Folders.
+- macOS keeps {{APP}} out of Desktop, Documents, Downloads and iCloud
+  Drive: a folder there answers `403`. Use a folder outside them, for example
+  in the project, or ask the user to allow {{APP}} in System Settings >
+  Privacy & Security.
 
 How long a route lives:
 

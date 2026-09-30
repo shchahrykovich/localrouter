@@ -76,6 +76,8 @@ pub fn resolve(folder: &Path, rel: &str) -> Resolved {
     let root = match folder.canonicalize() {
         Ok(root) if root.is_dir() => root,
         Ok(_) => return Resolved::FolderGone("it is not a folder".into()),
+        // macOS privacy rules refuse with EPERM: the folder is there.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return denied(e),
         Err(e) => return Resolved::FolderGone(e.to_string()),
     };
     let Ok(decoded) = percent_decode_str(rel).decode_utf8() else { return Resolved::NotFound };
@@ -92,13 +94,23 @@ pub fn resolve(folder: &Path, rel: &str) -> Resolved {
         Err(e) => return denied(e),
     };
     if !real.is_dir() {
-        return Resolved::File(real);
+        // ServeFile answers a file it may not open with an empty 404; open it
+        // here first so the answer names the reason.
+        return match std::fs::File::open(&real) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => denied(e),
+            _ => Resolved::File(real),
+        };
     }
     if !rel.ends_with('/') {
         return Resolved::AddSlash;
     }
     match inside(&root, &real.join("index.html")) {
-        Ok(Some(index)) if index.is_file() => return Resolved::File(index),
+        Ok(Some(index)) if index.is_file() => {
+            return match std::fs::File::open(&index) {
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => denied(e),
+                _ => Resolved::File(index),
+            };
+        }
         Err(e) => return denied(e),
         _ => {}
     }
@@ -176,8 +188,8 @@ pub async fn serve<B: Send + 'static>(
             "Cannot read this file",
             format!(
                 "<p><code>{}</code> is in <code>{}</code>, but reading it failed: {}.</p>\
-                 <p>If the folder is in Desktop, Documents, Downloads or iCloud Drive, macOS may keep apps out of it. \
-                 Allow {} in System Settings &gt; Privacy &amp; Security &gt; Files and Folders, or use another folder.</p>",
+                 <p>If the folder is in Desktop, Documents, Downloads or iCloud Drive, macOS keeps apps out of it. \
+                 Use a folder outside them, or allow {} in System Settings &gt; Privacy &amp; Security.</p>",
                 shown(),
                 folder_html(),
                 escape(&why),
@@ -325,6 +337,18 @@ mod tests {
         let (dir, root) = site();
         assert!(matches!(resolve(&dir.path().join("nope"), "/"), Resolved::FolderGone(_)));
         assert!(matches!(resolve(&root.join("a.txt"), "/"), Resolved::FolderGone(why) if why.contains("not a folder")));
+    }
+
+    /// macOS privacy rules refuse with EPERM, which Rust reports as
+    /// PermissionDenied, like a folder without the search permission.
+    #[test]
+    fn a_folder_the_system_refuses_is_denied_not_gone() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, root) = site();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
+        let got = resolve(&root, "/");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(got, Resolved::Denied(_)), "{got:?}");
     }
 
     #[test]

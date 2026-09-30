@@ -32,7 +32,7 @@ requires. No test dependency was added: `tempfile` was already there.
 | E1 | end-to-end | relative `--folder dist` from another working folder, `list` shows up, GET through the daemon, CLI refusals | CLI binary, daemon binary, HTTP | browser: reqwest | `cargo test` |
 | M1 | manual | a daemon run by hand, `curl` on list, file, `.env`, folder without `/` | daemon, CLI, curl | LaunchAgent: a terminal process | by hand, **done** |
 | M2 | manual | installed dev app, browser over HTTPS: page, list, reload after edit | everything | none | by hand, open |
-| M3 | manual | a folder in `~/Documents` through the LaunchAgent (U1) | macOS privacy rules | none | by hand, open |
+| M3 | manual | a folder in `~/Documents` through the LaunchAgent (U1) | macOS privacy rules | none | by hand, open; the answer (blocked) came from the user |
 | M4 | manual | a Claude Code session asked for an HTML report with a URL uses `folder` | agent, MCP, texts | none | by hand, open |
 | M5 | manual | downgrade: an older daemon skips the folder route and says so | older release | none | by hand, open |
 
@@ -69,6 +69,7 @@ Run all: `cargo test --workspace && swift test --package-path apps/menubar`
 | `a_folder_without_index_html_is_listed_without_hidden_names` | list order, hidden names and links out left out |
 | `hidden_names_dot_dot_and_links_out_of_the_folder_are_not_found` | `.env`, `.git/config`, `%2egit`, `..`, `%2e%2e`, `%2f` inside a part, link out, link to `.git`, NUL, bad UTF-8 |
 | `a_missing_folder_is_reported_as_gone` | missing folder, a file as the folder |
+| `a_folder_the_system_refuses_is_denied_not_gone` | a folder whose parent has mode 000 gives `Denied`, not `FolderGone` |
 | `listing_links_are_encoded_and_escaped` | `a b#<c>.html` is encoded in `href` and escaped in text; `../`; title decoded |
 
 ### Proxy, `libs/core/tests/proxy.rs`
@@ -80,12 +81,13 @@ Run all: `cargo test --workspace && swift test --package-path apps/menubar`
 | `folder_route_hides_dot_files_and_refuses_other_methods` | five 404 cases never show the secret; POST gives 405 with `Allow` |
 | `folder_path_route_maps_its_path_to_the_folder_and_adds_the_slash` | `/docs/sub/page.html`, 308 keeps the query, list, other paths reach the server |
 | `folder_route_whose_folder_is_gone_gets_a_502_with_the_folder` | 502 page names the folder and the note |
+| `folder_route_answers_403_with_the_privacy_hint_when_a_file_cannot_be_read` | a file with mode 000 gives 403 with the System Settings hint, not ServeFile's empty 404 |
 
 ### Daemon, `apps/daemon/tests/api.rs`
 
 | Test | Case |
 |---|---|
-| `folder_route_is_checked_saved_served_and_reported_up` | refusals (missing, file, relative), trailing `/` removed, `routes.json` version 1, `upstream_up` true then false, a real HTTP GET, restart with the folder gone keeps the route |
+| `folder_route_is_checked_saved_served_and_reported_up` | refusals (missing, file, a folder the system refuses with the hint, relative), trailing `/` removed, `routes.json` version 1, `upstream_up` true then false, a real HTTP GET, restart with the folder gone keeps the route |
 
 ### CLI and MCP
 
@@ -142,11 +144,15 @@ Run all: `cargo test --workspace && swift test --package-path apps/menubar`
 | a video or a large file | plays and seeks (Range) |
 | the menu bar app | the row shows `→ file:///…` and a green dot; delete the folder and it turns red |
 
-### M3. macOS privacy (open, U1)
+### M3. macOS privacy (open; U1 answered by the user: blocked)
+
+The automated tests use `chmod 000` in place of macOS privacy: both give Rust
+`PermissionDenied`. This check confirms it with the real LaunchAgent.
 
 | Check | Expected |
 |---|---|
-| folder route to `~/Documents/x` through the LaunchAgent | one of: works; a macOS prompt that names the app; the 403 page. Record which, and update U1 and `help.md` |
+| `add docs --folder ~/Documents/x` through the LaunchAgent | refused: "cannot open folder …" with the System Settings hint |
+| a folder route saved before, now under `~/Documents` | 403 page with the hint, not 502 |
 | same folder under `~/Projects` | works |
 
 ### M4. Claude Code acceptance (open)

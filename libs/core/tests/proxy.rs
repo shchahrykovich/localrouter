@@ -598,3 +598,16 @@ async fn folder_route_whose_folder_is_gone_gets_a_502_with_the_folder() {
     assert!(body.contains(&gone), "{body}");
     assert!(body.contains("test note"), "{body}");
 }
+
+#[tokio::test]
+async fn folder_route_answers_403_with_the_privacy_hint_when_a_file_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = site();
+    let locked = dir.path().join("sub/page.html");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let h = harness(vec![route("docs", folder_target(&dir))]).await;
+    let (status, _, body) = get(h.http, "docs.localhost", "/sub/page.html").await;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("Privacy &amp; Security"), "{body}");
+}

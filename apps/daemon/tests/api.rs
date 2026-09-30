@@ -607,6 +607,15 @@ fn folder_route_is_checked_saved_served_and_reported_up() {
     assert!(v["error"]["message"].as_str().unwrap().contains("cannot open folder"), "{v}");
     let file = json!({"host": "docs", "target": format!("file://{}/index.html", site.path().display())});
     assert!(c.raw("register_route", file)["error"]["message"].as_str().unwrap().contains("is not a folder"));
+    // A folder the system refuses (macOS privacy gives the same error kind):
+    // the message says what to do.
+    use std::os::unix::fs::PermissionsExt;
+    let locked = tempfile::Builder::new().prefix("lr-locked").tempdir().unwrap();
+    std::fs::create_dir(locked.path().join("site")).unwrap();
+    std::fs::set_permissions(locked.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = c.raw("register_route", json!({"host": "docs", "target": format!("file://{}/site", locked.path().display())}));
+    std::fs::set_permissions(locked.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(denied["error"]["message"].as_str().unwrap().contains("Privacy & Security"), "{denied}");
     let relative = json!({"host": "docs", "target": "file://site"});
     assert!(c.raw("register_route", relative)["error"]["message"].as_str().unwrap().contains("absolute path"));
 

@@ -40,7 +40,7 @@ with its own tests.
 | a folder, path without `/` | `308` to the same path plus `/` and the query, so relative links in the page work |
 | a part that starts with `.` after percent-decoding (`.git`, `.env`, `..`, `%2e%2e`) | `404` |
 | a real path (after symlinks) outside the folder, or with a hidden part below it | `404`, the same as a missing file |
-| the system refuses to read (for example macOS privacy) | `403` page with the error and a hint about System Settings |
+| the system refuses to read the folder, a file or a folder inside (macOS privacy keeps apps out of Desktop, Documents, Downloads and iCloud Drive) | `403` page with the error and a hint about System Settings. `resolve` opens a file once before `ServeFile`, because `ServeFile` answers a refused file with an empty `404` |
 | the folder itself is missing or not a folder | `502` page with the folder and the route's note |
 | a method other than GET or HEAD | `405`, `Allow: GET, HEAD` |
 

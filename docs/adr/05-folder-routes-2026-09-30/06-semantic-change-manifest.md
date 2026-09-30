@@ -51,7 +51,7 @@ Destructive operations
 0
 
 Unresolved effects
-2
+0 (U1 answered, U2 decided; see section 12)
 ```
 
 ## 3. Source of truth
@@ -101,7 +101,8 @@ Data-folder files:            0 new
 READ
 type:                   file system read
 target:                 the folder of a folder route, and files under it
-operation:              canonicalize, metadata, read_dir, open, read
+operation:              canonicalize, metadata, read_dir, open (twice: once to
+                        check the permission, once in ServeFile), read
 trigger:                a GET or HEAD request whose route has a file:// target
 cardinality:            one path resolution and at most one file per request;
                         read_dir only for a folder without index.html
@@ -277,14 +278,15 @@ Menu bar app 1.1 with daemon 1.2
   they print each route's target
     ↓ creates
   the local folder path (with the user name) is shown to whoever reaches the
-  page: loopback only, or the LAN when allow_lan is on. See U2.
+  page: loopback only, or the LAN when allow_lan is on. Accepted (U2).
 
 allow_lan
     ↓ because of
   folder routes are served on the same listeners as other HTTP routes
     ↓ creates
   with allow_lan on, every folder route is readable from the LAN
-    failure mode: silent; nothing on the route says it is reachable from the LAN
+    failure mode: none; this is the intended behaviour (U2). allow_lan is off
+    by default and is a setting the user turns on.
 
 Confirmed unaffected
   - forwarding to servers: the body type changed, the 22 proxy tests pass
@@ -297,27 +299,32 @@ Confirmed unaffected
 ## 12. Unresolved effects
 
 ```text
-? U1. macOS privacy for the LaunchAgent
+Both effects were open when this ADR was first written. The user settled them
+on 2026-09-30.
 
-status:  REQUIRES_TEST (manual M3)
-effect:  a folder route in Desktop, Documents, Downloads or iCloud Drive may
-         get EPERM (403 page), may make macOS show a prompt naming the app,
-         or may work
-reason:  only the daemon run from a terminal was tested; a LaunchAgent inside
-         a signed bundle is treated by macOS privacy rules differently
-blocks:  nothing in the code; the wording of the 403 page and of help.md
-outcome: a note in this ADR after M3; a new decision only if macOS blocks
-         common folders with no way to allow them
+U1. macOS privacy for the LaunchAgent
 
-? U2. Folder paths on pages that the LAN can see
+status:  ANSWERED (by the user, 2026-09-30; not yet run as manual test M3)
+answer:  yes, macOS keeps the daemon out of Desktop, Documents, Downloads and
+         iCloud Drive
+outcome: every place that meets the refusal now names it and says what to do:
+         - register_route refuses with the reason and the System Settings hint
+         - the route's folder itself refused: 403 page (was 502 "not there")
+         - a file inside refused: 403 page (was an empty 404 from ServeFile)
+         - help.md says "keeps", not "may keep", and suggests a folder in the
+           project
+         See "Architectural drift" for the fix.
 
-status:  REQUIRES_DECISION
-effect:  with allow_lan on, the 404 page and router.localhost show
-         /Users/<name>/... to LAN clients
-reason:  pages already show server targets (ports only); a folder target
-         carries the user name and the folder layout
-blocks:  nothing
-outcome: hide file:// targets from non-loopback peers, or accept it
+U2. Folder routes and their paths on the LAN
+
+status:  DECIDED (by the user, 2026-09-30): ACCEPTED as built
+decision: LAN access is a setting. allow_lan is off by default
+         (config.rs:54), and then every peer that is not loopback is refused
+         before a byte is read (listen.rs:20), for folder routes too. A user
+         who turns allow_lan on wants LAN devices to connect, and they get
+         every route, folder routes included, with the same pages as on this
+         Mac.
+outcome: no code change
 ```
 
 ## 13. Risks
@@ -412,5 +419,16 @@ New writes                                 0        0   ✓
   reason: keeps the old behaviour for existing agent calls.
 
 + 403 page with a hint about macOS privacy
-  status: ACCEPTED, not verified (U1)
+  status: ACCEPTED
+
++ A refused read is a 403 everywhere (found after the first commit)
+  status: ACCEPTED, fixed in this ADR
+  reason: macOS privacy refuses with EPERM, which Rust reports as
+          PermissionDenied. The first build handled it only below the
+          folder. The folder itself gave 502 "The folder is not there", and a
+          file gave an empty 404, because ServeFile treats PermissionDenied
+          as "not found". resolve now maps PermissionDenied on the folder to
+          403, and opens a file once before handing it to ServeFile.
+          register_route adds the System Settings hint to its refusal.
+  cost:   one extra open() per file request.
 ```

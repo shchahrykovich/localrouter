@@ -435,6 +435,17 @@ impl Daemon {
             match std::fs::metadata(folder) {
                 Ok(m) if m.is_dir() => {}
                 Ok(_) => return Err(err(ErrorCode::InvalidRoute, format!("{} is not a folder", folder.display()))),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    return Err(err(
+                        ErrorCode::InvalidRoute,
+                        format!(
+                            "cannot open folder {}: {e}. macOS keeps apps out of Desktop, Documents, Downloads and \
+                             iCloud Drive: use a folder outside them, or allow {} in System Settings > Privacy & Security",
+                            folder.display(),
+                            self.instance.app_name()
+                        ),
+                    ));
+                }
                 Err(e) => return Err(err(ErrorCode::InvalidRoute, format!("cannot open folder {}: {e}", folder.display()))),
             }
         }
