@@ -132,11 +132,11 @@ Run all: `cargo test --workspace && swift test --package-path apps/menubar`
 
 ### M2. Installed dev app and a browser (open)
 
-`scripts/install.sh --user --launch`, then `localrouter-dev add report --folder <dir>`.
+`scripts/install.sh --user --launch`, then `localrouter-dev add coverage.shop --folder <dir>`.
 
 | Check | Expected |
 |---|---|
-| open `https://report.localhost:7443/` | the page, a trusted certificate |
+| open `https://coverage.shop.localhost:7443/` | the page, a trusted certificate |
 | a folder without `index.html` | the file list; links open files and folders |
 | edit the HTML, reload | the new content (304 only when unchanged) |
 | a video or a large file | plays and seeks (Range) |

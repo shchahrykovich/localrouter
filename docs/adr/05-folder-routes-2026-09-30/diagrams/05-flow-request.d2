@@ -2,7 +2,7 @@
 direction: down
 title: "Flow A (new): a request to a folder route" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
 
-req: "Browser: GET\nreport.localhost/a.html" { class: term }
+req: "Browser: GET\ncoverage.shop.localhost/a.html" { class: term }
 proxy: "Proxy: find the route,\nhttps_only redirect" { class: skip }
 resolve: "Resolve the path\n(blocking thread)" { class: ins }
 send: "ServeFile streams\nthe file" { class: ins }
@@ -16,6 +16,6 @@ req -> proxy -> resolve -> send -> resp
 proxy -> routes: read
 resolve -> disk: "canonicalize,\nmetadata, list"
 send -> disk: "open, read"
-resp -> log: "one entry,\nroute: report"
+resp -> log: "one entry,\nroute: coverage.shop"
 
 legend: "Green: new steps. Grey: unchanged context. Navy: read. Purple: written.\nNothing is written to the folder, and nothing is written to disk by this flow." { near: bottom-center; shape: text; style.font-size: 13 }

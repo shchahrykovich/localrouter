@@ -2,7 +2,7 @@
   "id": 10,
   "method": "register_route",
   "params": {
-    "host": "report.shop",
+    "host": "coverage.shop",
     "protocol": "http",
     "target": "file:///Users/me/shop/coverage",
     "note": "test coverage report, no dev server",

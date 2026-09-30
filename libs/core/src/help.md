@@ -7,7 +7,7 @@ instead of ports:
 - HTTP by path: `https://shop.localhost{{HTTPS}}/blog` goes to `http://127.0.0.1:3001`,
   and every other path of `shop.localhost` to 5173
 - TCP: `db.shop.localhost:15432` goes to `127.0.0.1:5432` (databases, caches)
-- Folder: `https://report.shop.localhost{{HTTPS}}` serves the files of a folder,
+- Folder: `https://coverage.shop.localhost{{HTTPS}}` serves the files of a folder,
   with no dev server
 
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS
@@ -99,10 +99,10 @@ Other cases:
 Files with no server: a build folder, a test report, HTML you just wrote:
 
 ```
-{{CLI}} add report.shop --folder ./coverage --session
+{{CLI}} add coverage.shop --folder ./coverage --session
 ```
 
-With MCP: `register_route` with `host: "report.shop"` and
+With MCP: `register_route` with `host: "coverage.shop"` and
 `folder: "/Users/me/shop/coverage"`. MCP needs an absolute path; the command
 line makes a relative one absolute.
 

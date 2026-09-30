@@ -250,7 +250,7 @@ Older daemon after a downgrade
     ↓ because of
   it cannot parse a file:// target
     ↓ creates
-  the folder route is skipped at start, with "skipped report: target ... is
+  the folder route is skipped at start, with "skipped coverage.shop: target ... is
   not valid" in status (routes_file_problem)
     failure mode: SILENT DATA LOSS LATER. The skipped route is not in the
     route table, and save_routes writes only the table. The next change to any

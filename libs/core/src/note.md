@@ -7,7 +7,7 @@ ports:
 - HTTP by path: `https://shop.localhost{{HTTPS}}/blog` goes to one dev server, and the
   rest of `shop.localhost` to another
 - TCP: `db.shop.localhost:15432` goes to `127.0.0.1:5432` (databases, caches)
-- Folder: `https://report.shop.localhost{{HTTPS}}` serves the files of a folder,
+- Folder: `https://coverage.shop.localhost{{HTTPS}}` serves the files of a folder,
   with no dev server
 
 macOS sends every `*.localhost` name to this Mac by itself. There is no DNS

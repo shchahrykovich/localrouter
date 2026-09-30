@@ -17,7 +17,7 @@ build or a report at a `.localhost` name without starting a server.
 To show a file in a browser, an agent had to start a throwaway server on a
 free port and register it.
 
-Now `localrouter add report --folder ./coverage`, or MCP `register_route` with
+Now `localrouter add coverage.shop --folder ./coverage`, or MCP `register_route` with
 `folder`, makes a folder route: an ordinary HTTP route whose target is
 `file:///…/coverage`.
 
