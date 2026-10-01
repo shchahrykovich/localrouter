@@ -1,0 +1,30 @@
+...@_palette
+direction: down
+title: "Data flow: turn the proxy on, then inspect a host" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+on: "1. proxy on: set_config\nproxy_enabled true" { class: term }
+bind: "2. Bind 127.0.0.1 and ::1\non the proxy port, now" { class: ins }
+ok: "Bound?" { class: dec }
+back: "Roll back, reply\nport_in_use" { class: del }
+save: "3. Write config.json\n(atomic replace)" { class: upd }
+add: "4. proxy inspect add\napi.example.com" { class: upd }
+ca: "5. No inspection CA yet:\ncreate inspect-ca/" { class: ins }
+trust: "6. User runs proxy trust\n(macOS asks the password)" { class: ins }
+
+cfg: "config.json" { class: write }
+ica: "inspect-ca/" { class: write }
+kc: "Login keychain" { class: ext }
+
+on -> bind
+bind -> ok
+ok -> back: no
+ok -> save: yes
+save -> add
+add -> ca
+ca -> trust
+save -> cfg
+add -> cfg
+ca -> ica
+trust -> kc
+
+legend: "Steps 1 to 3 and 4 to 5 each run under the daemon write lock. Step 6 is the only one with a password.\nClaude Code does not read the keychain: it gets the inspection CA file through NODE_EXTRA_CA_CERTS." { near: bottom-center; shape: text; style.font-size: 13 }

@@ -1,0 +1,28 @@
+...@_palette
+direction: down
+title: "Data flow: a log rule saves one exchange" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+build: "1-2. Exchange ended: build a copy,\nsecret headers hidden, bodies\ndecoded, up to 16 MB each" { class: term }
+full: "Queue of this rule full?" { class: dec }
+drop: "Drop the copy,\ncount it in dropped" { class: del }
+run: "3. The rule worker calls\non_exchange(ex)" { class: ins }
+write: "4. capture.append(name, text):\nfile in output_dir, mode 0600" { class: ins }
+quota: "Over the quota of\nthe rule?" { class: dec }
+fail: "Write fails, the\nscript gets an error" { class: del }
+
+q: "Rule queue\n(memory)" { class: q }
+out: "output_dir/\nmessages.jsonl" { class: write }
+stat: "Rule counters\n(memory)" { class: write }
+
+build -> full
+full -> drop: yes
+full -> q: no
+q -> run
+run -> write
+write -> quota
+quota -> fail: yes
+quota -> out: no
+run -> stat: "matched, errors"
+drop -> stat
+
+legend: "Purple: written. The client has its response before step 1, so nothing here can delay or change it.\nThe file is opened with O_APPEND and O_NOFOLLOW; there is no transaction: a crash can cut the last line." { near: bottom-center; shape: text; style.font-size: 13 }

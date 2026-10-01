@@ -1,0 +1,32 @@
+...@_palette
+direction: down
+title: "Data flow: one inspected HTTPS request" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+start: "1. Claude Code sends\nCONNECT api.example.com:443" { class: term }
+set: "2. Peer is loopback, and the\nhost is in the inspect set?" { class: dec }
+tunnel: "Tunnel: copy bytes,\nread nothing" { class: skip }
+leaf: "3. TLS with the client: a leaf for\nthis name. Read each HTTP request" { class: ins }
+up: "4. Resolve the name, open TLS to the\nreal server, check its certificate" { class: ins }
+send: "5. Send the request,\nstream the response back" { class: ins }
+log: "6. One log entry per request\n(mode inspect or tunnel)" { class: ins }
+
+cfg: "config.json\ninspect_hosts" { class: tbl }
+ica: "inspect-ca/" { class: tbl }
+ring: "Request log\n(memory)" { class: write }
+net: "api.example.com" { class: ext }
+bad: "502 page from\nthe daemon" { class: del }
+
+start -> set
+set -> tunnel: no
+set -> leaf: yes
+leaf -> up
+up -> send: certificate ok
+up -> bad: "bad certificate,\nno answer"
+send -> log
+tunnel -> log
+cfg -> set { style.stroke-dash: 4 }
+ica -> leaf { style.stroke-dash: 4 }
+send -> net
+log -> ring
+
+legend: "Navy: read. Purple: written. Green: new steps. ADR 07 adds its scripts between steps 3 and 5.\nA .localhost name after CONNECT goes to the route table at step 4 instead of the internet." { near: bottom-center; shape: text; style.font-size: 13 }

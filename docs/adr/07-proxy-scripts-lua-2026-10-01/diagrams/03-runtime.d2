@@ -1,0 +1,25 @@
+...@_palette
+direction: down
+title: "How a script runs inside the daemon" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+file: "claude-log.lua\n(absolute path)" { class: tbl }
+load: "Compile, run once\nin the sandbox,\nread kind and hooks" { class: ins }
+
+pool: "Intercept rule:\nup to 4 Lua states" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  label.near: top-left
+  a: "state 1" { class: step }
+  b: "state 2" { class: step }
+}
+worker: "Log rule: 1 Lua state,\n1 worker, in order" { class: step }
+limits: "Each call: time budget,\nmemory limit 64 MB,\nno io, os, require, load" { class: dec }
+err: "Error or limit:\nthis call fails,\ndaemon keeps running" { class: del }
+
+file -> load: "read, checked\nfor changes"
+load -> pool
+load -> worker
+pool -> limits
+worker -> limits
+limits -> err: "exceeded"
+
+legend: "Lua 5.4 through the mlua crate, built into the daemon. A state keeps its globals between calls,\nbut two states never share them: keep no state in globals. Intercept calls run off the network threads." { near: bottom-center; shape: text; style.font-size: 13 }

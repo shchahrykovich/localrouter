@@ -1,0 +1,32 @@
+...@_palette
+direction: down
+title: "What happens to one body" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+start: "1. Headers arrive: class from\nContent-Type (no sniffing)" { class: term }
+none: "No body? HEAD, 204,\n304, 1xx, upgrade" { class: dec }
+nobody: "body = nil,\nbody_class none" { class: skip }
+ev: "events class and a\nrule has on_event?" { class: dec }
+split: "2. Split into events; each event\npasses intercept on_event, then\ngoes to the client at once" { class: ins }
+held: "Intercept rule lists\nthis class?" { class: dec }
+hold: "3. Hold up to 8 MB, decode,\nrun the script, then send" { class: upd }
+stream: "3. Stream to the client\npart by part" { class: step }
+logc: "4. Log: class in copy?\nin save? neither?" { class: dec }
+mem: "Copy up to 16 MB\nin memory" { class: q }
+file: "Write to output_dir/bodies/\nwhile it streams" { class: write }
+count: "Count body_size only,\nbody_skipped = class" { class: skip }
+
+start -> none
+none -> nobody: yes
+none -> ev: no
+ev -> split: yes
+ev -> held: no
+held -> hold: yes
+held -> stream: no
+hold -> logc
+stream -> logc
+split -> logc
+logc -> mem: copy
+logc -> file: save
+logc -> count: neither
+
+legend: "Classes: text (text/*, JSON, XML, forms), events (event-stream, NDJSON), media (image, audio, video, font),\nmultipart (uploads), binary (everything else). A 206 partial body can be read, never changed." { near: bottom-center; shape: text; style.font-size: 13 }

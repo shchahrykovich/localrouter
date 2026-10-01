@@ -1,0 +1,25 @@
+...@_palette
+direction: down
+title: "What the proxy port does with each request" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+client: "Chrome or Claude Code\nproxy = 127.0.0.1:8877" { class: term }
+kind: "What did the client send?" { class: dec }
+local: "Name ends in .localhost?" { class: dec }
+insp: "Host in the inspect set?" { class: dec }
+
+routes: "Answer from the route table\n(same as ports 80 and 443)" { class: upd }
+plain: "Send the request to the\nserver on the internet" { class: ins }
+tunnel: "Tunnel: copy bytes both ways,\nread nothing" { class: skip }
+mitm: "Inspect: TLS with a leaf from\nthe inspection CA, read each request" { class: ins }
+up: "New TLS to the real server,\ncertificate checked by macOS" { class: ins }
+
+client -> kind
+kind -> local: "GET http://host/...\n(plain HTTP)"
+kind -> insp: "CONNECT host:443"
+local -> routes: yes
+local -> plain: no
+insp -> tunnel: no
+insp -> mitm: yes
+mitm -> up
+
+legend: "Green: new work the daemon does. Grey: bytes pass unchanged. Blue: existing route lookup, reused.\nAn inspected CONNECT to a .localhost name also goes to the route table.\nEvery case writes one request log entry: method, host, path without query, status, mode (http, tunnel, inspect)." { near: bottom-center; shape: text; style.font-size: 13 }

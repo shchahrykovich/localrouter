@@ -1,0 +1,51 @@
+...@_palette
+grid-columns: 4
+grid-gap: 40
+title: "Four ways a body passes a script rule" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+hold: "Intercept: hold\n(class listed in\nresponse_body)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 15 }
+  label.near: top-left
+  a: "Server sends\nthe body" { class: step }
+  b: "Daemon keeps it,\nup to 8 MB decoded" { class: upd }
+  c: "on_response\nmay change it" { class: ins }
+  d: "Client gets it\nat the end" { class: step }
+  a -> b -> c -> d
+}
+
+events: "Event stream\n(on_event)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 15 }
+  label.near: top-left
+  a: "Server sends\none event" { class: step }
+  b: "Intercept on_event\nmay change or drop it" { class: ins }
+  c: "Client gets\nthat event now" { class: step }
+  d: "Log on_event gets\na copy, later" { class: q }
+  a -> b -> c
+  c -> d: "copy"
+}
+
+copy: "Log: copy\n(class in copy)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 15 }
+  label.near: top-left
+  a: "Server sends\na part" { class: step }
+  b: "Client gets\nthe part now" { class: ins }
+  c: "Copy in memory,\nup to 16 MB" { class: q }
+  d: "on_exchange\nafter the end" { class: ins }
+  a -> b
+  b -> c: "copy"
+  c -> d
+}
+
+save: "Log: save to file\n(class in save)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 15 }
+  label.near: top-left
+  a: "Server sends\na part" { class: step }
+  b: "Client gets\nthe part now" { class: ins }
+  c: "Writer appends to\nbodies/<id>-res.mp4" { class: write }
+  d: "on_exchange gets\nbody_file" { class: ins }
+  a -> b
+  b -> c: "copy"
+  c -> d
+}
+
+legend: "Default: intercept holds nothing; log copies text and events; media, binary and multipart are only counted.\nAn event stream is never held whole. Copy and save stop (truncated) instead of waiting: the client never waits for a log rule." { near: bottom-center; shape: text; style.font-size: 13 }

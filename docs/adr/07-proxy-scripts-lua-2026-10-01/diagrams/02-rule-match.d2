@@ -1,0 +1,19 @@
+...@_palette
+direction: down
+title: "Which rules run for a request" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+req: "POST https://api.example.com/v1/messages" { class: term }
+r1: "Rule claude-log\nhost api.example.com\npath /v1, kind log" { class: ins }
+r2: "Rule add-header\nhost *.example.com\nkind intercept, order 10" { class: ins }
+r3: "Rule mock-billing\nhost api.example.com\npath /billing" { class: skip }
+r4: "Rule shop-only\nhost shop.localhost" { class: skip }
+run: "Runs: add-header (intercept),\nthen claude-log (log, after the end)" { class: upd }
+
+req -> r1: "matches"
+req -> r2: "matches"
+req -> r3: "path /billing\ndoes not match" { style.stroke-dash: 4 }
+req -> r4: "host does not match" { style.stroke-dash: 4 }
+r1 -> run
+r2 -> run
+
+legend: "Host: exact name or *. pattern. Path: the same path match as routes (/v1 matches /v1/messages, not /v1x).\nMethods: optional list. Intercept rules run by order, then by id. Every matching log rule gets its own copy." { near: bottom-center; shape: text; style.font-size: 13 }

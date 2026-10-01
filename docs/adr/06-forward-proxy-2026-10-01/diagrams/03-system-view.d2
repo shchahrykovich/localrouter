@@ -1,0 +1,48 @@
+...@_palette
+direction: right
+title: "System view: the proxy port is a third way in" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+clients: "Clients of the daemon" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  label.near: top-left
+  cli: "localrouter CLI\nproxy on, inspect add" { class: upd }
+  mcp: "MCP shim\nget_proxy (7th tool)" { class: upd }
+  app: "Menu bar app\nProxy settings" { class: upd }
+}
+
+traffic: "Traffic" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  label.near: top-left
+  browser: "Browser by name\n:80 :443" { class: step }
+  pclient: "Chrome, Claude Code\nwith a proxy set" { class: ins }
+}
+
+daemon: "localrouterd" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  label.near: bottom-right
+  router: "Router\n(routes)" { class: step }
+  fwd: "Forward proxy\n127.0.0.1:8877" { class: ins }
+}
+
+data: "Data folder" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  label.near: top-left
+  cfg: "config.json\n+ proxy fields" { class: write }
+  ica: "inspect-ca/" { class: write }
+}
+
+dev: "Dev servers\non loopback" { class: ext }
+net: "Servers on the\ninternet" { class: ext }
+
+clients.cli -> daemon: "socket API 1.3"
+clients.mcp -> daemon: "socket API 1.3"
+clients.app -> daemon: "socket API 1.3"
+traffic.browser -> daemon.router: "HTTP, HTTPS"
+traffic.pclient -> daemon.fwd: "HTTP proxy\n(CONNECT)"
+daemon.router -> dev: "HTTP"
+daemon.fwd -> net: "HTTP, HTTPS" { style.stroke: "#2e9e63"; style.stroke-width: 3 }
+daemon.fwd -> daemon.router: ".localhost" { style.stroke-dash: 4 }
+daemon -> data.cfg
+daemon -> data.ica
+
+legend: "Green: new. Blue: grows. Grey hexagons: outside LocalRouter. The thick green arrow is the first time\nthe daemon opens connections to other machines. TCP routes and folder routes are left out: they do not change." { near: bottom-center; shape: text; style.font-size: 13 }

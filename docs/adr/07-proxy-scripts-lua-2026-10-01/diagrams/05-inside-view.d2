@@ -1,0 +1,38 @@
+...@_palette
+direction: down
+title: "Where scripts live in the code" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+cli: "apps/cli" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  main: "main.rs\nrules add, rm, list" { class: upd }
+  mcp: "mcp.rs\nset_script_rule,\nremove_script_rule" { class: upd }
+}
+
+daemon: "apps/daemon: daemon.rs, socket.rs, store.rs\nrule methods, script-rules.json, owner pids" { class: upd }
+
+core: "libs/core" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  rules: "scripts/rules.rs\nrule model, match" { class: ins }
+  engine: "scripts/engine.rs\nmlua, sandbox, pools,\nlimits, reload" { class: ins }
+  api: "scripts/lua_api.rs\nreq, res, json, sse,\ncapture, log" { class: ins }
+  bodies: "scripts/bodies.rs, events.rs\nclasses, hold, copy, save,\nevents, decode" { class: ins }
+  hook: "proxy.rs, forward.rs\ncall the hook" { class: upd }
+}
+
+mlua: "mlua with Lua 5.4,\nvendored (new dependency)" { class: ext }
+files: "Capture files\nin output_dir" { class: write }
+
+cli.main -> daemon: "socket API 1.4"
+cli.mcp -> daemon: "socket API 1.4"
+daemon -> core.rules: "validate, store"
+core.hook -> core.rules: "match"
+core.hook -> core.bodies
+core.hook -> core.engine: "run"
+core.engine -> core.api
+core.engine -> mlua
+core.api -> files: "capture"
+core.bodies -> files: "save"
+
+legend: "Green: new. Blue: grows. The menu bar app gets a Scripts list in Settings (not drawn).\nNot shown: tests, api/examples, agent texts, docs." { near: bottom-center; shape: text; style.font-size: 13 }

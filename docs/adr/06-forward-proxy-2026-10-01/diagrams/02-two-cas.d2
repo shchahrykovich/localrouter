@@ -1,0 +1,27 @@
+...@_palette
+direction: down
+title: "Two CAs, two jobs" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+local: "Local CA (exists)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  files: "ca/ca.key, ca/ca.pem" { class: tbl }
+  names: "Signs only .localhost\nnames that have a route" { class: step }
+  where: "Used on ports 80 and 443" { class: step }
+  files -> names -> where
+}
+
+insp: "Inspection CA (new)" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  files: "inspect-ca/ca.key, ca.pem\nmade on first need" { class: write }
+  names: "Signs only names in\nthe inspect set" { class: ins }
+  where: "Used only after CONNECT\non the proxy port" { class: ins }
+  files -> names -> where
+}
+
+trust: "Login keychain trust\none button per CA" { class: ext }
+local.where -> trust: "Trust (exists)" { style.stroke-dash: 4 }
+insp.where -> trust: "Trust inspection (new)" { style.stroke-dash: 4 }
+
+legend: "Untrust or reset one CA, and the other keeps working. The 443 listener never asks the inspection CA,\nand the proxy port never asks the local CA for a name outside .localhost." { near: bottom-center; shape: text; style.font-size: 13 }

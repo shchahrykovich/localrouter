@@ -1,0 +1,27 @@
+...@_palette
+direction: down
+title: "Data flow: an agent sets a rule" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+check: "1-2. set_script_rule: check host\npattern, absolute paths, output_dir\nexists and can be written" { class: term }
+compile: "3. Read and compile the script\nin a fresh sandbox; kind?" { class: ins }
+ok: "Valid?" { class: dec }
+refuse: "Refuse with the reason\nand the line number" { class: del }
+swap: "4. Put the rule in the table\n(replaces the same id)" { class: ins }
+persist: "5. persistent: write\nscript-rules.json" { class: upd }
+set: "6. A host outside .localhost\njoins the inspect set" { class: upd }
+
+script: "script.lua" { class: tbl }
+json: "script-rules.json" { class: write }
+ica: "inspect-ca/\n(made if missing)" { class: write }
+
+check -> compile
+compile -> ok
+ok -> refuse: no
+ok -> swap: yes
+swap -> persist
+persist -> set
+script -> compile { style.stroke-dash: 4 }
+persist -> json
+set -> ica
+
+legend: "Steps 2 to 6 run under the daemon write lock. A failed file write puts the old rule back (ADR 01, I4).\nAn owned rule (owner_pid) is never written to the file, and goes away when its process exits." { near: bottom-center; shape: text; style.font-size: 13 }

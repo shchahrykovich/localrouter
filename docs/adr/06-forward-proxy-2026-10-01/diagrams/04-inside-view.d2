@@ -1,0 +1,41 @@
+...@_palette
+direction: down
+title: "Where the forward proxy lives in the code" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+cli: "apps/cli" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  main: "main.rs\nproxy on/off/env/chrome,\ninspect add/rm, trust" { class: upd }
+  mcp: "mcp.rs\nget_proxy tool" { class: upd }
+}
+
+daemon: "apps/daemon" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  d: "daemon.rs, socket.rs\nget_proxy, proxy config" { class: upd }
+  pl: "proxy_listen.rs\nloopback listeners" { class: ins }
+}
+
+core: "libs/core" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 18 }
+  label.near: top-left
+  fwd: "forward.rs\nCONNECT, absolute URLs,\ntunnel or inspect" { class: ins }
+  up: "upstream.rs\ninternet client, pooled,\nmacOS certificate check" { class: ins }
+  tls: "tls.rs\ninspection CA" { class: upd }
+  proxy: "proxy.rs\nrouter, reused for .localhost" { class: upd }
+  inspect: "inspect.rs\nhost patterns" { class: ins }
+  logs: "logs.rs, config.rs, api.rs\nproxy entry, fields, types" { class: upd }
+}
+
+swift: "apps/menubar\nApi.swift, Proxy settings" { class: upd }
+
+cli.main -> daemon.d: "socket"
+cli.mcp -> daemon.d: "socket"
+swift -> daemon.d: "socket"
+daemon.pl -> core.fwd: "each connection"
+core.fwd -> core.inspect: "inspect?"
+core.fwd -> core.tls: "leaf"
+core.fwd -> core.up: "send"
+core.fwd -> core.proxy: ".localhost"
+
+legend: "Green: new file. Blue: grows. Not shown: tests, api/examples, help.md, note.md, mcp.md, docs.\nNew dependency: rustls-platform-verifier (upstream certificates checked by macOS)." { near: bottom-center; shape: text; style.font-size: 13 }

@@ -1,0 +1,27 @@
+...@_palette
+direction: down
+title: "Where scripts run in one exchange" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+in: "1. Request read\n(router or proxy)" { class: term }
+match: "2. Find the rules that match\nhost, path, method" { class: ins }
+none: "No rule: the path of\nADR 06, no extra work" { class: skip }
+onreq: "3. Intercept scripts, in order:\non_request may change it" { class: ins }
+answer: "A script returned a response:\nskip the server" { class: upd }
+send: "4. Send to the dev server\nor the internet" { class: step }
+onres: "5. Intercept scripts, in order:\non_response may change it" { class: ins }
+client: "6. Response to the client" { class: step }
+queue: "7. Log rules: copy of request\nand response, after the end" { class: q }
+logrun: "8. Log scripts run later,\nwrite capture files" { class: ins }
+
+in -> match
+match -> none: "none match"
+match -> onreq: "some match"
+onreq -> answer: "returns a\nresponse"
+onreq -> send: "returns nothing"
+answer -> client
+send -> onres
+onres -> client
+client -> queue: "exchange ended"
+queue -> logrun
+
+legend: "Steps 3 and 5 are on the request path: the client waits for them. Steps 7 and 8 never make the client wait.\nA queue that is full drops the copy and counts it; the request is not affected." { near: bottom-center; shape: text; style.font-size: 13 }
