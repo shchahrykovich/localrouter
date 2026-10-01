@@ -53,7 +53,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 image?.isTemplate = false
             }
             item.button?.image = image
-        } onChange: {
+        } onChange: { [weak self] in
+            // Weak in both closures: the outer one would otherwise hold self
+            // strongly to hand it to the inner one.
             Task { @MainActor [weak self] in self?.trackIcon() }
         }
     }
