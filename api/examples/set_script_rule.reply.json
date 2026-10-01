@@ -1,0 +1,38 @@
+{
+  "id": 16,
+  "result": {
+    "rule": {
+      "id": "claude-capture",
+      "host": "api.anthropic.com",
+      "path": "/v1/messages",
+      "methods": [
+        "POST"
+      ],
+      "script": "/Users/me/scripts/capture.lua",
+      "output_dir": "/Users/me/lr-captures",
+      "order": 100,
+      "enabled": true,
+      "note": "record Claude API calls for the eval",
+      "owner_pid": 4242,
+      "kind": "log",
+      "matched": 0,
+      "answered": 0,
+      "errors": 0,
+      "dropped": 0,
+      "bytes_written": 0,
+      "script_loaded_at": 1790000000000,
+      "script_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "max_capture_bytes": 104857600
+    },
+    "replaced": false,
+    "inspect": {
+      "host_added": true,
+      "ca_created": true,
+      "ca_trusted": false
+    },
+    "notes": [
+      "api.anthropic.com is now inspected. Clients must trust the inspection CA: NODE_EXTRA_CA_CERTS=/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem, or ask the user to run: localrouter proxy trust",
+      "The proxy is off. This rule sees only router traffic until: localrouter proxy on"
+    ]
+  }
+}

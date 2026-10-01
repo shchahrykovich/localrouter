@@ -174,6 +174,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
         log: log.clone(),
         tls_client: tls::insecure_loopback_client_config(),
         status: Some(Arc::new(|| Box::pin(async { Some(fixed_status()) }))),
+        scripts: localrouter_core::scripts::Scripts::new(),
     });
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -611,4 +612,15 @@ async fn folder_route_answers_403_with_the_privacy_hint_when_a_file_cannot_be_re
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.contains("Privacy &amp; Security"), "{body}");
+}
+
+// ADR 07, T17: router.localhost/scripts is the script reference.
+#[tokio::test]
+async fn router_name_serves_the_script_reference_at_scripts() {
+    let h = harness(vec![]).await;
+    let (status, headers, body) = get(h.http, "router.localhost", "/scripts").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
+    assert!(body.starts_with("# LocalRouter scripts"), "{body}");
+    assert!(body.contains("on_exchange"), "{body}");
 }

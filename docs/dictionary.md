@@ -263,8 +263,8 @@ bytes both ways and reads nothing. The log shows only the host and the bytes.
 To **inspect** a host is to answer the client's TLS inside its `CONNECT`
 with a leaf of the inspection CA, read each HTTP request, and send it to the
 real server over a new, checked TLS connection. The **inspect set** is the
-list of host patterns that are inspected: `inspect_hosts` in the config
-(later also the hosts of ADR 07 scripts). A pattern is an exact name
+list of host patterns that are inspected: `inspect_hosts` in the config, and
+the hosts outside `.localhost` of enabled script rules (ADR 07). A pattern is an exact name
 (`api.example.com`) or `*.` plus a name of at least two labels
 (`*.example.com`, which does not match `example.com` itself).
 
@@ -281,6 +281,52 @@ The local CA never signs names that are not `.localhost`.
 The real server on the internet that a proxied request goes to. The daemon
 checks its certificate with the macOS trust store; there is no switch that
 accepts any certificate.
+
+### Script rule
+
+One entry in the daemon's rule table ([ADR 07](adr/07-proxy-scripts-lua-2026-10-01/README.md)):
+a host pattern, an optional path prefix and methods, and a `.lua` file. It
+says which **exchanges** a script runs on. Its kind comes from the script.
+Lifetimes are the ones of routes: persistent (`script-rules.json`), owned
+(`owner_pid`), session. A rule on a host outside `.localhost` joins the
+inspect set.
+
+### Exchange
+
+One HTTP request and its response, as a script sees it: `req` and `res`, or
+`ex.request` and `ex.response`. Each exchange has an `id`.
+
+### Intercept script, log script
+
+The two kinds of script. An **intercept script** runs while the client waits
+and may change or answer a request (`on_request`), change a response
+(`on_response`) and change or drop each event of a stream (`on_event`). A
+**log script** gets a copy of a finished exchange (`on_exchange`) and of each
+event (`on_event`), through a queue that drops instead of waiting, so it never
+slows or changes traffic.
+
+### Body class
+
+The kind of a body, from its Content-Type only: `text`, `events`, `media`,
+`multipart`, `binary`, or `none`. A script lists the classes it wants: an
+intercept script **holds** them (`request_body`, `response_body`), a log
+script **copies** them into memory (`copy`) or **saves** them to files
+(`save`). Other bodies pass at full speed and are only counted.
+
+### `output_dir`, capture file
+
+`output_dir` is the one folder a log rule writes: an absolute path outside
+the data folder. A **capture file** is a file a log script writes there with
+`capture.write` or `capture.append`; saved bodies go to `output_dir/bodies/`.
+The daemon never removes them. They hold prompts and API replies: keep them
+out of git.
+
+### Secret header
+
+A header that scripts see as `[redacted]`: `authorization`,
+`proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `api-key`,
+`x-auth-token`, and the names in `secret_headers` of the config. Only the
+user, at a terminal, can let a rule see the values (`reveal_secrets`).
 
 ## Programs and parts
 
@@ -301,10 +347,10 @@ accepts any certificate.
 
 | Term | Meaning |
 |---|---|
-| **socket API** | The only way clients talk to the daemon. Newline-delimited JSON over the Unix socket `daemon.sock`. Shaped like JSON-RPC 2.0. Has 13 methods; ADR 06 added `get_proxy` and `reset_inspect_ca`. |
+| **socket API** | The only way clients talk to the daemon. Newline-delimited JSON over the Unix socket `daemon.sock`. Shaped like JSON-RPC 2.0. Has 16 methods; ADR 06 added `get_proxy` and `reset_inspect_ca`, ADR 07 `set_script_rule`, `remove_script_rule` and `list_script_rules`. |
 | **method** | One call of the socket API, for example `register_route`. |
-| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes, `1.3` the forward proxy. A client stops when the major number differs from its own. |
-| **MCP tool** | One function an agent can call through the MCP shim. There are seven: `register_route`, `unregister_route`, `list_routes`, `find_free_port`, `get_logs`, `status`, `get_proxy`. |
+| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes, `1.3` the forward proxy, `1.4` script rules. A client stops when the major number differs from its own. |
+| **MCP tool** | One function an agent can call through the MCP shim. There are nine: `register_route`, `unregister_route`, `list_routes`, `find_free_port`, `get_logs`, `status`, `get_proxy`, `set_script_rule`, `remove_script_rule`. |
 | **API example** | One JSON file in `api/examples/`. Both the Rust and the Swift tests decode every example, so the two type sets stay equal. |
 
 ## Behaviour

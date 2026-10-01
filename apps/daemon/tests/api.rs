@@ -831,3 +831,168 @@ fn get_proxy_gives_chrome_args_with_their_own_profile() {
     assert!(!profile.contains("Google/Chrome"), "never Chrome's own profile (I17)");
     assert!(!d.dir.path().join("caches").exists(), "the daemon writes nothing there");
 }
+
+// ---- ADR 07: script rules (T13)
+
+const LOG_LUA: &str = r#"return { kind = "log", on_exchange = function(ex) capture.append("x.jsonl", ex.request.path .. "\n") end }"#;
+const INTERCEPT_LUA: &str = r#"return { kind = "intercept", on_request = function(req) req.headers["x-lr"] = "1" end }"#;
+
+/// A folder outside the daemon's data folder, with a script and `out/`.
+fn script_dir(name: &str, lua: &str) -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::Builder::new().prefix("lrs").tempdir().unwrap();
+    let script = dir.path().join(name);
+    std::fs::write(&script, lua).unwrap();
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    (dir, script.display().to_string(), out.display().to_string())
+}
+
+fn rule_ids(c: &mut Client) -> Vec<String> {
+    let list = c.call("list_script_rules", json!({}));
+    list["rules"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_persistent_script_rule_survives_a_restart_and_an_owned_one_never_reaches_the_file() {
+    let (_s, script, out) = script_dir("cap.lua", LOG_LUA);
+    let saved = {
+        let d = Daemon::start();
+        let mut c = d.client();
+        let r = c.call("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": out, "persistent": true}));
+        assert_eq!((r["rule"]["kind"].as_str(), r["replaced"].as_bool()), (Some("log"), Some(false)));
+
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        c.call("set_script_rule", json!({"id": "mine", "host": "shop.localhost", "script": script, "output_dir": out, "owner_pid": child.id()}));
+        let file = std::fs::read_to_string(d.dir.path().join("script-rules.json")).unwrap();
+        assert!(file.contains("\"cap\"") && !file.contains("mine"), "I10: {file}");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while rule_ids(&mut c).contains(&"mine".to_string()) {
+            assert!(Instant::now() < deadline, "the owned rule is still there");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        file
+    };
+    let d = Daemon::start_with(|dir| std::fs::write(dir.join("script-rules.json"), &saved).unwrap());
+    let mut c = d.client();
+    let list = c.call("list_script_rules", json!({}));
+    assert_eq!(list["rules"][0]["id"], "cap");
+    assert_eq!(list["rules"][0]["kind"], "log", "the script loaded again at start");
+    assert_eq!(c.error_code("set_script_rule", json!({"id": "x", "host": "a.example.com", "script": script, "output_dir": out, "persistent": true, "owner_pid": 1})), "invalid_script_rule");
+}
+
+#[test]
+fn a_failed_write_of_script_rules_json_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_s, script, out) = script_dir("cap.lua", LOG_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    std::fs::set_permissions(d.dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let code = c.error_code("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": out, "persistent": true}));
+    std::fs::set_permissions(d.dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code, "io");
+    assert!(rule_ids(&mut c).is_empty(), "I4: memory rolled back");
+}
+
+#[test]
+fn a_rule_on_an_internet_host_makes_it_inspected_until_removed() {
+    let (_s, script, _) = script_dir("add.lua", INTERCEPT_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    assert!(!d.dir.path().join("inspect-ca").exists());
+    let r = c.call("set_script_rule", json!({"id": "api", "host": "api.test.example", "script": script}));
+    assert_eq!(r["inspect"]["host_added"], true);
+    assert_eq!(r["inspect"]["ca_created"], true);
+    let notes = r["notes"].to_string();
+    assert!(notes.contains("The proxy is off"), "{notes}");
+    assert!(d.dir.path().join("inspect-ca/ca.pem").exists());
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["inspect_set"], json!(["api.test.example"]));
+    assert_eq!(p["script_rules"][0]["id"], "api");
+
+    assert_eq!(c.call("remove_script_rule", json!({"id": "api"}))["removed"], true);
+    assert_eq!(c.call("get_proxy", json!({}))["inspect_set"], json!([]), "I11: gone with the rule");
+    assert_eq!(c.call("remove_script_rule", json!({"id": "api"}))["removed"], false);
+
+    c.call("set_config", json!({"inspect_hosts": ["api.test.example"]}));
+    c.call("set_script_rule", json!({"id": "api", "host": "api.test.example", "script": script}));
+    c.call("remove_script_rule", json!({"id": "api"}));
+    assert_eq!(c.call("get_proxy", json!({}))["inspect_set"], json!(["api.test.example"]), "inspect_hosts still lists it");
+}
+
+#[test]
+fn check_only_stores_nothing_and_bad_rules_are_refused_with_the_reason() {
+    let (s, script, out) = script_dir("cap.lua", LOG_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": out, "check_only": true}));
+    assert_eq!((r["check_only"].as_bool(), r["rule"]["kind"].as_str()), (Some(true), Some("log")));
+    assert!(rule_ids(&mut c).is_empty());
+
+    let bad = s.path().join("bad.lua");
+    std::fs::write(&bad, "return {\n  kind = 'log',\n  on_exchange = function(ex) x = end }").unwrap();
+    let v = c.raw("set_script_rule", json!({"id": "bad", "host": "shop.localhost", "script": bad, "output_dir": out, "check_only": true}));
+    assert_eq!(v["error"]["code"], "invalid_script_rule");
+    assert!(v["error"]["message"].as_str().unwrap().contains("bad.lua:3:"), "{v}");
+
+    let v = c.raw("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script}));
+    assert!(v["error"]["message"].as_str().unwrap().contains("give output_dir"), "{v}");
+    let data_out = d.dir.path().join("out");
+    let v = c.raw("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": data_out}));
+    assert!(v["error"]["message"].as_str().unwrap().contains("data folder"), "{v}");
+    let v = c.raw("set_script_rule", json!({"id": "cap", "host": "router.localhost", "script": script, "output_dir": out}));
+    assert!(v["error"]["message"].as_str().unwrap().contains("help page"), "{v}");
+}
+
+#[test]
+fn an_output_dir_the_daemon_cannot_write_is_refused_at_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_s, script, out) = script_dir("cap.lua", LOG_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let v = c.raw("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": out}));
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("cannot write in output_dir") && msg.contains("Privacy & Security"), "{msg}");
+    assert!(std::fs::read_dir(&out).unwrap().next().is_none(), "the probe left nothing");
+}
+
+#[test]
+fn rule_counters_move_with_traffic_and_the_log_names_the_rules() {
+    let (_s, script, out) = script_dir("cap.lua", LOG_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    c.call("register_route", http_route("shop", echo_server()));
+    c.call("set_script_rule", json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": out}));
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap() as u16;
+    let mut s = TcpStream::connect(("127.0.0.1", http)).unwrap();
+    write!(s, "GET /hello HTTP/1.1\r\nhost: shop.localhost\r\nconnection: close\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    s.read_to_string(&mut answer).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while std::fs::read_to_string(Path::new(&out).join("x.jsonl")).unwrap_or_default() != "/hello\n" {
+        assert!(Instant::now() < deadline, "the capture file never got the line");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let rule = &c.call("list_script_rules", json!({}))["rules"][0];
+    assert_eq!(rule["matched"], 1);
+    assert_eq!(rule["bytes_written"], 7);
+    assert_eq!(rule["script_sha256"].as_str().unwrap().len(), 64);
+    let entry = c.call("get_logs", json!({"limit": 1}))["entries"][0].clone();
+    assert_eq!(entry["rules"], json!(["cap"]));
+}
+
+// I11: a rule moved from an internet host to a route takes its old host out
+// of the inspect set at once.
+#[test]
+fn a_rule_moved_to_a_route_leaves_the_inspect_set() {
+    let (_s, script, _) = script_dir("add.lua", INTERCEPT_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    c.call("set_script_rule", json!({"id": "x", "host": "api.test.example", "script": script}));
+    assert_eq!(c.call("get_proxy", json!({}))["inspect_set"], json!(["api.test.example"]));
+    c.call("set_script_rule", json!({"id": "x", "host": "shop.localhost", "script": script}));
+    assert_eq!(c.call("get_proxy", json!({}))["inspect_set"], json!([]));
+}

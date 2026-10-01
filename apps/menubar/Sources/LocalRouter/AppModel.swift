@@ -233,6 +233,41 @@ final class AppModel {
         await refresh()
     }
 
+    // MARK: Script rules (ADR 07)
+
+    /// Turn a rule on or off. Setting it again keeps its counters.
+    func setRuleEnabled(_ view: ScriptRuleView, _ on: Bool) async {
+        var rule = view.rule
+        rule.enabled = on
+        await setRule(rule)
+    }
+
+    /// Let a rule see secret headers. The view asks first; MCP cannot do this.
+    func revealSecrets(_ view: ScriptRuleView, _ on: Bool) async {
+        var rule = view.rule
+        rule.revealSecrets = on
+        await setRule(rule)
+    }
+
+    func removeRule(_ view: ScriptRuleView) async {
+        do {
+            _ = try await client.removeScriptRule(id: view.id)
+            await refresh()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func setRule(_ rule: ScriptRule) async {
+        do {
+            let r = try await client.setScriptRule(rule)
+            if let note = r.notes.first { message = note }
+            await refresh()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
     private func setConfig(_ p: SetConfigParams) async {
         do {
             _ = try await client.setConfig(p)

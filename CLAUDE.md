@@ -8,8 +8,9 @@ for TCP. Coding agents manage routes through an MCP server. Design and
 decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
 `docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater),
 `docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path),
-`docs/adr/05-folder-routes-2026-09-30/` (a folder served with no dev server) and
-`docs/adr/06-forward-proxy-2026-10-01/` (a forward proxy for Chrome and Claude Code).
+`docs/adr/05-folder-routes-2026-09-30/` (a folder served with no dev server),
+`docs/adr/06-forward-proxy-2026-10-01/` (a forward proxy for Chrome and Claude Code) and
+`docs/adr/07-proxy-scripts-lua-2026-10-01/` (Lua scripts that change or record traffic).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 
@@ -90,7 +91,7 @@ walk `api/examples/`, round-trip every file, and fail on a method without an
 example. Bump the major of `API_VERSION` only for breaking changes; clients
 refuse a different major.
 
-The MCP server exposes exactly seven tools; `apps/cli/tests/mcp.rs` checks the
+The MCP server exposes exactly nine tools; `apps/cli/tests/mcp.rs` checks the
 list, so a new tool needs that test changed on purpose.
 
 ## Things that are easy to get wrong
@@ -145,6 +146,18 @@ list, so a new tool needs that test changed on purpose.
   accept-any switch there. The inspection CA (`inspect-ca/`) is made only when
   `inspect_hosts` first becomes non-empty, and its `CertStore` never signs a
   `.localhost` name. Tests set `proxy_port` 0 before turning the proxy on.
+- **Script rules (ADR 07)** live in `libs/core/src/scripts/`: `rules.rs`
+  (fields, matching), `engine.rs` (Lua 5.4 through `mlua`, sandbox, limits,
+  script threads, reload), `lua_api.rs` (`req`/`res`/`ex` and the modules),
+  `bodies.rs` (classes, decoding with limits, the 512 MB budget, saved files),
+  `events.rs` (server-sent events and NDJSON), `mod.rs` (the hook the router
+  and the forward proxy call). With no matching rule the hook returns before
+  any allocation (I1); keep it that way. Network tasks never run Lua: they
+  send a job to the script threads. A log rule must never delay or change
+  traffic: each part goes to the client first, and its queue drops instead of
+  waiting. `reveal_secrets` is never an MCP argument. The reference text is
+  `libs/core/src/scripts.md`, served at `router.localhost/scripts`; keep it in
+  step with `lua_api.rs` (a test reads the field names from the tables).
 
 ## Bundle and release
 

@@ -1,0 +1,13 @@
+{
+  "id": 17,
+  "method": "set_script_rule",
+  "params": {
+    "id": "add-trace",
+    "host": "shop.localhost",
+    "script": "/Users/me/shop/scripts/add-trace.lua",
+    "order": 10,
+    "on_error": "pass",
+    "enabled": true,
+    "check_only": true
+  }
+}

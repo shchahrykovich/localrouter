@@ -34,7 +34,7 @@ final class RouteKeyTests: XCTestCase {
     func testLogEntryKeepsTheRoute() throws {
         let json = #"{"kind":"http","time_ms":1,"method":"GET","host":"shop.localhost","path":"/blog","status":200,"duration_ms":2,"route":"shop/blog"}"#
         let entry = try Api.decoder.decode(LogEntry.self, from: Data(json.utf8))
-        guard case let .http(_, _, _, _, _, _, route, _) = entry else { return XCTFail("not http") }
+        guard case let .http(_, _, _, _, _, _, route, _, _) = entry else { return XCTFail("not http") }
         XCTAssertEqual(route, "shop/blog")
     }
 }

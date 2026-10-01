@@ -31,6 +31,15 @@ tower-http.workspace = true
 tower-service.workspace = true
 tracing.workspace = true
 x509-parser = "0.18"
+# Lua 5.4 for script rules (ADR 07): built from source into the binary.
+mlua = { version = "0.11", features = ["lua54", "vendored", "send"] }
+# Decoding of gzip, deflate, br and zstd bodies for scripts (ADR 07, change 4).
+flate2 = "1"
+brotli = "8"
+zstd = "0.13"
+libc.workspace = true
+# SHA-256 of a loaded script; ring is already in the tree through rustls.
+ring = "0.17"
 
 [dev-dependencies]
 tempfile = "3"

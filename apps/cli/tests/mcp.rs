@@ -36,15 +36,35 @@ fn is_error(result: &CallToolResult) -> bool {
     result.is_error == Some(true)
 }
 
-// I13, ADR 06 I14: the seventh tool, get_proxy, was added on purpose.
+// I13, ADR 06 I14: the seventh tool, get_proxy, was added on purpose; ADR 07
+// added the eighth and ninth, set_script_rule and remove_script_rule.
 #[tokio::test]
-async fn exactly_seven_tools_are_listed() {
+async fn exactly_nine_tools_are_listed() {
     let d = Daemon::start();
     let client = mcp_client(d.home()).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    assert_eq!(names, ["find_free_port", "get_logs", "get_proxy", "list_routes", "register_route", "status", "unregister_route"]);
+    assert_eq!(
+        names,
+        [
+            "find_free_port",
+            "get_logs",
+            "get_proxy",
+            "list_routes",
+            "register_route",
+            "remove_script_rule",
+            "set_script_rule",
+            "status",
+            "unregister_route"
+        ]
+    );
+    let set = tools.iter().find(|t| t.name == "set_script_rule").unwrap();
+    let schema = serde_json::to_value(&set.input_schema).unwrap();
+    for field in ["id", "host", "script", "path", "methods", "output_dir", "order", "on_error", "owner_pid", "persistent", "check_only"] {
+        assert!(schema["properties"].get(field).is_some(), "set_script_rule has no {field}: {schema}");
+    }
+    assert!(schema["properties"].get("reveal_secrets").is_none(), "I9: MCP cannot reveal secrets");
     let register = tools.iter().find(|t| t.name == "register_route").unwrap();
     let schema = serde_json::to_value(&register.input_schema).unwrap();
     for field in ["host", "path", "strip_path", "protocol", "target", "port", "folder", "listen_port", "note", "owner_pid", "persistent"] {
@@ -169,7 +189,7 @@ async fn a_dev_mcp_server_names_the_dev_instance() {
     let instructions = info.instructions.clone().unwrap_or_default();
     assert!(instructions.contains("`localrouter-dev guide`"), "{instructions}");
     assert!(instructions.contains("only when the user asks"), "{instructions}");
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 7);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 9);
     client.cancel().await.unwrap();
 }
 
@@ -237,5 +257,50 @@ async fn get_proxy_reads_the_proxy_settings_and_changes_nothing() {
         Ok(r) => assert!(is_error(&r), "an unknown argument was accepted: {}", text(&r)),
         Err(e) => assert!(e.to_string().contains("enable"), "{e}"),
     }
+    client.cancel().await.unwrap();
+}
+
+// ADR 07, T16, I9: reveal_secrets is an unknown argument; check_only stores
+// nothing; removing an unknown id says so.
+#[tokio::test]
+async fn script_rule_tools_check_set_and_remove() {
+    let d = Daemon::start();
+    let client = mcp_client(d.home()).await;
+    let dir = tempfile::Builder::new().prefix("lrs").tempdir().unwrap();
+    let script = dir.path().join("cap.lua");
+    std::fs::write(&script, r#"return { kind = "log", on_exchange = function(ex) end }"#).unwrap();
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let rule = json!({"id": "cap", "host": "shop.localhost", "script": script, "output_dir": out});
+
+    let mut secret = rule.clone();
+    secret["reveal_secrets"] = json!(true);
+    let r = client.call_tool(CallToolRequestParams::new(Cow::Borrowed("set_script_rule")).with_arguments(secret.as_object().unwrap().clone())).await;
+    let refused = match r {
+        Err(e) => e.to_string(),
+        Ok(r) => {
+            assert!(is_error(&r), "reveal_secrets must fail: {}", text(&r));
+            text(&r)
+        }
+    };
+    assert!(refused.contains("unknown field"), "{refused}");
+
+    let mut check = rule.clone();
+    check["check_only"] = json!(true);
+    let r = call(&client, "set_script_rule", check).await;
+    assert!(!is_error(&r), "{}", text(&r));
+    assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["check_only"], true);
+    let proxy: Value = serde_json::from_str(&text(&call(&client, "get_proxy", json!({})).await)).unwrap();
+    assert_eq!(proxy["script_rules"], json!([]), "check_only stored nothing");
+
+    let r = call(&client, "set_script_rule", rule).await;
+    assert!(!is_error(&r), "{}", text(&r));
+    let proxy: Value = serde_json::from_str(&text(&call(&client, "get_proxy", json!({})).await)).unwrap();
+    assert_eq!(proxy["script_rules"][0]["kind"], "log");
+
+    let r = call(&client, "remove_script_rule", json!({"id": "cap"})).await;
+    assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["removed"], true);
+    let r = call(&client, "remove_script_rule", json!({"id": "cap"})).await;
+    assert_eq!(serde_json::from_str::<Value>(&text(&r)).unwrap()["removed"], false);
     client.cancel().await.unwrap();
 }

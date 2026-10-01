@@ -49,7 +49,9 @@ Use the first one that works:
 | `find_free_port` | - | A free TCP port on 127.0.0.1 |
 | `get_logs` | `{{CLI}} logs [host]` | Recent requests and connections |
 | `status` | `{{CLI}} status` | Daemon version, ports, local CA |
-| `get_proxy` | `{{CLI}} proxy` | Proxy URL, environment variables, Chrome flags (see "Proxy" below) |
+| `get_proxy` | `{{CLI}} proxy` | Proxy URL, environment variables, Chrome flags, script rules (see "Proxy" below) |
+| `set_script_rule` | `{{CLI}} rules add <id> --host <host> --script <file.lua>` | Run a Lua script on a host's traffic (see "Scripts" below) |
+| `remove_script_rule` | `{{CLI}} rules rm <id>` | Remove a script rule |
 | - | `{{CLI}} which <url>` | Which route answers a URL, and why (no MCP tool) |
 
 ## Step 2: choose names
@@ -280,6 +282,46 @@ servers it calls. It is off by default and listens on
   before.
 - `{{CLI}} proxy off` closes the port. Programs started with the proxy
   settings then fail to connect until they are started again without them.
+
+## Scripts: change or record traffic
+
+A script rule runs a Lua file on the HTTP traffic of a route
+(`shop.localhost`) or of a host the proxy carries (`api.example.com`).
+
+- An **intercept script** runs while the client waits: it may change a
+  request, answer it without the server, change a response, and change or
+  drop each event of a stream.
+- A **log script** gets a copy of each finished request and response and
+  writes files in its `output_dir`. It never slows or changes traffic.
+
+The reference, with the fields, the modules and the limits:
+`{{CLI}} rules api`, or `curl -s {{HELP_URL}}/scripts`. Read it before you write a
+script.
+
+1. Test the script first, with nothing stored: `{{CLI}} rules check ./capture.lua`
+   (MCP `set_script_rule` with `check_only: true`).
+2. Set the rule **before** you start the job, so it sees the first requests:
+   `{{CLI}} rules add claude --host api.anthropic.com --path /v1/messages --script ./capture.lua --output-dir ./captures`
+3. Give the rule `owner_pid` of a process you started for the job, or remove
+   it when you are done: `{{CLI}} rules rm claude`. Make a rule `persistent`
+   only when the user asks.
+4. `{{CLI}} rules` (MCP `get_proxy`, `script_rules`) shows `matched`,
+   `errors` and `last_error`. A rule is turned off after 20 failed calls in a
+   row.
+
+- A log rule never needs `response_body`. An intercept rule with
+  `response_body` holds the whole body, so **streaming stops**; use
+  `on_event` for event streams.
+- Bodies come in classes: text, events, media, multipart, binary. A log rule
+  copies text and events by default. For streams use `on_event`; to keep
+  images, video, downloads or uploads use `save`, which writes files, not
+  `copy`.
+- Secret headers (`authorization`, `cookie`, API keys) reach scripts as
+  `[redacted]`. Only the user can reveal them, at a terminal; do not ask for it.
+- Scripts may live in the project, but **do not commit captures**: keep
+  `output_dir` out of git. Captures hold prompts and API replies.
+- A rule on a host outside `.localhost` makes the proxy inspect that host:
+  the program must use the proxy and trust the inspection CA (see "Proxy").
 
 ## Step 7: write it down in the project
 

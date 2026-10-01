@@ -44,7 +44,7 @@ struct LogRow: View {
 
     var body: some View {
         switch entry {
-        case let .http(t, method, host, path, status, duration, route, proxy):
+        case let .http(t, method, host, path, status, duration, route, proxy, scripts):
             HStack(spacing: 6) {
                 Text(time(t)).foregroundStyle(.secondary)
                 Text("\(status)").foregroundStyle(status >= 500 ? .red : status >= 400 ? .orange : .green)
@@ -59,6 +59,13 @@ struct LogRow: View {
                     if let bytesIn = proxy.bytesIn, let bytesOut = proxy.bytesOut {
                         Text("↑\(bytesIn) ↓\(bytesOut) B").foregroundStyle(.secondary)
                     }
+                }
+                if let scripts {
+                    // ADR 07: the script rules that ran, red when one failed.
+                    Text(scripts.rules.joined(separator: ","))
+                        .foregroundStyle(scripts.error == nil ? .teal : .red)
+                        .lineLimit(1)
+                        .help(scripts.error.map { "Script rule \($0) failed" } ?? "Script rules that ran")
                 }
                 Text("\(duration) ms").foregroundStyle(.secondary)
             }

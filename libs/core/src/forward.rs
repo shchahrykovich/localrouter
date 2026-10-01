@@ -33,6 +33,7 @@ use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
 use crate::proxy::{Body, ClientScheme, Proxy, escape, is_upgrade, page, remove_hop_headers};
+use crate::scripts::Ctx;
 use crate::routes::host_key;
 use crate::tls::CertStore;
 use crate::upstream::Upstream;
@@ -88,12 +89,12 @@ impl ForwardProxy {
         let Some(authority) = req.uri().authority().cloned() else {
             let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             let resp = self.not_a_proxy_request();
-            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http);
+            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default());
             return resp;
         };
         if req.uri().scheme_str() != Some("http") {
             let resp = https_needs_connect(authority.as_str());
-            self.log_http(&method, authority.as_str(), &path, &resp, start, ProxyMode::Http);
+            self.log_http(&method, authority.as_str(), &path, &resp, start, ProxyMode::Http, Default::default());
             return resp;
         }
         let host = bare_host(authority.as_str());
@@ -110,16 +111,46 @@ impl ForwardProxy {
         }
         if self.is_own_address(&host, port) {
             let resp = loop_detected(&host, port);
-            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http);
+            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default());
             return resp;
         }
-        let uri = req.uri().clone();
-        let resp = match self.send(req, uri).await {
-            Ok(resp) => resp,
-            Err(e) => bad_gateway(&host, &e),
-        };
-        self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http);
+        let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+        let base = format!("http://{authority}");
+        let ctx = Ctx { source: "proxy", route: None, scheme: "http", host: host.clone(), port };
+        let (resp, scripts) = self.through_scripts(req, &base, &host, ctx).await;
+        self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, scripts);
         resp
+    }
+
+    /// Send a request to `base` (scheme and authority) plus its own path,
+    /// through the matching script rules (ADR 07). Returns the response and
+    /// the rules that ran and failed, for the log.
+    async fn through_scripts(
+        &self,
+        req: Request<Body>,
+        base: &str,
+        host: &str,
+        ctx: Ctx,
+    ) -> (Response<Body>, (Vec<String>, Option<String>)) {
+        let send = |req: Request<Body>| async move {
+            let pq = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
+            let sent = match format!("{base}{pq}").parse::<Uri>() {
+                Ok(uri) => self.send(req, uri).await,
+                Err(e) => Err(e.to_string()),
+            };
+            match sent {
+                Ok(resp) => (resp, None),
+                Err(e) => (bad_gateway(host, &e), Some(e)),
+            }
+        };
+        let scripts = self.router.scripts.clone();
+        match scripts.matching(host, req.uri().path(), req.method().as_str()) {
+            None => (send(req).await.0, (vec![], None)),
+            Some(m) => {
+                let out = scripts.exchange(m, ctx, req, send).await;
+                (out.response, (out.rules, out.script_error))
+            }
+        }
     }
 
     async fn connect(self: &Arc<Self>, req: Request<Incoming>, peer: SocketAddr, cancel: CancellationToken) -> Response<Body> {
@@ -216,20 +247,16 @@ impl ForwardProxy {
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let name = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
         let authority = if port == 443 { name } else { format!("{name}:{port}") };
-        let resp = match format!("https://{authority}{path}").parse::<Uri>() {
-            Ok(uri) => match self.send(req, uri).await {
-                Ok(resp) => resp,
-                Err(e) => bad_gateway(host, &e),
-            },
-            Err(e) => bad_gateway(host, &e.to_string()),
-        };
-        self.log_http(&method, host, &path, &resp, start, ProxyMode::Inspect);
+        let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+        let ctx = Ctx { source: "proxy", route: None, scheme: "https", host: host.to_string(), port };
+        let (resp, scripts) = self.through_scripts(req, &format!("https://{authority}"), host, ctx).await;
+        self.log_http(&method, host, &path, &resp, start, ProxyMode::Inspect, scripts);
         resp
     }
 
     /// Send a request to the real server at `uri`, as the client wrote it:
     /// hop-by-hop and proxy headers removed, nothing added (I10).
-    async fn send(&self, mut req: Request<Incoming>, uri: Uri) -> Result<Response<Body>, String> {
+    async fn send(&self, mut req: Request<Body>, uri: Uri) -> Result<Response<Body>, String> {
         let wants_upgrade = is_upgrade(req.headers());
         let client_upgrade = wants_upgrade.then(|| hyper::upgrade::on(&mut req));
         let (mut parts, body) = req.into_parts();
@@ -237,7 +264,7 @@ impl ForwardProxy {
         parts.version = Version::HTTP_11;
         remove_hop_headers(&mut parts.headers, wants_upgrade);
         parts.headers.remove(header::PROXY_AUTHORIZATION);
-        let out = Request::from_parts(parts, body.map_err(Into::into).boxed_unsync());
+        let out = Request::from_parts(parts, body);
 
         let mut resp = self.upstream.send(out, wants_upgrade).await?;
         if resp.status() == StatusCode::SWITCHING_PROTOCOLS
@@ -268,9 +295,20 @@ impl ForwardProxy {
             || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified() || ip.to_canonical().is_loopback())
     }
 
-    fn log_http(&self, method: &str, host: &str, path: &str, resp: &Response<Body>, start: Instant, mode: ProxyMode) {
+    #[allow(clippy::too_many_arguments)]
+    fn log_http(
+        &self,
+        method: &str,
+        host: &str,
+        path: &str,
+        resp: &Response<Body>,
+        start: Instant,
+        mode: ProxyMode,
+        scripts: (Vec<String>, Option<String>),
+    ) {
         let millis = start.elapsed().as_millis() as u64;
-        self.log.push(LogEntry::http(method, host, path, resp.status().as_u16(), millis).via_proxy(mode));
+        let entry = LogEntry::http(method, host, path, resp.status().as_u16(), millis).via_proxy(mode);
+        self.log.push(entry.with_scripts(scripts.0, scripts.1));
     }
 
     fn not_a_proxy_request(&self) -> Response<Body> {

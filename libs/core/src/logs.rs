@@ -40,6 +40,12 @@ pub enum LogEntry {
         /// Tunnels only: bytes from the server to the client.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bytes_out: Option<u64>,
+        /// Ids of the script rules that ran (ADR 07).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rules: Vec<String>,
+        /// The id of a script rule that failed (ADR 07).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script_error: Option<String>,
     },
     /// One TCP connection, written when it closes.
     Tcp {
@@ -91,6 +97,8 @@ impl LogEntry {
             mode: None,
             bytes_in: None,
             bytes_out: None,
+            rules: vec![],
+            script_error: None,
         }
     }
 
@@ -119,6 +127,15 @@ impl LogEntry {
     pub fn with_route(mut self, key: Option<String>) -> Self {
         if let LogEntry::Http { route, .. } = &mut self {
             *route = key;
+        }
+        self
+    }
+
+    /// The script rules that ran on an HTTP entry, and the one that failed.
+    pub fn with_scripts(mut self, ran: Vec<String>, failed: Option<String>) -> Self {
+        if let LogEntry::Http { rules, script_error, .. } = &mut self {
+            *rules = ran;
+            *script_error = failed;
         }
         self
     }
@@ -262,7 +279,7 @@ mod tests {
     #[test]
     fn a_router_entry_has_no_proxy_fields() {
         let json = serde_json::to_value(LogEntry::http("GET", "shop.localhost", "/", 200, 1)).unwrap();
-        for key in ["via", "mode", "bytes_in", "bytes_out"] {
+        for key in ["via", "mode", "bytes_in", "bytes_out", "rules", "script_error"] {
             assert!(json.get(key).is_none(), "{key}");
         }
     }

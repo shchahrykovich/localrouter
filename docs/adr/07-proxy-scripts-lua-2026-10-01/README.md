@@ -1,7 +1,10 @@
 # ADR 07. Lua scripts for traffic: intercept and log
 
-**Status:** Proposed on 2026-10-01. Not built. Builds on
-[ADR 06](../06-forward-proxy-2026-10-01/README.md).
+**Status:** Accepted. Built on 2026-10-01: tasks 1 to 11 and the automated
+end-to-end test E1e. Open: manual tests M1 to M8 (only an M2 and M7 smoke run
+by hand so far), the decisions U2 to U7, and the release (task 13). Builds on
+[ADR 06](../06-forward-proxy-2026-10-01/README.md). Differences from the plan:
+[10-tasks.md](10-tasks.md#plan-vs-actual).
 
 ## Summary
 

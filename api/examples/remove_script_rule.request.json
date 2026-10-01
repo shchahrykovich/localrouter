@@ -1,0 +1,7 @@
+{
+  "id": 18,
+  "method": "remove_script_rule",
+  "params": {
+    "id": "claude-capture"
+  }
+}

@@ -151,7 +151,9 @@ running daemon over a Unix socket.
 | `find_free_port` | Return a free local port. Useful when many worktrees run at once. |
 | `get_logs` | Last N requests and TCP connections, optionally for one host. Paths never include the query string. |
 | `status` | Daemon version, ports bound or failed, CA state and trust. |
-| `get_proxy` | The forward proxy: URL, environment variables, Chrome flags, inspected hosts, inspection CA trust. Read only. |
+| `get_proxy` | The forward proxy: URL, environment variables, Chrome flags, inspected hosts, inspection CA trust, and the script rules with their counters. Read only. |
+| `set_script_rule` | Run a Lua script on a host's HTTP traffic (`id`, `host`, `path`, `methods`, `script`, `output_dir`, `owner_pid`, `persistent`, `check_only`, ...). |
+| `remove_script_rule` | Remove a script rule by id. Capture files stay. |
 
 To set up a project, tell the agent in the project folder:
 
@@ -212,6 +214,30 @@ separately. The real server's certificate is always checked with the macOS
 trust store. The menu bar icon's right-click menu has **Open Chrome via
 Proxy** when Google Chrome is installed.
 
+## Scripts
+
+A script rule runs a Lua 5.4 file on the HTTP traffic of a route or of a host
+the proxy carries ([ADR 07](docs/adr/07-proxy-scripts-lua-2026-10-01/README.md)).
+An **intercept** script runs while the client waits and may change or answer a
+request, change a response, or change each event of a stream. A **log**
+script gets a copy of each finished request and response and writes files in
+its `output_dir`; it never slows or changes traffic.
+
+```
+localrouter rules api                           # the reference: Lua API, body classes, limits
+localrouter rules check ./capture.lua           # test a script, store nothing
+localrouter rules add claude --host api.anthropic.com --script ./capture.lua --output-dir ./captures
+localrouter rules                               # rules with matched, errors, last error
+localrouter rules disable claude                # or enable, rm
+```
+
+Scripts run in a sandbox (no files, no network, no `os.execute`) with 50 ms
+per intercept call, 2 s per log call and 64 MB per Lua state. A rule that
+fails 20 times in a row is turned off. Secret headers reach scripts as
+`[redacted]` unless you allow a rule at a terminal (`--reveal-secrets`). The
+reference is also at `http://router.localhost/scripts`. Keep `output_dir` out
+of git: captures hold prompts and API replies.
+
 ## HTTPS
 
 1. On first run, LocalRouter creates a root certificate authority (CA) in
@@ -251,7 +277,7 @@ Goal: very small memory use, native look, no web view.
 
 | Part | Language | Main libraries |
 |---|---|---|
-| `localrouterd`: proxy, TLS, route table, logs | Rust | `tokio`, `hyper`, `rustls`, `rcgen` |
+| `localrouterd`: proxy, TLS, route table, logs, scripts | Rust | `tokio`, `hyper`, `rustls`, `rcgen`, `mlua` (Lua 5.4, built in) |
 | `localrouter`: CLI and MCP stdio server | Rust | `clap`, `rmcp` (official Rust MCP SDK) |
 | Menu bar app | Swift | SwiftUI `MenuBarExtra`, `SMAppService` to start the daemon at login |
 | Link between app and daemon | JSON over a Unix socket | |

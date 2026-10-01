@@ -1,7 +1,8 @@
 # 10. Tasks
 
-**Status:** Proposed. No task is started. ADR 06 tasks 1 to 6 must be done
-first: this ADR uses the forward proxy, the inspect set and socket API 1.3.
+**Status:** Tasks 1 to 11 are built, with the end-to-end test of task 12
+(E1e). Open: the manual tests of task 12 and task 13 (release). What changed
+from this plan is at the end: [Plan vs actual](#plan-vs-actual).
 
 | # | Task | Depends on |
 |---|---|---|
@@ -184,3 +185,24 @@ Actual Change Manifest and the Plan vs Actual table; flip the README status.
 | I24 partial bodies cannot be changed | 4 |
 | I25 decoding stops at each limit | 4 |
 | I26 class from Content-Type only | 4 |
+
+## Plan vs actual
+
+What the build did differently from this plan, and why.
+
+| # | Planned | Built | Why |
+|---|---|---|---|
+| 1 | The writer queue of a saved body is 256 KB | 4 MB (`bodies::SAVE_QUEUE`) | On loopback 256 KB fills before the writer thread starts, so every image of a local dev server was cut as `slow_disk` (found by T22). The client is still never slowed; only the stop comes later. |
+| 2 | `async-compression` decodes bodies | `flate2`, `brotli` and `zstd` write-decoders | Decoding happens in the tap as parts pass, with a sink that refuses bytes past the limit (I25). A push decoder fits that; an async reader does not. |
+| 3 | `mlua` with the `serialize` feature | Without it; `json` is written in `lua_api.rs` | The "is not text: use base64.encode" error needs the field path, and empty arrays must stay arrays. |
+| 4 | The hook in `proxy.rs` and `forward.rs` | The hook is `Scripts::exchange` in `scripts/mod.rs`; `proxy.rs` and `forward.rs` call it with a `send` function | One flow for router and proxy traffic, testable without a daemon. |
+| 5 | `body_skipped`: `class`, `too_large`, `budget`, `streamed`, `slow_disk`, `quota`, `upgrade` | Also `save_error` (the file could not be made, for example `bodies/` is a link) and `error` (the body broke while held) | A script must be able to tell these from a full disk. |
+| 6 | `check_only` checks `output_dir` | A log script may be checked without `output_dir`; the reply has a note | `rules check <file>` tests a script before its folder exists. |
+| 7 | Errors use the existing codes | A new code `invalid_script_rule` | An agent can tell a bad rule from a bad route. |
+| 8 | Setting a rule again resets its counters | Counters carry over when `script` and `output_dir` stay the same | `rules enable` and `rules disable` set the rule again; the ADR says a disabled rule keeps its counters. |
+| 9 | Not said | A saved rule whose file does not load at start stays in the list, matches nothing, and is not loaded again until it is set again | Its fields were never checked against a script of that kind. |
+| 10 | The Swift `LogEntry.http` case | It gained a ninth value, `scripts: ScriptRun?` | Logs shows the rule ids that ran, red when one failed. |
+| 11 | The app sets `reveal_secrets` with a confirmation dialog | "Let It See Secrets…" in Settings > Scripts, with a dialog that names the host | As planned; the CLI and the app are the only ways. |
+| 12 | Not said | `rules add` makes a session rule unless `--persistent` | Rules are for a job; the ADR asks for persistent rules only when the user asks. |
+| 13 | One pool of script threads (the number of cores, at most 4) | Two pools of that size: one for intercept calls, one for log calls | Found in review: four slow log scripts took every thread, so intercept calls failed "busy" and the client got a 502. That broke I2. |
+| 14 | Not said | A held or script-set body is copied and saved in the task that ends the exchange, with no writer-queue limit | Found in review: saving it before `send` made the client wait for the disk, and a held body over 4 MB was saved empty. |

@@ -3,6 +3,7 @@
 mod client;
 mod mcp;
 mod proxy;
+mod rules;
 mod trust;
 
 use std::process::ExitCode;
@@ -116,6 +117,14 @@ enum Command {
         #[command(subcommand)]
         command: Option<proxy::ProxyCommand>,
     },
+    /// Script rules: Lua scripts that change (intercept) or record (log) HTTP traffic. Without a subcommand: the list.
+    Rules {
+        /// The list as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<rules::RulesCommand>,
+    },
     /// Print the full guide for coding agents, with the current ports, status and routes.
     Guide,
     /// Run the MCP server over stdio (for coding agents).
@@ -168,6 +177,7 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
     match command {
         Command::Mcp => mcp::run(paths.socket(), instance).await,
         Command::Proxy { command } => proxy::run(command, &paths, &instance).await,
+        Command::Rules { json, command } => rules::run(command, json, &paths, &instance).await,
         Command::Note => {
             print!("{}", help::render_note(&instance));
             Ok(())
@@ -389,7 +399,21 @@ fn print_status(instance: &Instance, s: &StatusResult) {
 
 fn format_entry(e: &LogEntry) -> String {
     match e {
-        LogEntry::Http { time_ms, method, host, path, status, duration_ms, route, via: _, mode, bytes_in, bytes_out } => {
+        LogEntry::Http {
+            time_ms,
+            method,
+            host,
+            path,
+            status,
+            duration_ms,
+            route,
+            via: _,
+            mode,
+            bytes_in,
+            bytes_out,
+            rules,
+            script_error,
+        } => {
             let route = route.as_deref().map(|r| format!(" route {r}")).unwrap_or_default();
             let via = match mode {
                 Some(ProxyMode::Http) => " via proxy (http)",
@@ -401,7 +425,9 @@ fn format_entry(e: &LogEntry) -> String {
                 (Some(i), Some(o)) => format!(" in {i} B, out {o} B,"),
                 _ => String::new(),
             };
-            format!("{} {status} {method:<6} {host}{path}{bytes} {duration_ms} ms{route}{via}", clock(*time_ms))
+            let rules = if rules.is_empty() { String::new() } else { format!(" rules {}", rules.join(",")) };
+            let failed = script_error.as_deref().map(|r| format!(" (rule {r} failed)")).unwrap_or_default();
+            format!("{} {status} {method:<6} {host}{path}{bytes} {duration_ms} ms{route}{via}{rules}{failed}", clock(*time_ms))
         }
         LogEntry::Tcp { time_ms, host, listen_port, bytes_in, bytes_out, duration_ms, failed } => {
             let state = if *failed { "FAILED" } else { "tcp" };

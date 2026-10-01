@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use localrouter_core::api::{
     self, ApiError, CaState, CaStatus, ErrorCode, FindFreePortParams, FindFreePortResult, GetLogsParams, GetLogsResult,
-    GetProxyResult, HelloParams, HelloResult, HostParams, ListRoutesResult, PortStatus, ProxyStatus, RegisterRouteResult,
-    ResetCaResult, RouteView, SetConfigParams, SetConfigResult, StatusResult, UnregisterRouteResult,
+    GetProxyResult, HelloParams, HelloResult, HostParams, IdParams, InspectChange, ListRoutesResult, ListScriptRulesResult,
+    PortStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams,
+    SetConfigResult, SetScriptRuleParams, SetScriptRuleResult, StatusResult, UnregisterRouteResult,
 };
 use localrouter_core::config::Config;
 use localrouter_core::forward::ForwardProxy;
@@ -22,6 +23,9 @@ use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
+use localrouter_core::scripts::engine::{ScriptKind, load_file};
+use localrouter_core::scripts::rules::{self as script_rules, RuleHost};
+use localrouter_core::scripts::{Scripts, bodies};
 use localrouter_core::tcp::{self, TcpRouteInfo};
 use localrouter_core::tls::{CaKind, CaLoad, CertStore, LocalCa};
 use localrouter_core::upstream::Upstream;
@@ -104,6 +108,8 @@ pub struct Daemon {
     pub inspect_certs: Arc<CertStore>,
     pub proxy: Arc<Proxy>,
     pub forward: Arc<ForwardProxy>,
+    /// Script rules (ADR 07); the router and the forward proxy share them.
+    pub scripts: Arc<Scripts>,
     pub shutdown: CancellationToken,
     pids: PidWatch,
     tcp: Mutex<HashMap<String, TcpHandle>>,
@@ -125,6 +131,10 @@ fn route_err(e: RouteError) -> ApiError {
     err(ErrorCode::InvalidRoute, e.to_string())
 }
 
+fn rule_err(message: impl Into<String>) -> ApiError {
+    err(ErrorCode::InvalidScriptRule, message)
+}
+
 impl Daemon {
     /// Load config, CA and routes. Does not bind anything yet.
     pub fn load(paths: Paths, instance: Instance, pids: PidWatch, ca: Option<LocalCa>, ca_problem: Option<String>) -> Arc<Self> {
@@ -144,6 +154,9 @@ impl Daemon {
             tracing::warn!("could not write config.json: {e}");
         }
         let log = Arc::new(RequestLog::new(config.value.log_size));
+        let scripts = Scripts::new();
+        scripts.set_secret_headers(&config.value.secret_headers);
+        load_saved_script_rules(&paths, &scripts);
         let lookup = shared.clone();
         // A name gets a certificate when any HTTP route serves it, with or
         // without a path: TLS comes before the path is known (I27).
@@ -193,7 +206,8 @@ impl Daemon {
                 }
             }
         }
-        Arc::new_cyclic(|this: &Weak<Self>| {
+        let daemon = Arc::new_cyclic(|this: &Weak<Self>| {
+            let this_for_scripts = this.clone();
             let this = this.clone();
             let proxy = Arc::new(Proxy {
                 instance: instance.clone(),
@@ -205,6 +219,7 @@ impl Daemon {
                     let this = this.clone();
                     Box::pin(async move { Some(this.upgrade()?.status().await) })
                 })),
+                scripts: scripts.clone(),
             });
             let forward = Arc::new(ForwardProxy {
                 instance: instance.clone(),
@@ -215,6 +230,11 @@ impl Daemon {
                 inspect_certs: inspect_certs.clone(),
                 own_port: shared.proxy_port.clone(),
             });
+            let weak = this_for_scripts.clone();
+            scripts.set_on_disable(Arc::new(move |id: String| {
+                let Some(this) = weak.upgrade() else { return };
+                tokio::spawn(async move { this.rule_turned_off(&id).await });
+            }));
             Self {
                 paths,
                 instance,
@@ -225,6 +245,7 @@ impl Daemon {
                 inspect_certs,
                 proxy,
                 forward,
+                scripts,
                 shutdown: CancellationToken::new(),
                 pids,
                 tcp: Mutex::new(HashMap::new()),
@@ -235,7 +256,10 @@ impl Daemon {
                 write: tokio::sync::Mutex::new(()),
                 refusals: RefusalLog::new(),
             }
-        })
+        });
+        // Hosts of saved rules join the inspect set.
+        daemon.refresh_inspect();
+        daemon
     }
 
     fn config(&self) -> Config {
@@ -444,6 +468,14 @@ impl Daemon {
                 self.stop_tcp(&key.host);
             }
             tracing::info!("removed route {key}: owner process {pid} exited");
+        }
+        let ids = self.scripts.owned_by(pid);
+        for id in &ids {
+            self.scripts.remove(id);
+            tracing::info!("removed script rule {id}: owner process {pid} exited");
+        }
+        if !ids.is_empty() {
+            self.refresh_inspect();
         }
     }
 
@@ -768,6 +800,20 @@ impl Daemon {
         if let Some(list) = &p.inspect_hosts {
             new.inspect_hosts = inspect::normalize(list).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
         }
+        if let Some(list) = &p.secret_headers {
+            let mut names: Vec<String> = vec![];
+            for h in list {
+                let h = h.trim().to_ascii_lowercase();
+                if hyper_header_name_ok(&h) {
+                    if !names.contains(&h) {
+                        names.push(h);
+                    }
+                } else {
+                    return Err(err(ErrorCode::InvalidRequest, format!("secret_headers: {h:?} is not a header name")));
+                }
+            }
+            new.secret_headers = names;
+        }
         if new.http_port != 0 && new.http_port == new.https_port {
             return Err(err(ErrorCode::InvalidRequest, "http_port and https_port must differ"));
         }
@@ -793,21 +839,8 @@ impl Daemon {
 
         // The inspection CA is made the first time the inspect set is not
         // empty (I5), and never replaced here (I4).
-        if p.inspect_hosts.is_some() && !new.inspect_hosts.is_empty() && !self.inspect_certs.has_ca() {
-            if let Some(problem) = self.problems.lock().unwrap().inspect_ca.clone() {
-                return Err(err(
-                    ErrorCode::CaUnavailable,
-                    format!("the inspection CA cannot be used: {problem}. Run `{} proxy ca reset --yes`", self.instance.cli()),
-                ));
-            }
-            match LocalCa::load_or_create_kind(&self.paths, &self.instance, CaKind::Inspection) {
-                CaLoad::Ready(ca) => {
-                    tracing::info!("made the inspection CA {}", ca.common_name());
-                    self.inspect_certs.set_ca(Some(*ca));
-                    self.forget_trust_cache();
-                }
-                CaLoad::Broken(why) => return Err(err(ErrorCode::CaUnavailable, why)),
-            }
+        if p.inspect_hosts.is_some() && !new.inspect_hosts.is_empty() {
+            self.ensure_inspect_ca().map_err(|why| err(ErrorCode::CaUnavailable, why))?;
         }
 
         // A failed write drops the new listeners unused (I4).
@@ -815,7 +848,8 @@ impl Daemon {
             .map_err(|e| err(ErrorCode::Io, format!("could not save config.json: {e}")))?;
         *self.shared.config.write().unwrap() = new.clone();
         // New CONNECTs use the new set; open tunnels stay tunnels.
-        *self.shared.inspect.write().unwrap() = InspectSet::new(&new.inspect_hosts);
+        self.refresh_inspect();
+        self.scripts.set_secret_headers(&new.secret_headers);
         self.log.set_capacity(new.log_size);
         if let Some((listeners, port)) = new_listener {
             self.start_proxy(listeners, new.proxy_port, port);
@@ -890,7 +924,232 @@ impl Daemon {
             env,
             chrome_args,
             notes,
+            script_rules: self.scripts.views(),
         }
+    }
+
+    // ---- script rules (ADR 07)
+
+    /// The inspect set: `inspect_hosts` of the config and the hosts of
+    /// enabled script rules outside `.localhost` (I11).
+    fn refresh_inspect(&self) {
+        let mut hosts = self.config().inspect_hosts;
+        for h in self.scripts.inspected_hosts() {
+            if !hosts.contains(&h) {
+                hosts.push(h);
+            }
+        }
+        *self.shared.inspect.write().unwrap() = InspectSet::new(&hosts);
+    }
+
+    /// Make the inspection CA when it does not exist yet. `Ok(true)` when it
+    /// was made now. Never replaces one (ADR 06, I4).
+    fn ensure_inspect_ca(&self) -> Result<bool, String> {
+        if self.inspect_certs.has_ca() {
+            return Ok(false);
+        }
+        if let Some(problem) = self.problems.lock().unwrap().inspect_ca.clone() {
+            return Err(format!("the inspection CA cannot be used: {problem}. Run `{} proxy ca reset --yes`", self.instance.cli()));
+        }
+        match LocalCa::load_or_create_kind(&self.paths, &self.instance, CaKind::Inspection) {
+            CaLoad::Ready(ca) => {
+                tracing::info!("made the inspection CA {}", ca.common_name());
+                self.inspect_certs.set_ca(Some(*ca));
+                self.forget_trust_cache();
+                Ok(true)
+            }
+            CaLoad::Broken(why) => Err(why),
+        }
+    }
+
+    /// Create and delete a file in `output_dir`, so a folder macOS keeps the
+    /// daemon out of is refused now, not at the first write.
+    fn probe_output_dir(&self, dir: &str) -> Result<(), ApiError> {
+        let path = std::path::Path::new(dir);
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return Err(rule_err(format!("output_dir {dir} is not a folder"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(rule_err(format!("output_dir {dir} does not exist; create it first")));
+            }
+            Err(e) => return Err(rule_err(self.privacy_hint(dir, &e))),
+        }
+        let probe = path.join(format!(".lr-probe-{}-{}", std::process::id(), localrouter_core::scripts::new_id()));
+        match bodies::create_new(&probe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                Ok(())
+            }
+            Err(e) => Err(rule_err(self.privacy_hint(dir, &e))),
+        }
+    }
+
+    fn privacy_hint(&self, dir: &str, e: &std::io::Error) -> String {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(
+                "cannot write in output_dir {dir}: {e}. macOS keeps apps out of Desktop, Documents, Downloads and iCloud \
+                 Drive: use a folder outside them, or allow {} in System Settings > Privacy & Security",
+                self.instance.app_name()
+            )
+        } else {
+            format!("cannot write in output_dir {dir}: {e}")
+        }
+    }
+
+    /// `set_script_rule`: check the fields, the folder and the script; then,
+    /// unless `check_only`, store the rule (ADR 07, flow F3).
+    pub async fn set_script_rule(self: &Arc<Self>, p: SetScriptRuleParams) -> Result<SetScriptRuleResult, ApiError> {
+        let _guard = self.write.lock().await;
+        let mut rule = p.rule;
+        let id = rule.id.trim().to_ascii_lowercase();
+        let others = self.scripts.rules().iter().filter(|r| r.id != id).count();
+        script_rules::validate(&mut rule, &self.paths.data, others).map_err(rule_err)?;
+        let path = std::path::PathBuf::from(&rule.script);
+        let loaded = tokio::task::spawn_blocking(move || load_file(&path))
+            .await
+            .map_err(|e| err(ErrorCode::Io, e.to_string()))?
+            .map_err(rule_err)?;
+        match loaded.info.kind {
+            ScriptKind::Log => {
+                if rule.on_error.is_some() {
+                    return Err(rule_err("on_error is for intercept rules; a log rule never affects traffic"));
+                }
+                match rule.output_dir.clone() {
+                    Some(dir) => self.probe_output_dir(&dir)?,
+                    // `check_only` may test a script before its folder exists.
+                    None if p.check_only => {}
+                    None => {
+                        return Err(rule_err(format!("{} is a log script: give output_dir, the folder it writes", loaded.name)));
+                    }
+                }
+            }
+            ScriptKind::Intercept => {
+                if rule.output_dir.is_some() {
+                    return Err(rule_err(format!("{} is an intercept script: output_dir is for log rules", loaded.name)));
+                }
+                if rule.max_capture_bytes.is_some() {
+                    return Err(rule_err("max_capture_bytes is for log rules"));
+                }
+            }
+        }
+        let host = RuleHost::parse(&rule.host).map_err(rule_err)?;
+        let config = self.config();
+        let mut notes = vec![];
+        if p.check_only {
+            if loaded.info.kind == ScriptKind::Log && rule.output_dir.is_none() {
+                notes.push(format!("{} is a log script: give output_dir when you set the rule", loaded.name));
+            }
+            if host.is_internet() && !config.proxy_enabled {
+                notes.push(self.proxy_off_note());
+            }
+            return Ok(SetScriptRuleResult {
+                rule: Scripts::preview(rule, loaded),
+                replaced: false,
+                check_only: true,
+                inspect: None,
+                notes,
+            });
+        }
+        if let Some(pid) = rule.owner_pid
+            && !pidwatch::alive(pid)
+        {
+            return Err(err(ErrorCode::ProcessNotFound, format!("process {pid} is not running")));
+        }
+        let pattern = localrouter_core::scripts::rule_host(&rule);
+        let was_inspected = pattern.as_ref().is_some_and(|p| self.shared.inspect.read().unwrap().patterns().contains(p));
+        let old = self.scripts.put(rule.clone(), Ok(loaded));
+        let replaced = old.is_some();
+        let old_persistent = old.as_ref().is_some_and(|o| o.active.rule.persistent);
+        if (rule.persistent || old_persistent)
+            && let Err(e) = store::save_script_rules(&self.paths.script_rules(), &self.scripts.rules())
+        {
+            self.scripts.restore(&rule.id, old);
+            return Err(err(ErrorCode::Io, format!("could not save script-rules.json: {e}")));
+        }
+        if let Some(pid) = rule.owner_pid
+            && let Err(e) = self.pids.watch(pid)
+        {
+            self.scripts.restore(&rule.id, old);
+            return Err(err(ErrorCode::ProcessNotFound, format!("cannot watch process {pid}: {e}")));
+        }
+        let mut inspect = None;
+        if host.is_internet() {
+            // A failure to make the CA is not a rollback: the rule stays, and
+            // the reply says why its host cannot be inspected yet.
+            let ca_created = match self.ensure_inspect_ca() {
+                Ok(made) => made,
+                Err(why) => {
+                    notes.push(format!("{} cannot be inspected: {why}", rule.host));
+                    false
+                }
+            };
+            self.refresh_inspect();
+            let ca_trusted = if self.inspect_certs.has_ca() {
+                check_trust(self.paths.inspect_ca_pem(), &self.inspect_trust_cache).await
+            } else {
+                None
+            };
+            let host_added = !was_inspected && rule.enabled;
+            if rule.enabled && self.inspect_certs.has_ca() && ca_trusted != Some(true) {
+                notes.push(format!(
+                    "{} is now inspected. Clients must trust the inspection CA: NODE_EXTRA_CA_CERTS={}, or ask the user to run: {} proxy trust",
+                    rule.host,
+                    self.paths.inspect_ca_pem().display(),
+                    self.instance.cli()
+                ));
+            }
+            if !config.proxy_enabled {
+                notes.push(self.proxy_off_note());
+            }
+            inspect = Some(InspectChange { host_added, ca_created, ca_trusted });
+        } else {
+            // A rule moved from an internet host to a route takes the old
+            // host out of the inspect set (I11).
+            self.refresh_inspect();
+        }
+        tracing::info!("set script rule {} on {}{}", rule.id, rule.host, rule.path.as_deref().unwrap_or(""));
+        let view = self.scripts.view(&rule.id).ok_or_else(|| err(ErrorCode::Io, "the rule vanished"))?;
+        Ok(SetScriptRuleResult { rule: view, replaced, check_only: false, inspect, notes })
+    }
+
+    fn proxy_off_note(&self) -> String {
+        format!(
+            "The proxy is off. This rule sees only router traffic until: {} proxy on",
+            self.instance.cli()
+        )
+    }
+
+    pub async fn remove_script_rule(&self, p: IdParams) -> Result<RemoveScriptRuleResult, ApiError> {
+        let _guard = self.write.lock().await;
+        let id = p.id.trim().to_ascii_lowercase();
+        let Some(old) = self.scripts.remove(&id) else {
+            return Ok(RemoveScriptRuleResult { removed: false });
+        };
+        if old.active.rule.persistent
+            && let Err(e) = store::save_script_rules(&self.paths.script_rules(), &self.scripts.rules())
+        {
+            self.scripts.restore(&id, Some(old));
+            return Err(err(ErrorCode::Io, format!("could not save script-rules.json: {e}")));
+        }
+        self.refresh_inspect();
+        tracing::info!("removed script rule {id}");
+        Ok(RemoveScriptRuleResult { removed: true })
+    }
+
+    pub fn list_script_rules(&self) -> ListScriptRulesResult {
+        ListScriptRulesResult { rules: self.scripts.views() }
+    }
+
+    /// A rule was turned off after 20 failures: save that when it is
+    /// persistent, and take its host out of the inspect set.
+    async fn rule_turned_off(&self, id: &str) {
+        let _guard = self.write.lock().await;
+        if self.scripts.get(id).is_some_and(|e| e.active.rule.persistent)
+            && let Err(e) = store::save_script_rules(&self.paths.script_rules(), &self.scripts.rules())
+        {
+            tracing::warn!("could not save script-rules.json: {e}");
+        }
+        self.refresh_inspect();
     }
 
     /// Delete the inspection CA and make a new one. A user action, not an
@@ -1030,4 +1289,32 @@ fn api_version() -> String {
 
 fn reserved(config: &Config) -> Reserved {
     Reserved { http_port: config.http_port, https_port: config.https_port }
+}
+
+/// A header name scripts may be told to treat as secret.
+fn hyper_header_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Persistent rules from `script-rules.json`. A rule whose script does not
+/// load stays in the list with its error and matches nothing.
+fn load_saved_script_rules(paths: &Paths, scripts: &Scripts) {
+    let loaded = store::load_script_rules(&paths.script_rules());
+    if let Some(p) = &loaded.problem {
+        tracing::warn!("{p}");
+    }
+    for mut rule in loaded.value {
+        rule.persistent = true;
+        rule.owner_pid = None;
+        let others = scripts.len();
+        if let Err(e) = script_rules::validate(&mut rule, &paths.data, others) {
+            tracing::warn!("skipped saved script rule {}: {e}", rule.id);
+            continue;
+        }
+        let script = load_file(std::path::Path::new(&rule.script));
+        if let Err(e) = &script {
+            tracing::warn!("script rule {} does not load: {e}", rule.id);
+        }
+        scripts.put(rule, script);
+    }
 }

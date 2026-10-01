@@ -448,3 +448,132 @@ fn proxy_trust_before_the_ca_exists_says_how_to_make_it() {
     assert!(!ok);
     assert!(err.contains("proxy inspect add"), "{err}");
 }
+
+// ---- ADR 07: script rules (T15)
+
+/// A folder with `cap.lua`, `bad.lua` and `out/`; the CLI runs inside it, so
+/// relative paths are relative to it.
+fn script_folder() -> tempfile::TempDir {
+    let dir = tempfile::Builder::new().prefix("lrs").tempdir().unwrap();
+    std::fs::write(dir.path().join("cap.lua"), r#"return { kind = "log", on_exchange = function(ex) end }"#).unwrap();
+    std::fs::write(dir.path().join("bad.lua"), "return {\n  kind = 'log',\n  on_exchange = function(ex) x = end }").unwrap();
+    std::fs::create_dir(dir.path().join("out")).unwrap();
+    dir
+}
+
+fn cli_in(d: &Daemon, cwd: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_localrouter"))
+        .args(args)
+        .current_dir(cwd)
+        .env("LOCALROUTER_HOME", d.home())
+        .output()
+        .unwrap();
+    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+#[test]
+fn rules_add_makes_paths_absolute_and_lists_the_rule() {
+    let d = Daemon::start();
+    let dir = script_folder();
+    let real = dir.path().canonicalize().unwrap();
+    let (code, out, err) = cli_in(&d, &real, &["rules", "add", "cap", "--host", "api.test.example", "--script", "./cap.lua", "--output-dir", "./out"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("set cap (log) on api.test.example"), "{out}");
+    assert!(out.contains("is now inspected"), "{out}");
+    let (_, json, _) = cli_in(&d, &real, &["rules", "--json"]);
+    let list: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(list["rules"][0]["script"], real.join("cap.lua").display().to_string());
+    assert_eq!(list["rules"][0]["output_dir"], real.join("out").display().to_string());
+    let (_, out, _) = cli_in(&d, &real, &["rules"]);
+    assert!(out.contains("on   log") && out.contains("cap") && out.contains("(session)"), "{out}");
+}
+
+#[test]
+fn rules_check_prints_the_file_and_line_of_a_mistake() {
+    let d = Daemon::start();
+    let dir = script_folder();
+    let (code, _, err) = cli_in(&d, dir.path(), &["rules", "check", "./bad.lua"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("bad.lua:3:"), "{err}");
+    let (code, out, err) = cli_in(&d, dir.path(), &["rules", "check", "./cap.lua"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("ok, a log script"), "{out}");
+    assert!(out.contains("give output_dir"), "{out}");
+    let (_, json, _) = cli_in(&d, dir.path(), &["rules", "--json"]);
+    assert!(json.contains("\"rules\": []"), "check stores nothing: {json}");
+}
+
+#[test]
+fn reveal_secrets_is_refused_without_a_terminal() {
+    let d = Daemon::start();
+    let dir = script_folder();
+    let (code, _, err) = cli_in(&d, dir.path(), &["rules", "add", "cap", "--host", "shop.localhost", "--script", "cap.lua", "--output-dir", "out", "--reveal-secrets"]);
+    assert_eq!(code, 2, "I9: {err}");
+    assert!(err.contains("needs a terminal"), "{err}");
+    let (_, json, _) = cli_in(&d, dir.path(), &["rules", "--json"]);
+    assert!(json.contains("\"rules\": []"), "nothing was set: {json}");
+}
+
+// I9: in a pseudo-terminal, typing yes sets reveal_secrets.
+#[test]
+fn reveal_secrets_in_a_terminal_asks_for_yes() {
+    use std::io::{Read, Write};
+    let d = Daemon::start();
+    let dir = script_folder();
+    let mut child = Command::new("/usr/bin/script")
+        .args(["-q", "/dev/null", env!("CARGO_BIN_EXE_localrouter"), "rules", "add", "cap", "--host", "shop.localhost"])
+        .args(["--script", "cap.lua", "--output-dir", "out", "--reveal-secrets"])
+        .current_dir(dir.path())
+        .env("LOCALROUTER_HOME", d.home())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut seen = String::new();
+    let mut buf = [0u8; 256];
+    while !seen.contains("Type yes:") {
+        let n = stdout.read(&mut buf).unwrap();
+        assert!(n > 0, "no prompt: {seen}");
+        seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(seen.contains("API keys and cookies of shop.localhost"), "{seen}");
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"yes\n").unwrap();
+    let mut rest = String::new();
+    let _ = stdout.read_to_string(&mut rest);
+    drop(stdin);
+    child.wait().unwrap();
+    let (_, json, _) = cli_in(&d, dir.path(), &["rules", "--json"]);
+    let list: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(list["rules"][0]["reveal_secrets"], true, "{seen}{rest}");
+}
+
+#[test]
+fn rules_disable_enable_and_rm() {
+    let d = Daemon::start();
+    let dir = script_folder();
+    assert_eq!(cli_in(&d, dir.path(), &["rules", "add", "cap", "--host", "shop.localhost", "--script", "cap.lua", "--output-dir", "out"]).0, 0);
+    let (code, out, _) = cli_in(&d, dir.path(), &["rules", "disable", "cap"]);
+    assert_eq!((code, out.trim()), (0, "cap is off"));
+    let (_, out, _) = cli_in(&d, dir.path(), &["rules"]);
+    assert!(out.starts_with("off"), "{out}");
+    assert_eq!(cli_in(&d, dir.path(), &["rules", "enable", "cap"]).1.trim(), "cap is on");
+    assert_eq!(cli_in(&d, dir.path(), &["rules", "rm", "cap"]).1.trim(), "removed cap");
+    let (code, _, err) = cli_in(&d, dir.path(), &["rules", "rm", "cap"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no script rule named cap"), "{err}");
+}
+
+#[test]
+fn rules_api_prints_the_reference_with_this_instances_names() {
+    let d = Daemon::start();
+    let (ok, out, _) = d.cli(&["rules", "api"]);
+    assert!(ok);
+    assert!(out.starts_with("# LocalRouter scripts"), "{out}");
+    assert!(out.contains("localrouter rules check"));
+    let (_bin, dev) = common::renamed_cli("-dev");
+    let (ok, out, _) = d.cli_as(&dev, &["rules", "api"]);
+    assert!(ok);
+    assert!(out.contains("localrouter-dev rules check") && out.contains("router.localhost:7080/scripts"), "{out}");
+}

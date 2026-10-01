@@ -21,7 +21,9 @@ outside the data folder.
 
 ## Inside view
 
-**Status:** Proposed (not built).
+**Status:** Built on 2026-10-01. The hook itself is `Scripts::exchange` in
+`libs/core/src/scripts/mod.rs`, which the table below did not list (see
+[10-tasks.md](10-tasks.md#plan-vs-actual), row 4).
 
 ![Where scripts live in the code](diagrams/05-inside-view.svg)
 
@@ -42,7 +44,8 @@ outside the data folder.
 | `apps/menubar` `Api.swift`, Settings | grow | types and the Scripts list |
 
 New dependencies in `libs/core`: `mlua` (features `lua54`, `vendored`,
-`send`, `serialize`) and `async-compression` (gzip, deflate, brotli, zstd).
+`send`), `flate2`, `brotli` and `zstd` (planned: `async-compression` and the
+`serialize` feature; see [10-tasks.md](10-tasks.md#plan-vs-actual), rows 2 and 3).
 
 ## What the view leaves out
 

@@ -19,6 +19,7 @@ final class ApiContractTests: XCTestCase {
     private static let methods = [
         "hello", "status", "register_route", "unregister_route", "list_routes", "find_free_port",
         "get_logs", "subscribe_logs", "get_config", "set_config", "reset_ca", "get_proxy", "reset_inspect_ca",
+        "set_script_rule", "remove_script_rule", "list_script_rules",
     ]
 
     /// Decode, encode again, and compare with the file (nulls and default
@@ -59,7 +60,10 @@ final class ApiContractTests: XCTestCase {
         case "get_logs": try roundTrip(GetLogsParams.self, json, file)
         case "subscribe_logs": try roundTrip(SubscribeLogsParams.self, json, file)
         case "set_config": try roundTrip(SetConfigParams.self, json, file)
-        case "status", "list_routes", "get_config", "reset_ca", "get_proxy", "reset_inspect_ca": try roundTrip(Empty.self, json, file)
+        case "set_script_rule": try roundTrip(SetScriptRuleParams.self, json, file)
+        case "remove_script_rule": try roundTrip(IdParams.self, json, file)
+        case "status", "list_routes", "get_config", "reset_ca", "get_proxy", "reset_inspect_ca", "list_script_rules":
+            try roundTrip(Empty.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
     }
@@ -78,6 +82,9 @@ final class ApiContractTests: XCTestCase {
         case "set_config": try roundTrip(SetConfigResult.self, json, file)
         case "reset_ca", "reset_inspect_ca": try roundTrip(ResetCaResult.self, json, file)
         case "get_proxy": try roundTrip(GetProxyResult.self, json, file)
+        case "set_script_rule": try roundTrip(SetScriptRuleResult.self, json, file)
+        case "remove_script_rule": try roundTrip(RemoveScriptRuleResult.self, json, file)
+        case "list_script_rules": try roundTrip(ListScriptRulesResult.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
     }
@@ -118,12 +125,12 @@ final class ApiContractTests: XCTestCase {
     func testProxyFieldsDecode() throws {
         let read = { (file: String) throws -> Data in try Data(contentsOf: self.examples.appendingPathComponent(file)) }
         let event = try Api.decoder.decode(LogEvent.self, from: read("log_proxy.event.json"))
-        guard case let .http(_, _, _, _, _, _, _, proxy) = event.entry else { return XCTFail("not http") }
+        guard case let .http(_, _, _, _, _, _, _, proxy, _) = event.entry else { return XCTFail("not http") }
         XCTAssertEqual(proxy?.mode, "inspect")
         let logs = try JSONSerialization.jsonObject(with: read("get_logs.reply.json")) as? [String: Any]
         let entries = try JSONSerialization.data(withJSONObject: logs?["result"] ?? [:])
         let tunnel = try Api.decoder.decode(GetLogsResult.self, from: entries).entries.compactMap { entry -> ProxyTraffic? in
-            if case let .http(_, _, _, _, _, _, _, proxy) = entry { return proxy }
+            if case let .http(_, _, _, _, _, _, _, proxy, _) = entry { return proxy }
             return nil
         }.first
         XCTAssertEqual(tunnel, ProxyTraffic(mode: "tunnel", bytesIn: 1830, bytesOut: 48211))
@@ -132,5 +139,23 @@ final class ApiContractTests: XCTestCase {
         let settings = try Api.decoder.decode(GetProxyResult.self, from: result)
         XCTAssertEqual(settings.env["HTTPS_PROXY"], "http://127.0.0.1:8877")
         XCTAssertEqual(settings.env["NODE_EXTRA_CA_CERTS"], settings.inspectCa?.pemPath)
+    }
+
+    /// ADR 07: script rules and the rules of a log entry decode, and a
+    /// get_proxy reply from a 1.3 daemon has no rules.
+    func testScriptRuleFieldsDecode() throws {
+        let read = { (file: String) throws -> Data in try Data(contentsOf: self.examples.appendingPathComponent(file)) }
+        let event = try Api.decoder.decode(LogEvent.self, from: read("log.event.json"))
+        guard case let .http(_, _, _, _, _, _, _, _, scripts) = event.entry else { return XCTFail("not http") }
+        XCTAssertEqual(scripts, ScriptRun(rules: ["add-trace", "claude-capture"], error: "add-trace"))
+        let reply = try JSONSerialization.jsonObject(with: read("get_proxy.reply.json")) as? [String: Any]
+        var result = reply?["result"] as? [String: Any] ?? [:]
+        let rules = try Api.decoder.decode(GetProxyResult.self, from: JSONSerialization.data(withJSONObject: result)).scriptRules
+        XCTAssertEqual(rules.map(\.rule.id), ["claude-capture", "add-trace"])
+        XCTAssertEqual(rules[0].kind, "log")
+        XCTAssertFalse(rules[1].rule.enabled)
+        result.removeValue(forKey: "script_rules")
+        let old = try Api.decoder.decode(GetProxyResult.self, from: JSONSerialization.data(withJSONObject: result))
+        XCTAssertEqual(old.scriptRules, [])
     }
 }

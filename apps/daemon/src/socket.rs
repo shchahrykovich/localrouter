@@ -4,8 +4,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use localrouter_core::api::{
-    ApiError, Empty, ErrorCode, Event, FindFreePortParams, GetLogsParams, HelloParams, HostParams, Request, Response,
-    SetConfigParams, SubscribeLogsParams, SubscribeLogsResult,
+    ApiError, Empty, ErrorCode, Event, FindFreePortParams, GetLogsParams, HelloParams, HostParams, IdParams, Request,
+    Response, SetConfigParams, SetScriptRuleParams, SubscribeLogsParams, SubscribeLogsResult,
 };
 use localrouter_core::routes::Route;
 use serde::de::DeserializeOwned;
@@ -148,6 +148,12 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, write: &Arc<Mutex<OwnedWri
         "reset_inspect_ca" => {
             let _: Empty = params(req.params)?;
             json(daemon.reset_inspect_ca().await?)
+        }
+        "set_script_rule" => json(daemon.set_script_rule(required::<SetScriptRuleParams>(req.params)?).await?),
+        "remove_script_rule" => json(daemon.remove_script_rule(required::<IdParams>(req.params)?).await?),
+        "list_script_rules" => {
+            let _: Empty = params(req.params)?;
+            json(daemon.list_script_rules())
         }
         other => Err(ApiError::new(ErrorCode::UnknownMethod, format!("unknown method {other}"))),
     }

@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var confirmUninstall = false
     @State private var openAtLogin = false
     @State private var loginNote: String?
+    @State private var confirmReveal: ScriptRuleView?
     @AppStorage("autoUpdate") private var autoUpdate = true
 
     var body: some View {
@@ -58,6 +59,7 @@ struct SettingsView: View {
                 }
             }
             if model.status?.proxy != nil { proxySection }
+            if model.proxy != nil { scriptsSection }
             // Shown when the ports are not 80 and 443, or something is wrong (ADR 04, I12).
             let errors = (model.status?.http.errors ?? []) + (model.status?.https.errors ?? [])
             let routesFileProblem = model.status?.routesFileProblem
@@ -171,6 +173,30 @@ struct SettingsView: View {
         }
     }
 
+    /// Script rules (ADR 07): what each rule did, its last error, and the
+    /// switches. Rules are set with the command line tool or by an agent.
+    @ViewBuilder private var scriptsSection: some View {
+        Section("Scripts") {
+            let rules = model.proxy?.scriptRules ?? []
+            if rules.isEmpty {
+                Text("No script rules. A Lua script can change or record the traffic of a host: \(Instance.current.cli) rules api")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(rules) { view in ScriptRuleRow(view: view, confirmReveal: $confirmReveal) }
+        }
+        .confirmationDialog(
+            "Let \(confirmReveal?.id ?? "this rule") see secrets?",
+            isPresented: Binding(get: { confirmReveal != nil }, set: { if !$0 { confirmReveal = nil } })
+        ) {
+            Button("Show API keys and cookies", role: .destructive) {
+                if let view = confirmReveal { Task { await model.revealSecrets(view, true) } }
+                confirmReveal = nil
+            }
+        } message: {
+            Text("The script will see API keys and cookies of \(confirmReveal?.rule.host ?? "its host"), and may write them to its files.")
+        }
+    }
+
     private func addInspectHost() {
         let host = newInspectHost
         newInspectHost = ""
@@ -203,5 +229,51 @@ struct SettingsView: View {
         if let problem = OpenAtLogin().choose(on) { model.message = problem }
         // Show what macOS did, which is not always what was asked.
         readOpenAtLogin()
+    }
+}
+
+/// One script rule in Settings: kind, host and path, counters, the last
+/// error in red, an Enabled switch, Remove.
+private struct ScriptRuleRow: View {
+    @Environment(AppModel.self) private var model
+    let view: ScriptRuleView
+    @Binding var confirmReveal: ScriptRuleView?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(view.id).font(.callout.monospaced())
+                Text(view.kind ?? "not loaded").font(.caption).foregroundStyle(view.kind == nil ? .red : .secondary)
+                Spacer()
+                Toggle("Enabled", isOn: Binding(
+                    get: { view.rule.enabled },
+                    set: { on in Task { await model.setRuleEnabled(view, on) } }))
+                    .labelsHidden()
+                    .help("A disabled rule matches nothing and keeps its counters")
+                Button("Remove") { Task { await model.removeRule(view) } }
+            }
+            Text(view.rule.target + (view.rule.methods.isEmpty ? "" : " " + view.rule.methods.joined(separator: ",")))
+                .font(.caption.monospaced())
+            Text(counters).font(.caption).foregroundStyle(.secondary)
+            if let error = view.lastError {
+                Text(error.message).font(.caption).foregroundStyle(.red).lineLimit(3)
+            }
+            if view.kind != nil {
+                if view.rule.revealSecrets {
+                    Button("Hide Secrets Again") { Task { await model.revealSecrets(view, false) } }.font(.caption)
+                } else {
+                    Button("Let It See Secrets…") { confirmReveal = view }.font(.caption)
+                }
+            }
+        }
+    }
+
+    private var counters: String {
+        var parts = ["matched \(view.matched)", "errors \(view.errors)"]
+        if view.answered > 0 { parts.append("answered \(view.answered)") }
+        if view.dropped > 0 { parts.append("dropped \(view.dropped)") }
+        if view.kind == "log" { parts.append("written \(ByteCountFormatter.string(fromByteCount: Int64(view.bytesWritten), countStyle: .file))") }
+        let life = view.rule.ownerPid != nil ? "owned" : view.rule.persistent ? "persistent" : "session"
+        return parts.joined(separator: ", ") + " (\(life))"
     }
 }

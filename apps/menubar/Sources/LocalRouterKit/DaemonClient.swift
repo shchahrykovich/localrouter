@@ -193,6 +193,13 @@ public final class DaemonClient: Sendable {
     public func setConfig(_ p: SetConfigParams) async throws -> SetConfigResult { try await call("set_config", p) }
     public func proxy() async throws -> GetProxyResult { try await call("get_proxy", Empty()) }
     public func resetInspectCa() async throws -> ResetCaResult { try await call("reset_inspect_ca", Empty()) }
+    /// ADR 07: set or replace a script rule.
+    public func setScriptRule(_ rule: ScriptRule) async throws -> SetScriptRuleResult {
+        try await call("set_script_rule", SetScriptRuleParams(rule: rule))
+    }
+    public func removeScriptRule(id: String) async throws -> Bool {
+        try await call("remove_script_rule", IdParams(id: id), as: RemoveScriptRuleResult.self).removed
+    }
 }
 
 /// Live log stream on its own connection and thread.

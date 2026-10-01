@@ -27,6 +27,11 @@ pub struct Config {
     /// Host patterns whose `CONNECT`s are inspected instead of tunnelled:
     /// `api.example.com` or `*.example.com`.
     pub inspect_hosts: Vec<String>,
+    /// Header names scripts see as `[redacted]`, besides the defaults
+    /// (`authorization`, `cookie`, ...; ADR 07, change 4). Not written while
+    /// empty, so the file stays as an older daemon wrote it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secret_headers: Vec<String>,
 }
 
 impl Config {
@@ -63,6 +68,7 @@ impl Default for Config {
             proxy_enabled: false,
             proxy_port: Instance::release().default_proxy_port(),
             inspect_hosts: vec![],
+            secret_headers: vec![],
         }
     }
 }

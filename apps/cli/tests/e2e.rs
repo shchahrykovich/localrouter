@@ -527,3 +527,189 @@ async fn proxy_journey() {
     let e = fresh.get(format!("http://127.0.0.1:{echo}/after")).send().await.unwrap_err();
     assert!(e.is_connect(), "{e:?}");
 }
+
+/// HTTPS server for `api.test.example`, signed by a fresh test CA, that reads
+/// one request with its body and answers with three server-sent events.
+/// Returns its port and the CA certificate as PEM.
+async fn streaming_api_server() -> (u16, String) {
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params.distinguished_name.push(rcgen::DnType::CommonName, "E1e Internet CA");
+    let ca_pem = ca_params.self_signed(&ca_key).unwrap().pem();
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["api.test.example".into()]).unwrap().signed_by(&key, &issuer).unwrap();
+    let mut config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+        .unwrap();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (s, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut s) = acceptor.accept(s).await else { return };
+                // Read the head, then Content-Length bytes of body.
+                let mut buf = vec![];
+                let mut byte = [0u8; 1];
+                while !buf.ends_with(b"\r\n\r\n") {
+                    if s.read(&mut byte).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    buf.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                    .unwrap_or(0);
+                let mut body = vec![0u8; len];
+                let _ = s.read_exact(&mut body).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n")
+                    .await;
+                for i in 1..=3 {
+                    let event = format!("data: token {i}\n\n");
+                    let _ = s.write_all(format!("{:x}\r\n{event}\r\n", event.len()).as_bytes()).await;
+                    let _ = s.flush().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                let _ = s.write_all(b"0\r\n\r\n").await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    (port, ca_pem)
+}
+
+async fn mcp_call(mcp: &rmcp::service::RunningService<rmcp::RoleClient, ()>, name: &'static str, args: Value) -> (bool, String) {
+    let params = CallToolRequestParams::new(Cow::Borrowed(name)).with_arguments(args.as_object().unwrap().clone());
+    let r = mcp.call_tool(params).await.unwrap();
+    let text = serde_json::to_value(&r.content).unwrap()[0]["text"].as_str().unwrap_or_default().to_string();
+    (r.is_error != Some(true), text)
+}
+
+/// E1e (ADR 07): an agent-like journey with script rules: check, set, traffic,
+/// capture, remove.
+///
+/// Replaced: the internet is a local HTTPS server that streams three events;
+/// DNS and the macOS trust store are the daemon's debug-only test settings;
+/// keychain trust is the inspection ca.pem given to reqwest. M1 uses Claude
+/// Code and the real API.
+#[tokio::test(flavor = "multi_thread")]
+async fn script_rules_journey() {
+    // 1. The daemon, with the proxy on, and the test server for api.test.example.
+    let (server, internet_ca) = streaming_api_server().await;
+    let ca_file = tempfile::Builder::new().prefix("lrca").suffix(".pem").tempfile().unwrap();
+    std::fs::write(ca_file.path(), &internet_ca).unwrap();
+    let resolve = format!("api.test.example=127.0.0.1:{server}");
+    let d = Daemon::start_env(&[
+        ("LOCALROUTER_TEST_RESOLVE", &resolve),
+        ("LOCALROUTER_TEST_UPSTREAM_CA", ca_file.path().to_str().unwrap()),
+    ]);
+    assert!(d.cli(&["proxy", "port", "0"]).0);
+    assert!(d.cli(&["proxy", "on"]).0);
+    let proxy = format!("http://127.0.0.1:{}", d.status()["proxy"]["port"].as_u64().unwrap());
+
+    // 2. A log script and a broken one, in a folder of their own.
+    let work = tempfile::Builder::new().prefix("lrw").tempdir().unwrap();
+    let cap = work.path().join("cap.lua");
+    std::fs::write(
+        &cap,
+        r#"return { kind = "log", on_exchange = function(ex)
+            capture.append("calls.jsonl", json.encode({
+              path = ex.request.path, request = ex.request.body, response = ex.response.body,
+              auth = ex.request.headers.authorization, status = ex.response.status,
+            }) .. "\n")
+          end }"#,
+    )
+    .unwrap();
+    let bad = work.path().join("bad.lua");
+    std::fs::write(&bad, "return {\n  kind = 'log',\n  on_exchange = function(ex) capture.append( end }").unwrap();
+    let out = work.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_localrouter"));
+    cmd.arg("mcp").env("LOCALROUTER_HOME", d.home());
+    let mcp = ().serve(TokioChildProcess::new(cmd).unwrap()).await.unwrap();
+
+    // 3. check_only with the broken script. Check: the error has the line; no rule.
+    let (ok, text) =
+        mcp_call(&mcp, "set_script_rule", json!({"id": "cap", "host": "api.test.example", "script": bad, "output_dir": out, "check_only": true})).await;
+    assert!(!ok && text.contains("bad.lua:3:"), "{text}");
+    assert!(d.cli(&["rules", "--json"]).1.contains("\"rules\": []"));
+
+    // 4. The real rule, owned by a helper process. Check: the host is now
+    //    inspected and the inspection CA was made for it.
+    let mut helper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let (ok, text) = mcp_call(
+        &mcp,
+        "set_script_rule",
+        json!({"id": "cap", "host": "api.test.example", "path": "/v1", "script": cap, "output_dir": out, "owner_pid": helper.id()}),
+    )
+    .await;
+    assert!(ok, "{text}");
+    let set: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!((set["inspect"]["host_added"].as_bool(), set["inspect"]["ca_created"].as_bool()), (Some(true), Some(true)));
+
+    // 5. POST through the proxy, trusting the inspection CA. Check: the three
+    //    events arrive unchanged.
+    let inspection_pem = std::fs::read(d.home().join("inspect-ca/ca.pem")).unwrap();
+    let client = via_proxy(&proxy, &inspection_pem);
+    let resp = client
+        .post("https://api.test.example/v1/messages")
+        .header("authorization", "Bearer sk-test-123")
+        .header("content-type", "application/json")
+        .body(r#"{"prompt":"hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "data: token 1\n\ndata: token 2\n\ndata: token 3\n\n");
+
+    // 6. The capture file: the request body, the decoded events, and the
+    //    authorization header redacted.
+    let file = out.join("calls.jsonl");
+    let mut line = String::new();
+    for _ in 0..150 {
+        line = std::fs::read_to_string(&file).unwrap_or_default();
+        if !line.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let call: Value = serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{e}: {line:?}"));
+    assert_eq!(call["request"], r#"{"prompt":"hello"}"#);
+    assert_eq!(call["response"], "data: token 1\n\ndata: token 2\n\ndata: token 3\n\n");
+    assert_eq!(call["auth"], "[redacted]");
+    assert!(!line.contains("sk-test-123"));
+    let rules: Value = serde_json::from_str(&d.cli(&["rules", "--json"]).1).unwrap();
+    assert_eq!(rules["rules"][0]["matched"], 1);
+
+    // 7. The log names the rule.
+    wait_for_log(&d, &["POST", "api.test.example/v1/messages", "rules cap"]).await;
+
+    // 8. The helper exits. Check: the rule is gone, its host left the inspect
+    //    set, the capture file stays.
+    helper.kill().unwrap();
+    helper.wait().unwrap();
+    let mut gone = false;
+    for _ in 0..100 {
+        let p: Value = serde_json::from_str(&mcp_call(&mcp, "get_proxy", json!({})).await.1).unwrap();
+        if p["script_rules"] == json!([]) && p["inspect_set"] == json!([]) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(gone, "the owned rule and its inspected host are still there");
+    assert!(file.exists(), "captures are never removed");
+    mcp.cancel().await.unwrap();
+}

@@ -91,3 +91,23 @@ default.
 - Never write proxy settings into project files (`.env`,
   `.claude/settings.json`, test configs): other people on the project may not
   have {{APP}}.
+
+## Scripts
+
+A script rule runs a Lua file on the HTTP traffic of a route or of a host
+the proxy carries. An **intercept script** may change or answer requests
+while the client waits; a **log script** gets a copy of each finished
+exchange and writes files in its `output_dir`.
+
+- Read the reference first: `{{CLI}} rules api`, or
+  `curl -s {{DEFAULT_HELP_URL}}/scripts`.
+- Test with `check_only` (`{{CLI}} rules check <file>`), then set the rule
+  before the job starts: MCP `set_script_rule`, or `{{CLI}} rules add`.
+- Give it `owner_pid` of a process you started, or remove it when done
+  (`remove_script_rule`). `persistent` only when the user asks.
+- A log rule copies text and events by default; use `on_event` for streams
+  and `save` for images, video, downloads and uploads. An intercept rule with
+  `response_body` stops streaming for that body.
+- Secret headers reach scripts as `[redacted]`; only the user can reveal them.
+- Do not commit captures: keep `output_dir` out of git. They hold prompts and
+  API replies.

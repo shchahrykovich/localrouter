@@ -24,9 +24,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 use crate::api::StatusResult;
+use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
 use crate::routes::{HELP_HOST, Route, Scheme, host_key};
+use crate::scripts::{Ctx, Scripts};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -58,6 +60,8 @@ pub struct Proxy {
     pub log: Arc<RequestLog>,
     pub tls_client: Arc<rustls::ClientConfig>,
     pub status: Option<StatusFn>,
+    /// Script rules (ADR 07). Shared with the forward proxy.
+    pub scripts: Arc<Scripts>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +71,7 @@ pub enum ClientScheme {
 }
 
 impl ClientScheme {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             ClientScheme::Http => "http",
             ClientScheme::Https => "https",
@@ -115,12 +119,18 @@ impl Proxy {
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
 
         let mut answered_by = None;
+        let mut scripts: (Vec<String>, Option<String>) = (vec![], None);
         let response = if host_key(&host).as_deref() == Some(HELP_HOST) {
+            // Scripts never run on the help page (I20).
             let status = match &self.status {
                 Some(status) => status().await,
                 None => None,
             };
-            help(&self.instance, &self.routes.all(), self.routes.http_port(), self.routes.https_port(), status.as_ref())
+            if req.uri().path().trim_end_matches('/') == "/scripts" {
+                text_page(crate::help::render_scripts(&self.instance, self.routes.http_port(), self.routes.https_port()))
+            } else {
+                help(&self.instance, &self.routes.all(), self.routes.http_port(), self.routes.https_port(), status.as_ref())
+            }
         } else {
             match self.routes.lookup(&host, req.uri().path()) {
                 None => not_found(&self.instance, &host, &self.routes.all()),
@@ -128,21 +138,32 @@ impl Proxy {
                     answered_by = Some(route.key().to_string());
                     if scheme == ClientScheme::Http && route.https_only {
                         redirect_to_https(&host, &path, self.routes.https_port())
-                    } else if let Some(folder) = route.folder() {
-                        crate::folder::serve(req, &self.instance, &route, folder, &host).await
                     } else {
-                        // A target that fails gives this route's 502; the
-                        // request never goes to another route (I25).
-                        match self.forward(req, &route, &host, scheme, peer).await {
-                            Ok(resp) => resp,
-                            Err(e) => bad_gateway(&host, &route, &e),
+                        let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+                        let send = |req: Request<Body>| self.serve_route(req, &route, &host, scheme, peer);
+                        match self.scripts.matching(&host, req.uri().path(), req.method().as_str()) {
+                            None => send(req).await.0,
+                            Some(m) => {
+                                let ctx = Ctx {
+                                    source: if via.is_some() { "proxy" } else { "router" },
+                                    route: Some(route.key().to_string()),
+                                    scheme: scheme.as_str(),
+                                    host: bare_host(&host),
+                                    port: port_of(&host).unwrap_or(if scheme == ClientScheme::Https { 443 } else { 80 }),
+                                };
+                                let out = self.scripts.exchange(m, ctx, req, send).await;
+                                scripts = (out.rules, out.script_error);
+                                out.response
+                            }
                         }
                     }
                 }
             }
         };
         let millis = start.elapsed().as_millis() as u64;
-        let mut entry = LogEntry::http(&method, &host, &path, response.status().as_u16(), millis).with_route(answered_by);
+        let mut entry = LogEntry::http(&method, &host, &path, response.status().as_u16(), millis)
+            .with_route(answered_by)
+            .with_scripts(scripts.0, scripts.1);
         if let Some(mode) = via {
             entry = entry.via_proxy(mode);
         }
@@ -150,9 +171,30 @@ impl Proxy {
         response
     }
 
+    /// A route's answer: its folder, or its dev server. The error text is
+    /// set when the answer is the route's 502 page.
+    async fn serve_route(
+        &self,
+        req: Request<Body>,
+        route: &Route,
+        host: &str,
+        scheme: ClientScheme,
+        peer: SocketAddr,
+    ) -> (Response<Body>, Option<String>) {
+        if let Some(folder) = route.folder() {
+            return (crate::folder::serve(req, &self.instance, route, folder, host).await, None);
+        }
+        // A target that fails gives this route's 502; the request never goes
+        // to another route (I25).
+        match self.forward(req, route, host, scheme, peer).await {
+            Ok(resp) => (resp, None),
+            Err(e) => (bad_gateway(host, route, &e), Some(e)),
+        }
+    }
+
     async fn forward(
         &self,
-        mut req: Request<Incoming>,
+        mut req: Request<Body>,
         route: &Route,
         host: &str,
         scheme: ClientScheme,
@@ -211,7 +253,7 @@ impl Proxy {
     }
 }
 
-async fn send<IO>(io: IO, req: Request<Incoming>) -> Result<Response<Incoming>, String>
+async fn send<IO>(io: IO, req: Request<Body>) -> Result<Response<Incoming>, String>
 where
     IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -232,13 +274,13 @@ where
 /// `strip_path` route) that path is removed and sent as `X-Forwarded-Prefix`
 /// instead (I26).
 fn outgoing_request(
-    req: Request<Incoming>,
+    req: Request<Body>,
     host: &str,
     scheme: ClientScheme,
     peer: SocketAddr,
     keep_upgrade: bool,
     strip: Option<&str>,
-) -> Result<Request<Incoming>, String> {
+) -> Result<Request<Body>, String> {
     let (mut parts, body) = req.into_parts();
     let path = parts.uri.path_and_query().map_or("/", |p| p.as_str()).to_string();
     let path = match strip {
@@ -342,7 +384,10 @@ fn help(
     https_port: Option<u16>,
     status: Option<&StatusResult>,
 ) -> Response<Body> {
-    let text = crate::help::render(instance, routes, http_port, https_port, status);
+    text_page(crate::help::render(instance, routes, http_port, https_port, status))
+}
+
+fn text_page(text: String) -> Response<Body> {
     Response::builder()
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-store")
@@ -352,6 +397,11 @@ fn help(
 
 pub(crate) fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The port a `Host` header names, if any.
+fn port_of(host: &str) -> Option<u16> {
+    request_port(host).strip_prefix(':')?.parse().ok()
 }
 
 /// `:7443` when the request named a port, so links stay on the instance

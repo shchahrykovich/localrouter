@@ -1,0 +1,24 @@
+{
+  "id": 17,
+  "result": {
+    "rule": {
+      "id": "add-trace",
+      "host": "shop.localhost",
+      "script": "/Users/me/shop/scripts/add-trace.lua",
+      "order": 10,
+      "on_error": "pass",
+      "enabled": true,
+      "kind": "intercept",
+      "matched": 0,
+      "answered": 0,
+      "errors": 0,
+      "dropped": 0,
+      "bytes_written": 0,
+      "script_loaded_at": 1790000005000,
+      "script_sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"
+    },
+    "replaced": false,
+    "check_only": true,
+    "notes": []
+  }
+}

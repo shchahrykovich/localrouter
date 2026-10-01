@@ -225,6 +225,7 @@ async fn harness() -> Harness {
         log: log.clone(),
         tls_client: tls::insecure_loopback_client_config(),
         status: None,
+        scripts: localrouter_core::scripts::Scripts::new(),
     });
 
     let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();

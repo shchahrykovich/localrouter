@@ -11,6 +11,9 @@
     "proxy_port": 8877,
     "inspect_hosts": [
       "api.example.com"
+    ],
+    "secret_headers": [
+      "x-goog-api-key"
     ]
   }
 }

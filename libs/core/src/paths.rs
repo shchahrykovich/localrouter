@@ -52,6 +52,10 @@ impl Paths {
     pub fn routes(&self) -> PathBuf {
         self.data.join("routes.json")
     }
+    /// Persistent script rules (ADR 07).
+    pub fn script_rules(&self) -> PathBuf {
+        self.data.join("script-rules.json")
+    }
     pub fn socket(&self) -> PathBuf {
         self.data.join("daemon.sock")
     }

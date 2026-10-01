@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.3"
+public let apiVersion = "1.4"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -253,28 +253,40 @@ public struct ProxyTraffic: Equatable, Sendable {
     }
 }
 
+/// The script rules that ran on a request, and the one that failed (ADR 07).
+public struct ScriptRun: Equatable, Sendable {
+    public var rules: [String]
+    public var error: String?
+    public init(rules: [String], error: String? = nil) {
+        self.rules = rules
+        self.error = error
+    }
+}
+
 public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
     /// `route` is the key of the route that answered, for example `shop/blog`.
-    /// `proxy` is set for traffic of the forward proxy (ADR 06).
+    /// `proxy` is set for traffic of the forward proxy (ADR 06), `scripts`
+    /// when script rules ran (ADR 07).
     case http(time: UInt64, method: String, host: String, path: String, status: UInt16, durationMs: UInt64, route: String?,
-              proxy: ProxyTraffic?)
+              proxy: ProxyTraffic?, scripts: ScriptRun?)
     case tcp(time: UInt64, host: String, listenPort: UInt16, bytesIn: UInt64, bytesOut: UInt64, durationMs: UInt64, failed: Bool)
 
     public var id: String {
         switch self {
-        case let .http(time, method, host, path, status, _, _, _): "\(time)-\(method)-\(host)\(path)-\(status)"
+        case let .http(time, method, host, path, status, _, _, _, _): "\(time)-\(method)-\(host)\(path)-\(status)"
         case let .tcp(time, host, port, bytesIn, _, _, _): "\(time)-\(host):\(port)-\(bytesIn)"
         }
     }
 
     public var host: String {
         switch self {
-        case let .http(_, _, host, _, _, _, _, _), let .tcp(_, host, _, _, _, _, _): host
+        case let .http(_, _, host, _, _, _, _, _, _), let .tcp(_, host, _, _, _, _, _): host
         }
     }
 
     enum CodingKeys: String, CodingKey {
         case kind, timeMs, method, host, path, status, durationMs, route, listenPort, bytesIn, bytesOut, failed, via, mode
+        case rules, scriptError
     }
 
     public init(from decoder: Decoder) throws {
@@ -290,9 +302,13 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
                                      bytesIn: try c.decodeIfPresent(UInt64.self, forKey: .bytesIn),
                                      bytesOut: try c.decodeIfPresent(UInt64.self, forKey: .bytesOut))
             }
+            let rules = try c.decodeIfPresent([String].self, forKey: .rules) ?? []
+            let failed = try c.decodeIfPresent(String.self, forKey: .scriptError)
+            let scripts = rules.isEmpty && failed == nil ? nil : ScriptRun(rules: rules, error: failed)
             self = .http(time: time, method: try c.decode(String.self, forKey: .method), host: host,
                          path: try c.decode(String.self, forKey: .path), status: try c.decode(UInt16.self, forKey: .status),
-                         durationMs: duration, route: try c.decodeIfPresent(String.self, forKey: .route), proxy: proxy)
+                         durationMs: duration, route: try c.decodeIfPresent(String.self, forKey: .route), proxy: proxy,
+                         scripts: scripts)
         case "tcp":
             self = .tcp(time: time, host: host, listenPort: try c.decode(UInt16.self, forKey: .listenPort),
                         bytesIn: try c.decode(UInt64.self, forKey: .bytesIn), bytesOut: try c.decode(UInt64.self, forKey: .bytesOut),
@@ -305,7 +321,7 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .http(time, method, host, path, status, duration, route, proxy):
+        case let .http(time, method, host, path, status, duration, route, proxy, scripts):
             try c.encode("http", forKey: .kind)
             try c.encode(time, forKey: .timeMs)
             try c.encode(method, forKey: .method)
@@ -319,6 +335,10 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
                 try c.encode(proxy.mode, forKey: .mode)
                 try c.encodeIfPresent(proxy.bytesIn, forKey: .bytesIn)
                 try c.encodeIfPresent(proxy.bytesOut, forKey: .bytesOut)
+            }
+            if let scripts {
+                if !scripts.rules.isEmpty { try c.encode(scripts.rules, forKey: .rules) }
+                try c.encodeIfPresent(scripts.error, forKey: .scriptError)
             }
         case let .tcp(time, host, port, bytesIn, bytesOut, duration, failed):
             try c.encode("tcp", forKey: .kind)
@@ -361,6 +381,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var proxyEnabled: Bool?
     public var proxyPort: UInt16?
     public var inspectHosts: [String]?
+    /// Header names scripts see as `[redacted]` (ADR 07). Nil when empty.
+    public var secretHeaders: [String]?
 }
 
 public struct SetConfigParams: Codable, Equatable, Sendable {
@@ -373,13 +395,15 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     public var proxyPort: UInt16?
     /// Replaces the whole list.
     public var inspectHosts: [String]?
+    public var secretHeaders: [String]?
     public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
-                inspectHosts: [String]? = nil) {
+                inspectHosts: [String]? = nil, secretHeaders: [String]? = nil) {
         self.fallback = fallback
         self.allowLan = allowLan
         self.proxyEnabled = proxyEnabled
         self.proxyPort = proxyPort
         self.inspectHosts = inspectHosts
+        self.secretHeaders = secretHeaders
     }
 }
 
@@ -409,4 +433,219 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
     /// The arguments every client gives Chrome; none builds its own (I18).
     public var chromeArgs: [String]
     public var notes: [String]
+    /// Every script rule with its state (ADR 07). Empty from older daemons.
+    public var scriptRules: [ScriptRuleView]
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, url, port, bound, errors, inspectHosts, inspectSet, inspectCa, env, chromeArgs, notes, scriptRules
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        url = try c.decode(String.self, forKey: .url)
+        port = try c.decode(UInt16.self, forKey: .port)
+        bound = try c.decode([String].self, forKey: .bound)
+        errors = try c.decode([String].self, forKey: .errors)
+        inspectHosts = try c.decode([String].self, forKey: .inspectHosts)
+        inspectSet = try c.decode([String].self, forKey: .inspectSet)
+        inspectCa = try c.decodeIfPresent(CaStatus.self, forKey: .inspectCa)
+        env = try c.decode([String: String].self, forKey: .env)
+        chromeArgs = try c.decode([String].self, forKey: .chromeArgs)
+        notes = try c.decode([String].self, forKey: .notes)
+        scriptRules = try c.decodeIfPresent([ScriptRuleView].self, forKey: .scriptRules) ?? []
+    }
+}
+
+// MARK: - Script rules (ADR 07)
+
+/// A script rule: which `.lua` file runs on which traffic. Its kind
+/// (intercept or log) comes from the script.
+public struct ScriptRule: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var host: String
+    public var path: String?
+    public var methods: [String]
+    public var script: String
+    public var outputDir: String?
+    public var order: Int64
+    /// `fail` or `pass`; nil means `fail`.
+    public var onError: String?
+    public var revealSecrets: Bool
+    public var maxCaptureBytes: UInt64?
+    public var enabled: Bool
+    public var note: String
+    public var ownerPid: UInt32?
+    public var persistent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, host, path, methods, script, outputDir, order, onError, revealSecrets, maxCaptureBytes, enabled, note, ownerPid,
+             persistent
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        host = try c.decode(String.self, forKey: .host)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
+        methods = try c.decodeIfPresent([String].self, forKey: .methods) ?? []
+        script = try c.decode(String.self, forKey: .script)
+        outputDir = try c.decodeIfPresent(String.self, forKey: .outputDir)
+        order = try c.decodeIfPresent(Int64.self, forKey: .order) ?? 100
+        onError = try c.decodeIfPresent(String.self, forKey: .onError)
+        revealSecrets = try c.decodeIfPresent(Bool.self, forKey: .revealSecrets) ?? false
+        maxCaptureBytes = try c.decodeIfPresent(UInt64.self, forKey: .maxCaptureBytes)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        ownerPid = try c.decodeIfPresent(UInt32.self, forKey: .ownerPid)
+        persistent = try c.decodeIfPresent(Bool.self, forKey: .persistent) ?? false
+    }
+
+    // Same omissions as the Rust side, so a round trip gives the same JSON.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(host, forKey: .host)
+        try c.encodeIfPresent(path, forKey: .path)
+        if !methods.isEmpty { try c.encode(methods, forKey: .methods) }
+        try c.encode(script, forKey: .script)
+        try c.encodeIfPresent(outputDir, forKey: .outputDir)
+        try c.encode(order, forKey: .order)
+        try c.encodeIfPresent(onError, forKey: .onError)
+        if revealSecrets { try c.encode(true, forKey: .revealSecrets) }
+        try c.encodeIfPresent(maxCaptureBytes, forKey: .maxCaptureBytes)
+        try c.encode(enabled, forKey: .enabled)
+        if !note.isEmpty { try c.encode(note, forKey: .note) }
+        try c.encodeIfPresent(ownerPid, forKey: .ownerPid)
+        if persistent { try c.encode(true, forKey: .persistent) }
+    }
+
+    /// `shop.localhost/v1`, or the host alone.
+    public var target: String { host + (path ?? "") }
+}
+
+/// The time and message of a rule's last failure.
+public struct LastError: Codable, Equatable, Sendable {
+    public var message: String
+    public var timeMs: UInt64
+}
+
+/// A script rule and its state. The rule's fields are flattened into the same object.
+public struct ScriptRuleView: Codable, Equatable, Sendable, Identifiable {
+    public var rule: ScriptRule
+    /// `intercept` or `log`; nil when the script never loaded.
+    public var kind: String?
+    public var matched: UInt64
+    public var answered: UInt64
+    public var errors: UInt64
+    public var lastError: LastError?
+    public var dropped: UInt64
+    public var bytesWritten: UInt64
+    public var scriptLoadedAt: UInt64?
+    public var scriptSha256: String?
+
+    public var id: String { rule.id }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, matched, answered, errors, lastError, dropped, bytesWritten, scriptLoadedAt, scriptSha256
+    }
+
+    public init(from decoder: Decoder) throws {
+        rule = try ScriptRule(from: decoder)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        matched = try c.decode(UInt64.self, forKey: .matched)
+        answered = try c.decode(UInt64.self, forKey: .answered)
+        errors = try c.decode(UInt64.self, forKey: .errors)
+        lastError = try c.decodeIfPresent(LastError.self, forKey: .lastError)
+        dropped = try c.decode(UInt64.self, forKey: .dropped)
+        bytesWritten = try c.decode(UInt64.self, forKey: .bytesWritten)
+        scriptLoadedAt = try c.decodeIfPresent(UInt64.self, forKey: .scriptLoadedAt)
+        scriptSha256 = try c.decodeIfPresent(String.self, forKey: .scriptSha256)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try rule.encode(to: encoder)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(kind, forKey: .kind)
+        try c.encode(matched, forKey: .matched)
+        try c.encode(answered, forKey: .answered)
+        try c.encode(errors, forKey: .errors)
+        try c.encodeIfPresent(lastError, forKey: .lastError)
+        try c.encode(dropped, forKey: .dropped)
+        try c.encode(bytesWritten, forKey: .bytesWritten)
+        try c.encodeIfPresent(scriptLoadedAt, forKey: .scriptLoadedAt)
+        try c.encodeIfPresent(scriptSha256, forKey: .scriptSha256)
+    }
+}
+
+/// Parameters of `set_script_rule`: the rule, and `check_only`.
+public struct SetScriptRuleParams: Codable, Equatable, Sendable {
+    public var rule: ScriptRule
+    public var checkOnly: Bool
+
+    public init(rule: ScriptRule, checkOnly: Bool = false) {
+        self.rule = rule
+        self.checkOnly = checkOnly
+    }
+
+    enum CodingKeys: String, CodingKey { case checkOnly }
+
+    public init(from decoder: Decoder) throws {
+        rule = try ScriptRule(from: decoder)
+        checkOnly = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Bool.self, forKey: .checkOnly) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try rule.encode(to: encoder)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if checkOnly { try c.encode(true, forKey: .checkOnly) }
+    }
+}
+
+public struct InspectChange: Codable, Equatable, Sendable {
+    public var hostAdded: Bool
+    public var caCreated: Bool
+    public var caTrusted: Bool?
+}
+
+public struct SetScriptRuleResult: Codable, Equatable, Sendable {
+    public var rule: ScriptRuleView
+    public var replaced: Bool
+    public var checkOnly: Bool
+    public var inspect: InspectChange?
+    public var notes: [String]
+
+    enum CodingKeys: String, CodingKey { case rule, replaced, checkOnly, inspect, notes }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rule = try c.decode(ScriptRuleView.self, forKey: .rule)
+        replaced = try c.decode(Bool.self, forKey: .replaced)
+        checkOnly = try c.decodeIfPresent(Bool.self, forKey: .checkOnly) ?? false
+        inspect = try c.decodeIfPresent(InspectChange.self, forKey: .inspect)
+        notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(rule, forKey: .rule)
+        try c.encode(replaced, forKey: .replaced)
+        if checkOnly { try c.encode(true, forKey: .checkOnly) }
+        try c.encodeIfPresent(inspect, forKey: .inspect)
+        try c.encode(notes, forKey: .notes)
+    }
+}
+
+public struct IdParams: Codable, Equatable, Sendable {
+    public var id: String
+    public init(id: String) { self.id = id }
+}
+
+public struct RemoveScriptRuleResult: Codable, Equatable, Sendable {
+    public var removed: Bool
+}
+
+public struct ListScriptRulesResult: Codable, Equatable, Sendable {
+    public var rules: [ScriptRuleView]
 }

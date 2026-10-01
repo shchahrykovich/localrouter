@@ -1,0 +1,19 @@
+{
+  "id": 16,
+  "method": "set_script_rule",
+  "params": {
+    "id": "claude-capture",
+    "host": "api.anthropic.com",
+    "path": "/v1/messages",
+    "methods": [
+      "POST"
+    ],
+    "script": "/Users/me/scripts/capture.lua",
+    "output_dir": "/Users/me/lr-captures",
+    "order": 100,
+    "max_capture_bytes": 104857600,
+    "enabled": true,
+    "note": "record Claude API calls for the eval",
+    "owner_pid": 4242
+  }
+}

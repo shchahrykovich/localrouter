@@ -170,3 +170,71 @@ fn every_agent_text_describes_the_proxy_and_its_rules() {
     assert!(dev_page.contains("127.0.0.1:7877"), "the dev page names the dev proxy port");
     assert!(render_note(&Instance::release()).contains("127.0.0.1:8877"));
 }
+
+/// ADR 07, T17, I14: every agent text describes both kinds of script, the
+/// reference page, check_only, owner_pid, response_body and streaming,
+/// secrets only the user can reveal, and not committing captures.
+#[test]
+fn every_agent_text_describes_scripts_and_their_rules() {
+    for instance in [Instance::release(), dev()] {
+        let cli = instance.cli();
+        for (name, text) in texts(&instance, 80, 443) {
+            let lower = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            for word in ["intercept", "log script", "check_only", "owner_pid", "response_body", "on_event", "output_dir", "[redacted]"] {
+                assert!(lower.contains(word), "{name} lacks {word}");
+            }
+            assert!(lower.contains("stops streaming") || lower.contains("streaming stops"), "{name}: response_body and streaming");
+            assert!(lower.contains("only the user can reveal"), "{name}: secrets");
+            assert!(lower.contains("do not commit captures"), "{name}: captures");
+            assert!(text.contains(&format!("{cli} rules api")), "{name} lacks the rules api command");
+            assert!(text.contains("/scripts"), "{name} lacks the reference page");
+        }
+    }
+    let page = render(&Instance::release(), &[], Some(80), Some(443), None);
+    for word in ["set_script_rule", "remove_script_rule", "curl -s http://router.localhost/scripts"] {
+        assert!(page.contains(word), "help page lacks {word}");
+    }
+}
+
+/// ADR 07, T17: the reference names every field of `req`, `res` and `ex`
+/// and every module. The field names come from the tables scripts get, so a
+/// new field without a line in the reference fails here.
+#[test]
+fn the_script_reference_names_every_field_and_module() {
+    use localrouter_core::scripts::lua_api::{self, Exchange, StateCtx};
+    let reference = localrouter_core::help::render_scripts(&Instance::release(), Some(80), Some(443));
+    let lua = mlua::Lua::new();
+    lua_api::install(&lua, &StateCtx { rule_id: "t".into(), log: true, capture: None, lines: Default::default() }).unwrap();
+    let ex = Exchange { error: Some("e".into()), answered_by: Some("a".into()), ..Default::default() };
+    let none = |_: &str| false;
+    let mut fields: Vec<String> = vec![];
+    let ex_table = lua_api::exchange_table(&lua, &ex, &none, false).unwrap();
+    for pair in ex_table.pairs::<String, mlua::Value>() {
+        fields.push(pair.unwrap().0);
+    }
+    for key in ["request", "response"] {
+        let t: mlua::Table = ex_table.get(key).unwrap();
+        // Fields that are nil in this example still have a line in the table builders.
+        for pair in t.pairs::<String, mlua::Value>() {
+            fields.push(pair.unwrap().0);
+        }
+    }
+    let ev = lua_api::event_fields(&lua, &Default::default(), Some(1)).unwrap();
+    for pair in ev.pairs::<String, mlua::Value>() {
+        fields.push(pair.unwrap().0);
+    }
+    for f in ["route", "content_type", "body", "body_skipped", "body_file", "body_encoding", "range", "charset", "event", "id", "retry"] {
+        fields.push(f.to_string());
+    }
+    for f in &fields {
+        assert!(reference.contains(&format!("`{f}`")), "the reference lacks the field {f}");
+    }
+    for module in ["json", "sse", "base64", "url", "multipart", "log", "capture"] {
+        assert!(reference.contains(&format!("`{module}`")), "the reference lacks the module {module}");
+        let present: bool = lua.load(format!("return {module} ~= nil")).eval().unwrap();
+        assert!(present, "{module} is in the reference but not in the sandbox");
+    }
+    assert!(!reference.contains("{{"), "a placeholder is left");
+    let dev = localrouter_core::help::render_scripts(&dev(), Some(7080), Some(7443));
+    assert!(dev.contains("localrouter-dev rules api") && dev.contains("router.localhost:7080/scripts"));
+}

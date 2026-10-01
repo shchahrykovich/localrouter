@@ -1,15 +1,18 @@
 //! `localrouter mcp`: MCP server over stdio for coding agents. Its name and
 //! instructions come from the instance (ADR 04): `localrouter-dev mcp`.
 //!
-//! Exactly seven tools (invariant I13; ADR 06 added `get_proxy`, I14). Each call opens the daemon socket, so the
-//! shim holds no state and never starts a daemon (ADR 01, change 5).
+//! Exactly nine tools (invariant I13; ADR 06 added `get_proxy`, I14; ADR 07
+//! added `set_script_rule` and `remove_script_rule`, I13). Each call opens the
+//! daemon socket, so the shim holds no state and never starts a daemon (ADR
+//! 01, change 5).
 
 use std::path::PathBuf;
 
-use localrouter_core::api::{self, FindFreePortParams, GetLogsParams, HostParams};
+use localrouter_core::api::{self, FindFreePortParams, GetLogsParams, HostParams, IdParams, SetScriptRuleParams};
 use localrouter_core::help;
 use localrouter_core::instance::Instance;
 use localrouter_core::routes::{FOLDER_SCHEME, Protocol, Route};
+use localrouter_core::scripts::rules::{DEFAULT_ORDER, OnError, ScriptRule};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -129,6 +132,87 @@ pub struct LogsArgs {
 #[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
+// There is no reveal_secrets argument: only the user, at a terminal, can let a
+// rule see API keys and cookies, and unknown arguments are refused (ADR 07, I9).
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptRuleArgs {
+    /// The rule's name, a-z, 0-9 and '-', for example "claude-capture". An existing id is replaced.
+    pub id: String,
+    /// "api.example.com", "*.example.com", or a route such as "shop.localhost".
+    pub host: String,
+    /// Absolute path of the .lua file.
+    pub script: String,
+    /// Only this path prefix: "/v1" matches /v1 and /v1/..., never /v1x.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Only these methods, for example ["POST"].
+    #[serde(default)]
+    pub methods: Option<Vec<String>>,
+    /// Log rules: absolute path of an existing folder, the only one the script writes. Keep it out of git.
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// Intercept rules run from low to high (default 100).
+    #[serde(default)]
+    pub order: Option<i64>,
+    /// Intercept rules: "fail" (default, the client gets a 502 page) or "pass" (traffic goes on unchanged).
+    #[serde(default)]
+    pub on_error: Option<String>,
+    /// Log rules: bytes the rule may write (default 1 GiB).
+    #[serde(default)]
+    pub max_capture_bytes: Option<u64>,
+    /// false sets the rule turned off.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Why the rule exists.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Remove the rule when this process exits. Cannot be combined with persistent.
+    #[serde(default)]
+    pub owner_pid: Option<u32>,
+    /// Keep the rule after a daemon restart. Only when the user asks.
+    #[serde(default)]
+    pub persistent: Option<bool>,
+    /// Check the fields, the folder and the script, and store nothing.
+    #[serde(default)]
+    pub check_only: Option<bool>,
+}
+
+impl ScriptRuleArgs {
+    pub fn into_params(self) -> Result<SetScriptRuleParams, String> {
+        let on_error = match self.on_error.as_deref() {
+            None => None,
+            Some("fail") => Some(OnError::Fail),
+            Some("pass") => Some(OnError::Pass),
+            Some(other) => return Err(format!("on_error \"{other}\": use fail or pass")),
+        };
+        let rule = ScriptRule {
+            id: self.id,
+            host: self.host,
+            path: self.path,
+            methods: self.methods.unwrap_or_default(),
+            script: self.script,
+            output_dir: self.output_dir,
+            order: self.order.unwrap_or(DEFAULT_ORDER),
+            on_error,
+            reveal_secrets: false,
+            max_capture_bytes: self.max_capture_bytes,
+            enabled: self.enabled.unwrap_or(true),
+            note: self.note.unwrap_or_default(),
+            owner_pid: self.owner_pid,
+            persistent: self.persistent.unwrap_or(false),
+        };
+        Ok(SetScriptRuleParams { rule, check_only: self.check_only.unwrap_or(false) })
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IdArgs {
+    /// The id of the script rule.
+    pub id: String,
+}
+
 #[derive(Clone)]
 pub struct LocalRouterMcp {
     socket: PathBuf,
@@ -200,9 +284,28 @@ the route without a path.")]
     // commands, which the user sees in the transcript (ADR 06, change 3).
     #[tool(description = "How to send traffic through the LocalRouter proxy: proxy URL, environment variables for \
 Claude Code and Node.js, Chrome flags, which hosts are inspected, and whether the inspection CA is trusted. A program \
-reads the proxy settings when it starts: pass env to a program you start, never write them into project files.")]
+reads the proxy settings when it starts: pass env to a program you start, never write them into project files. Also \
+lists every script rule with its counters and last error (script_rules).")]
     async fn get_proxy(&self, Parameters(_): Parameters<NoArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self.call("get_proxy", api::Empty {}).await)
+    }
+
+    #[tool(description = "Run a Lua script on the HTTP traffic of a host: an intercept script changes or answers \
+requests while the client waits; a log script gets a copy of each finished exchange and writes files in output_dir. \
+The kind comes from the script. Read the script reference first: the /scripts page of the help site, or the `rules api` \
+command. Test with check_only: true, then set the rule before the job starts, with owner_pid of a process you \
+started, or remove it when done. A host outside .localhost becomes inspected by the proxy. Secret headers reach \
+scripts as [redacted]; only the user can change that.")]
+    async fn set_script_rule(&self, Parameters(args): Parameters<ScriptRuleArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(match args.into_params() {
+            Ok(params) => self.call("set_script_rule", params).await,
+            Err(e) => error_result(e),
+        })
+    }
+
+    #[tool(description = "Remove a script rule by id. Returns removed=false when there is none. Capture files stay.")]
+    async fn remove_script_rule(&self, Parameters(args): Parameters<IdArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self.call("remove_script_rule", IdParams { id: args.id }).await)
     }
 }
 

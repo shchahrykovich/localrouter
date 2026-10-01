@@ -10,6 +10,7 @@ use crate::routes::{Protocol, Route};
 const TEMPLATE: &str = include_str!("help.md");
 const NOTE: &str = include_str!("note.md");
 const MCP_INSTRUCTIONS: &str = include_str!("mcp.md");
+const SCRIPTS: &str = include_str!("scripts.md");
 
 /// The help page text. The ports are the bound ones, if any.
 pub fn render(
@@ -29,6 +30,12 @@ pub fn render(
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
         .replace("{{STATUS}}", &status_table(status))
         .replace("{{ROUTES}}", &route_list(routes, https_port))
+}
+
+/// The script reference (ADR 07): `router.localhost/scripts` and
+/// `<cli> rules api`. The ports are the bound ones, if any.
+pub fn render_scripts(instance: &Instance, http_port: Option<u16>, https_port: Option<u16>) -> String {
+    fill(SCRIPTS, instance, http_port, https_port)
 }
 
 /// The Claude Code note, linked into `~/.claude`. It is made when the bundle

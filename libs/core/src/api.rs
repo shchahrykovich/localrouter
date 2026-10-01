@@ -16,15 +16,17 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::logs::LogEntry;
 use crate::routes::Route;
+use crate::scripts::engine::{LastError, ScriptKind};
+use crate::scripts::rules::ScriptRule;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.3";
+pub const API_VERSION: &str = "1.4";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
 }
 
-pub const METHODS: [&str; 13] = [
+pub const METHODS: [&str; 16] = [
     "hello",
     "status",
     "register_route",
@@ -38,6 +40,9 @@ pub const METHODS: [&str; 13] = [
     "reset_ca",
     "get_proxy",
     "reset_inspect_ca",
+    "set_script_rule",
+    "remove_script_rule",
+    "list_script_rules",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,6 +90,8 @@ pub enum ErrorCode {
     Io,
     CaUnavailable,
     VersionMismatch,
+    /// A script rule's fields, its script or its `output_dir` (ADR 07).
+    InvalidScriptRule,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
@@ -301,6 +308,9 @@ pub struct SetConfigParams {
     /// Replaces the whole list. The first need makes the inspection CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inspect_hosts: Option<Vec<String>>,
+    /// Header names scripts see as `[redacted]`, besides the defaults (ADR 07).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_headers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,6 +354,88 @@ pub struct GetProxyResult {
     pub chrome_args: Vec<String>,
     /// Plain sentences for each thing that will not work yet.
     pub notes: Vec<String>,
+    /// Every script rule with its state (ADR 07). Absent before API 1.4.
+    #[serde(default)]
+    pub script_rules: Vec<ScriptRuleView>,
+}
+
+// ---- script rules (ADR 07)
+
+/// A script rule and its state, as `list_script_rules` and `get_proxy` show it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptRuleView {
+    #[serde(flatten)]
+    pub rule: ScriptRule,
+    /// `intercept` or `log`, from the script. `None` when it never loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ScriptKind>,
+    /// Exchanges that matched since the rule was set or the daemon started.
+    pub matched: u64,
+    /// Intercept: responses returned by `on_request`.
+    pub answered: u64,
+    pub errors: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<LastError>,
+    /// Log: copies dropped because a limit was reached.
+    pub dropped: u64,
+    /// Log: bytes written to capture files and saved bodies.
+    pub bytes_written: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_loaded_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_sha256: Option<String>,
+}
+
+/// Parameters of `set_script_rule`: the rule, and `check_only`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetScriptRuleParams {
+    #[serde(flatten)]
+    pub rule: ScriptRule,
+    /// Check everything (fields, `output_dir`, the script) and store nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check_only: bool,
+}
+
+/// What setting a rule did to the inspect set (ADR 07, change 2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InspectChange {
+    /// The rule's host was not inspected before.
+    pub host_added: bool,
+    /// The inspection CA was made for this rule.
+    pub ca_created: bool,
+    /// Whether macOS trusts the inspection CA. `None` if unknown.
+    pub ca_trusted: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetScriptRuleResult {
+    pub rule: ScriptRuleView,
+    /// A rule with this id was replaced.
+    pub replaced: bool,
+    /// Nothing was stored: the rule and its script passed every check.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check_only: bool,
+    /// For a host outside `.localhost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<InspectChange>,
+    /// Plain sentences for each thing that will not work yet.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IdParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoveScriptRuleResult {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListScriptRulesResult {
+    pub rules: Vec<ScriptRuleView>,
 }
 
 /// Parameters for methods that take none.

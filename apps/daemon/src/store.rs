@@ -10,6 +10,7 @@ use std::path::Path;
 use localrouter_core::config::Config;
 use localrouter_core::instance::Instance;
 use localrouter_core::routes::Route;
+use localrouter_core::scripts::rules::ScriptRule;
 use serde::{Deserialize, Serialize};
 
 /// Version 1 has routes without a path. Version 2 may have `path` and
@@ -21,6 +22,15 @@ pub const ROUTES_VERSION: u32 = 2;
 struct RoutesFile {
     version: u32,
     routes: Vec<Route>,
+}
+
+/// `script-rules.json` (ADR 07): persistent script rules only.
+pub const SCRIPT_RULES_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScriptRulesFile {
+    version: u32,
+    rules: Vec<ScriptRule>,
 }
 
 /// What a load found.
@@ -39,6 +49,24 @@ pub fn load_routes(path: &Path) -> Loaded<Vec<Route>> {
         }
         Ok(file.routes)
     })
+}
+
+/// A broken file is moved aside, as for `routes.json`.
+pub fn load_script_rules(path: &Path) -> Loaded<Vec<ScriptRule>> {
+    load(path, |text| {
+        let file: ScriptRulesFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if file.version != SCRIPT_RULES_VERSION {
+            return Err(format!("unknown version {}", file.version));
+        }
+        Ok(file.rules)
+    })
+}
+
+/// Persistent script rules, sorted by id, replaced atomically (ADR 01, I4).
+pub fn save_script_rules(path: &Path, rules: &[ScriptRule]) -> std::io::Result<()> {
+    let mut rules: Vec<ScriptRule> = rules.iter().filter(|r| r.persistent).cloned().collect();
+    rules.sort_by(|a, b| a.id.cmp(&b.id));
+    replace(path, &serde_json::to_vec_pretty(&ScriptRulesFile { version: SCRIPT_RULES_VERSION, rules })?)
 }
 
 /// The instance's defaults stand in for a missing or broken file, so a
@@ -229,6 +257,25 @@ mod tests {
         let loaded = load_routes(&path);
         assert!(loaded.problem.unwrap().contains("unknown version 3"));
         assert!(!path.exists());
+    }
+
+    // ADR 07, T13: persistent rules only, sorted, and back after a load.
+    #[test]
+    fn script_rules_round_trip_and_only_persistent_ones_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script-rules.json");
+        let rule = |id: &str, persistent: bool| -> ScriptRule {
+            serde_json::from_value(serde_json::json!({"id": id, "host": "a.example.com", "script": "/x.lua", "persistent": persistent}))
+                .unwrap()
+        };
+        save_script_rules(&path, &[rule("b", true), rule("s", false), rule("a", true)]).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["version"], 1);
+        let loaded = load_script_rules(&path);
+        assert!(loaded.problem.is_none());
+        assert_eq!(loaded.value.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        fs::write(&path, r#"{"version":2,"rules":[]}"#).unwrap();
+        assert!(load_script_rules(&path).problem.unwrap().contains("unknown version 2"));
     }
 
     #[test]

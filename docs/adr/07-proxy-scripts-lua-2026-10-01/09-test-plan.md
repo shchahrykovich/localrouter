@@ -1,6 +1,29 @@
 # 9. Test plan
 
-**Status:** Proposed. These tests are to be written; none exists yet.
+**Status:** The automated tests are written and pass (`cargo test --workspace`,
+`swift test`). The manual tests M1 to M8 are not run yet; an M2 and M7 smoke run
+by hand passed on 2026-10-01 (a log rule on `example.com` and an intercept rule
+on `httpbin.org`, through the proxy, plain and inspected).
+
+Where each group lives:
+
+| Tests | File |
+|---|---|
+| T1, T2 | `libs/core/src/scripts/rules.rs` |
+| T3, T4, T11, I6 | `libs/core/src/scripts/engine.rs` |
+| T9, T10 (unit), T25 | `libs/core/src/scripts/lua_api.rs` |
+| T20 (classes), T22 (links), T24 (unit), event splitter | `libs/core/src/scripts/bodies.rs`, `events.rs` |
+| T5 to T8, T10, T12, T18 to T24 | `libs/core/tests/scripts.rs` |
+| T13 | `apps/daemon/tests/api.rs`, `apps/daemon/src/store.rs` |
+| T14 | `libs/core/tests/api_examples.rs`, `ApiContractTests.swift` |
+| T15 | `apps/cli/tests/cli.rs` (the pseudo-terminal case uses `/usr/bin/script`) |
+| T16 | `apps/cli/tests/mcp.rs` |
+| T17 | `libs/core/tests/agent_texts.rs`, `libs/core/tests/proxy.rs` |
+| E1e | `apps/cli/tests/e2e.rs` (`script_rules_journey`) |
+
+Two cases differ from the plan: T19's "a TCP route runs no script" holds by
+construction (TCP routes never reach the HTTP hook) and has no test of its
+own; T22's slow disk is a writer that waits 30 ms per part.
 
 ## What the repository can run today
 

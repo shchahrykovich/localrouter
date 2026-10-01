@@ -42,7 +42,9 @@ fn params(method: &str, params: Value, file: &str) {
         "get_logs" => check::<GetLogsParams>(params, file),
         "subscribe_logs" => check::<SubscribeLogsParams>(params, file),
         "set_config" => check::<SetConfigParams>(params, file),
-        "status" | "list_routes" | "get_config" | "reset_ca" | "get_proxy" | "reset_inspect_ca" => {
+        "set_script_rule" => check::<SetScriptRuleParams>(params, file),
+        "remove_script_rule" => check::<IdParams>(params, file),
+        "status" | "list_script_rules" | "list_routes" | "get_config" | "reset_ca" | "get_proxy" | "reset_inspect_ca" => {
             check::<Empty>(params, file)
         }
         other => panic!("{file}: unknown method {other}"),
@@ -63,6 +65,9 @@ fn result(method: &str, result: Value, file: &str) {
         "set_config" => check::<SetConfigResult>(result, file),
         "reset_ca" | "reset_inspect_ca" => check::<ResetCaResult>(result, file),
         "get_proxy" => check::<GetProxyResult>(result, file),
+        "set_script_rule" => check::<SetScriptRuleResult>(result, file),
+        "remove_script_rule" => check::<RemoveScriptRuleResult>(result, file),
+        "list_script_rules" => check::<ListScriptRulesResult>(result, file),
         other => panic!("{file}: unknown method {other}"),
     }
 }
@@ -170,4 +175,48 @@ fn proxy_log_entries_decode_with_the_1_2_shape() {
     for entry in logs["result"]["entries"].as_array().unwrap() {
         serde_json::from_value::<LogEntry12>(entry.clone()).unwrap_or_else(|e| panic!("{entry}: {e}"));
     }
+}
+
+/// ADR 07, T14: the examples carry the script rule fields, so both contract
+/// tests check that they survive a round trip.
+#[test]
+fn examples_cover_script_rules() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../api/examples");
+    let read = |file: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"))).unwrap()
+    };
+    let rules = read("get_proxy.reply.json")["result"]["script_rules"].clone();
+    assert!(rules.as_array().unwrap().iter().any(|r| r["kind"] == "log" && r["last_error"]["message"].is_string()));
+    assert!(rules.as_array().unwrap().iter().any(|r| r["kind"] == "intercept" && r["enabled"] == false));
+    assert_eq!(read("set_script_rule_check.request.json")["params"]["check_only"], true);
+    assert!(read("set_script_rule.reply.json")["result"]["inspect"]["ca_created"].is_boolean());
+    let entry = read("log.event.json")["entry"].clone();
+    assert!(entry["rules"].is_array() && entry["script_error"].is_string());
+    assert!(read("get_config.reply.json")["result"]["secret_headers"].is_array());
+}
+
+/// `get_proxy` as API 1.3 knew it, before ADR 07.
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
+struct GetProxy13 {
+    enabled: bool,
+    url: String,
+    port: u16,
+    inspect_set: Vec<String>,
+    notes: Vec<String>,
+}
+
+/// ADR 07, I19: an older client decodes `get_proxy` and log entries from a
+/// newer daemon, because the new fields are optional.
+#[test]
+fn script_fields_decode_with_the_1_3_shapes() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../api/examples");
+    let read = |file: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap()).unwrap() };
+    serde_json::from_value::<GetProxy13>(read("get_proxy.reply.json")["result"].clone()).expect("1.3 decodes get_proxy");
+    serde_json::from_value::<LogEntry12>(read("log.event.json")["entry"].clone()).expect("1.3 decodes a log entry with rules");
+    // And a 1.3 daemon's get_proxy, without script_rules, decodes here.
+    let mut old = read("get_proxy.reply.json")["result"].clone();
+    old.as_object_mut().unwrap().remove("script_rules");
+    let new: GetProxyResult = serde_json::from_value(old).unwrap();
+    assert!(new.script_rules.is_empty());
 }
