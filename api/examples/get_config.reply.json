@@ -6,6 +6,11 @@
     "https_port": 443,
     "fallback": true,
     "allow_lan": false,
-    "log_size": 1000
+    "log_size": 1000,
+    "proxy_enabled": true,
+    "proxy_port": 8877,
+    "inspect_hosts": [
+      "api.example.com"
+    ]
   }
 }

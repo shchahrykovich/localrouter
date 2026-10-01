@@ -8,6 +8,8 @@
 //! The Swift app keeps its own copy of these shapes. Every file in
 //! `api/examples/` must decode on both sides (invariant I11).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -16,13 +18,13 @@ use crate::logs::LogEntry;
 use crate::routes::Route;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.2";
+pub const API_VERSION: &str = "1.3";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
 }
 
-pub const METHODS: [&str; 11] = [
+pub const METHODS: [&str; 13] = [
     "hello",
     "status",
     "register_route",
@@ -34,6 +36,8 @@ pub const METHODS: [&str; 11] = [
     "get_config",
     "set_config",
     "reset_ca",
+    "get_proxy",
+    "reset_inspect_ca",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +168,26 @@ pub struct StatusResult {
     /// Hosts of TCP routes whose listen port could not be bound.
     #[serde(default)]
     pub listen_failed: Vec<String>,
+    /// The forward proxy (ADR 06). Absent from daemons before API 1.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyStatus>,
+}
+
+/// The forward proxy port and the inspection CA (ADR 06).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProxyStatus {
+    /// `proxy_enabled` in the config.
+    pub enabled: bool,
+    /// Port from the config (`0` = any free port).
+    pub configured: u16,
+    /// Port actually bound, if bound.
+    pub port: Option<u16>,
+    /// Addresses bound: `127.0.0.1:8877` and `[::1]:8877`, or none.
+    pub bound: Vec<String>,
+    /// Why the port is not bound, when it should be.
+    pub errors: Vec<String>,
+    /// `None` until the inspection CA exists (it is made on first need).
+    pub inspect_ca: Option<CaStatus>,
 }
 
 // ---- routes
@@ -269,6 +293,14 @@ pub struct SetConfigParams {
     pub allow_lan: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_size: Option<usize>,
+    /// Bind or close the forward proxy port, at once (ADR 06).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_port: Option<u16>,
+    /// Replaces the whole list. The first need makes the inspection CA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect_hosts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -284,6 +316,34 @@ pub struct SetConfigResult {
 pub struct ResetCaResult {
     pub pem_path: String,
     pub common_name: String,
+}
+
+// ---- forward proxy (ADR 06)
+
+/// Everything a client needs to use the forward proxy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetProxyResult {
+    pub enabled: bool,
+    /// `http://127.0.0.1:<port>`, the value for `HTTPS_PROXY`.
+    pub url: String,
+    /// The bound port, or the configured one while not bound.
+    pub port: u16,
+    pub bound: Vec<String>,
+    pub errors: Vec<String>,
+    /// `inspect_hosts` from the config.
+    pub inspect_hosts: Vec<String>,
+    /// Every host pattern that is inspected: `inspect_hosts`, and later the
+    /// hosts of script rules (ADR 07).
+    pub inspect_set: Vec<String>,
+    /// `None` before the inspection CA exists.
+    pub inspect_ca: Option<CaStatus>,
+    /// Environment variables for programs started through the proxy.
+    pub env: BTreeMap<String, String>,
+    /// Arguments for a separate Chrome instance that uses the proxy. Every
+    /// client uses these, none builds its own (I18).
+    pub chrome_args: Vec<String>,
+    /// Plain sentences for each thing that will not work yet.
+    pub notes: Vec<String>,
 }
 
 /// Parameters for methods that take none.

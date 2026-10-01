@@ -155,6 +155,7 @@ fn fixed_status() -> StatusResult {
         routes: 1,
         routes_file_problem: None,
         listen_failed: vec![],
+        proxy: None,
     }
 }
 

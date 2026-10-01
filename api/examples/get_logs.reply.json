@@ -21,6 +21,19 @@
         "bytes_out": 2048,
         "duration_ms": 950,
         "failed": false
+      },
+      {
+        "kind": "http",
+        "time_ms": 1790000002000,
+        "method": "CONNECT",
+        "host": "www.example.com",
+        "path": "",
+        "status": 200,
+        "duration_ms": 5200,
+        "via": "proxy",
+        "mode": "tunnel",
+        "bytes_in": 1830,
+        "bytes_out": 48211
       }
     ]
   }

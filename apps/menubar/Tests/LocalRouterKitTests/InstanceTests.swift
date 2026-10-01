@@ -23,8 +23,10 @@ final class InstanceTests: XCTestCase {
         [
             "app_name": i.appName, "bundle_id": i.bundleID, "daemon_label": i.daemonLabel,
             "daemon_program": i.daemonProgram, "cli": i.cli, "data_folder": i.dataFolder,
-            "logs_folder": i.logsFolder, "note": i.note, "mcp_name": i.cli, "ca_name_prefix": i.caNamePrefix,
+            "logs_folder": i.logsFolder, "caches_folder": i.cachesFolder, "note": i.note, "mcp_name": i.cli,
+            "ca_name_prefix": i.caNamePrefix, "inspect_ca_name_prefix": i.inspectCaNamePrefix,
             "http_port": Int(i.defaultPorts.http), "https_port": Int(i.defaultPorts.https),
+            "proxy_port": Int(i.defaultProxyPort),
             "default_help_url": i.defaultHelpURL,
         ]
     }
@@ -55,7 +57,7 @@ final class InstanceTests: XCTestCase {
     func testTwoInstancesShareNoName() throws {
         let rows = try XCTUnwrap(table["rows"] as? [[String: Any]])
         let instances = try rows.map { try Instance(suffix: $0["suffix"] as? String ?? "?") }
-        for key in ["app_name", "bundle_id", "daemon_label", "daemon_program", "cli", "data_folder", "logs_folder", "note"] {
+        for key in ["app_name", "bundle_id", "daemon_label", "daemon_program", "cli", "data_folder", "logs_folder", "caches_folder", "note"] {
             let values = Set(instances.map { names($0)[key] })
             XCTAssertEqual(values.count, instances.count, "\(key) is shared by two instances")
         }

@@ -148,3 +148,25 @@ fn the_dev_help_page_uses_the_bound_ports() {
     assert!(page.contains("curl -s http://router.localhost:7081`"));
     assert!(page.contains("https://shop.localhost:7444` goes to"));
 }
+
+/// ADR 06, T12, I15: every agent text describes the proxy, the get_proxy
+/// tool, the env command, the trust step, that a running program keeps its
+/// proxy, and the rule never to write proxy settings into project files.
+#[test]
+fn every_agent_text_describes_the_proxy_and_its_rules() {
+    for instance in [Instance::release(), dev()] {
+        let cli = instance.cli();
+        for (name, text) in texts(&instance, 80, 443) {
+            // One line, lower case: the templates wrap sentences.
+            let lower = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            assert!(text.contains("get_proxy"), "{name} does not name get_proxy");
+            assert!(text.contains(&format!("{cli} proxy env")), "{name} lacks the env command");
+            assert!(text.contains(&format!("{cli} proxy trust")), "{name} lacks the trust step");
+            assert!(lower.contains("cannot change the proxy of a program that is already running"), "{name}");
+            assert!(lower.contains("never write proxy settings into project files"), "{name}");
+        }
+    }
+    let dev_page = render(&dev(), &[], Some(7080), Some(7443), None);
+    assert!(dev_page.contains("127.0.0.1:7877"), "the dev page names the dev proxy port");
+    assert!(render_note(&Instance::release()).contains("127.0.0.1:8877"));
+}

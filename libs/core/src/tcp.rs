@@ -5,9 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::sync::CancellationToken;
 
 use crate::logs::{LogEntry, RequestLog, now_ms};
@@ -63,8 +62,13 @@ pub async fn serve(mut client: TcpStream, route: TcpRouteInfo, log: Arc<RequestL
     log.push(entry(bytes_in.load(Ordering::Relaxed), bytes_out.load(Ordering::Relaxed), false));
 }
 
-/// Copy one direction. At end of input, half-close the other side.
-async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, count: &AtomicU64) {
+/// Copy one direction. At end of input, half-close the other side. Also the
+/// byte copy of forward proxy tunnels (ADR 06).
+pub(crate) async fn pipe<R, W>(mut from: R, mut to: W, count: &AtomicU64)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         match from.read(&mut buf).await {

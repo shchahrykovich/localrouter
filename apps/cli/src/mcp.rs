@@ -1,7 +1,7 @@
 //! `localrouter mcp`: MCP server over stdio for coding agents. Its name and
 //! instructions come from the instance (ADR 04): `localrouter-dev mcp`.
 //!
-//! Exactly six tools (invariant I13). Each call opens the daemon socket, so the
+//! Exactly seven tools (invariant I13; ADR 06 added `get_proxy`, I14). Each call opens the daemon socket, so the
 //! shim holds no state and never starts a daemon (ADR 01, change 5).
 
 use std::path::PathBuf;
@@ -194,6 +194,15 @@ the route without a path.")]
     #[tool(description = "Daemon version, ports bound or failed, and whether the local CA exists and is trusted.")]
     async fn status(&self, Parameters(_): Parameters<NoArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self.call("status", api::Empty {}).await)
+    }
+
+    // Read only: turning the proxy on and choosing inspected hosts are CLI
+    // commands, which the user sees in the transcript (ADR 06, change 3).
+    #[tool(description = "How to send traffic through the LocalRouter proxy: proxy URL, environment variables for \
+Claude Code and Node.js, Chrome flags, which hosts are inspected, and whether the inspection CA is trusted. A program \
+reads the proxy settings when it starts: pass env to a program you start, never write them into project files.")]
+    async fn get_proxy(&self, Parameters(_): Parameters<NoArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self.call("get_proxy", api::Empty {}).await)
     }
 }
 

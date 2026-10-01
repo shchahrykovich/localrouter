@@ -16,6 +16,9 @@ pub const MAX_SOCKET_PATH: usize = 103;
 pub struct Paths {
     pub data: PathBuf,
     pub logs: PathBuf,
+    /// Files other programs write for this instance: the Chrome profile of
+    /// the proxy (ADR 06). Never written by the daemon.
+    pub caches: PathBuf,
 }
 
 impl Paths {
@@ -30,13 +33,17 @@ impl Paths {
     pub fn resolve(instance: &Instance, local_home: Option<OsString>, home: PathBuf) -> Self {
         match local_home {
             Some(dir) if !dir.is_empty() => Self::under(PathBuf::from(dir)),
-            _ => Self { data: home.join(instance.data_folder()), logs: home.join(instance.logs_folder()) },
+            _ => Self {
+                data: home.join(instance.data_folder()),
+                logs: home.join(instance.logs_folder()),
+                caches: home.join(instance.caches_folder()),
+            },
         }
     }
 
     /// All files under one folder (used for `LOCALROUTER_HOME` and tests).
     pub fn under(root: PathBuf) -> Self {
-        Self { logs: root.join("logs"), data: root }
+        Self { logs: root.join("logs"), caches: root.join("caches"), data: root }
     }
 
     pub fn config(&self) -> PathBuf {
@@ -59,6 +66,20 @@ impl Paths {
     }
     pub fn ca_key(&self) -> PathBuf {
         self.ca_dir().join("ca.key")
+    }
+    /// The inspection CA of the forward proxy (ADR 06), made on first need.
+    pub fn inspect_ca_dir(&self) -> PathBuf {
+        self.data.join("inspect-ca")
+    }
+    pub fn inspect_ca_pem(&self) -> PathBuf {
+        self.inspect_ca_dir().join("ca.pem")
+    }
+    pub fn inspect_ca_key(&self) -> PathBuf {
+        self.inspect_ca_dir().join("ca.key")
+    }
+    /// The separate Chrome profile that uses the proxy (ADR 06).
+    pub fn chrome_profile(&self) -> PathBuf {
+        self.caches.join("chrome-proxy")
     }
     pub fn daemon_log(&self) -> PathBuf {
         self.logs.join("daemon.log")
@@ -86,6 +107,7 @@ mod tests {
         let dev = Paths::resolve(&Instance::new("-dev").unwrap(), None, home.clone());
         assert_eq!(dev.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter-dev"));
         assert_eq!(dev.logs, PathBuf::from("/Users/u/Library/Logs/LocalRouter-dev"));
+        assert_eq!(dev.chrome_profile(), PathBuf::from("/Users/u/Library/Caches/LocalRouter-dev/chrome-proxy"));
         let release = Paths::resolve(&Instance::release(), None, home);
         assert_eq!(release.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter"));
         assert_eq!(release.logs, PathBuf::from("/Users/u/Library/Logs/LocalRouter"));

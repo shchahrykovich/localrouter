@@ -18,7 +18,7 @@ final class ApiContractTests: XCTestCase {
 
     private static let methods = [
         "hello", "status", "register_route", "unregister_route", "list_routes", "find_free_port",
-        "get_logs", "subscribe_logs", "get_config", "set_config", "reset_ca",
+        "get_logs", "subscribe_logs", "get_config", "set_config", "reset_ca", "get_proxy", "reset_inspect_ca",
     ]
 
     /// Decode, encode again, and compare with the file (nulls and default
@@ -59,7 +59,7 @@ final class ApiContractTests: XCTestCase {
         case "get_logs": try roundTrip(GetLogsParams.self, json, file)
         case "subscribe_logs": try roundTrip(SubscribeLogsParams.self, json, file)
         case "set_config": try roundTrip(SetConfigParams.self, json, file)
-        case "status", "list_routes", "get_config", "reset_ca": try roundTrip(Empty.self, json, file)
+        case "status", "list_routes", "get_config", "reset_ca", "get_proxy", "reset_inspect_ca": try roundTrip(Empty.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
     }
@@ -76,7 +76,8 @@ final class ApiContractTests: XCTestCase {
         case "subscribe_logs": try roundTrip(SubscribeLogsResult.self, json, file)
         case "get_config": try roundTrip(Config.self, json, file)
         case "set_config": try roundTrip(SetConfigResult.self, json, file)
-        case "reset_ca": try roundTrip(ResetCaResult.self, json, file)
+        case "reset_ca", "reset_inspect_ca": try roundTrip(ResetCaResult.self, json, file)
+        case "get_proxy": try roundTrip(GetProxyResult.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
     }
@@ -110,5 +111,26 @@ final class ApiContractTests: XCTestCase {
             }
         }
         for m in Self.methods { XCTAssertTrue(seen.contains(m), "no request example for \(m)") }
+    }
+
+    /// ADR 06: proxy log entries decode with their mode and bytes, and the
+    /// env keys of get_proxy stay as the daemon wrote them.
+    func testProxyFieldsDecode() throws {
+        let read = { (file: String) throws -> Data in try Data(contentsOf: self.examples.appendingPathComponent(file)) }
+        let event = try Api.decoder.decode(LogEvent.self, from: read("log_proxy.event.json"))
+        guard case let .http(_, _, _, _, _, _, _, proxy) = event.entry else { return XCTFail("not http") }
+        XCTAssertEqual(proxy?.mode, "inspect")
+        let logs = try JSONSerialization.jsonObject(with: read("get_logs.reply.json")) as? [String: Any]
+        let entries = try JSONSerialization.data(withJSONObject: logs?["result"] ?? [:])
+        let tunnel = try Api.decoder.decode(GetLogsResult.self, from: entries).entries.compactMap { entry -> ProxyTraffic? in
+            if case let .http(_, _, _, _, _, _, _, proxy) = entry { return proxy }
+            return nil
+        }.first
+        XCTAssertEqual(tunnel, ProxyTraffic(mode: "tunnel", bytesIn: 1830, bytesOut: 48211))
+        let reply = try JSONSerialization.jsonObject(with: read("get_proxy.reply.json")) as? [String: Any]
+        let result = try JSONSerialization.data(withJSONObject: reply?["result"] ?? [:])
+        let settings = try Api.decoder.decode(GetProxyResult.self, from: result)
+        XCTAssertEqual(settings.env["HTTPS_PROXY"], "http://127.0.0.1:8877")
+        XCTAssertEqual(settings.env["NODE_EXTRA_CA_CERTS"], settings.inspectCa?.pemPath)
     }
 }

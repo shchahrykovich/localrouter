@@ -79,11 +79,17 @@ public struct Instance: Equatable, Hashable, Sendable, CustomStringConvertible {
     public var dataFolder: String { "Library/Application Support/\(appName)" }
     /// Relative to the home folder.
     public var logsFolder: String { "Library/Logs/\(appName)" }
+    /// Relative to the home folder. Chrome writes the proxy profile there (ADR 06).
+    public var cachesFolder: String { "Library/Caches/\(appName)" }
     /// The Claude Code note, linked into ~/.claude.
     public var note: String { "\(appName).md" }
     public var caNamePrefix: String { "\(appName) CA" }
+    /// The common name of a new inspection CA starts with this (ADR 06).
+    public var inspectCaNamePrefix: String { "\(appName) Inspection" }
     /// Ports a new config.json gets. 8080 is avoided: many dev servers use it.
     public var defaultPorts: (http: UInt16, https: UInt16) { isRelease ? (80, 443) : (7080, 7443) }
+    /// The forward proxy port a new config.json gets (ADR 06).
+    public var defaultProxyPort: UInt16 { isRelease ? 8877 : 7877 }
     public var defaultHelpURL: String { AgentHelp.url(httpPort: defaultPorts.http, httpsPort: nil) }
 
     /// Why this bundle cannot run as `self`, or nil. The daemon and the CLI

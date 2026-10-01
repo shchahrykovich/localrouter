@@ -151,6 +151,7 @@ running daemon over a Unix socket.
 | `find_free_port` | Return a free local port. Useful when many worktrees run at once. |
 | `get_logs` | Last N requests and TCP connections, optionally for one host. Paths never include the query string. |
 | `status` | Daemon version, ports bound or failed, CA state and trust. |
+| `get_proxy` | The forward proxy: URL, environment variables, Chrome flags, inspected hosts, inspection CA trust. Read only. |
 
 To set up a project, tell the agent in the project folder:
 
@@ -188,6 +189,28 @@ localrouter ca-path        # print the path of ca.pem
 localrouter ca reset --yes # make a new CA (breaks the old trust)
 localrouter mcp            # MCP server over stdio
 ```
+
+## Forward proxy
+
+LocalRouter can also be the HTTP proxy of Chrome or of a program, so you see
+which servers it calls ([ADR 06](docs/adr/06-forward-proxy-2026-10-01/README.md)).
+It is off by default and listens on `127.0.0.1:8877` only.
+
+```
+localrouter proxy on                          # bind 127.0.0.1:8877 and [::1]:8877
+eval "$(localrouter proxy env)" && npm test   # one command through the proxy
+localrouter proxy chrome                      # a separate Chrome window that uses it
+localrouter logs                              # requests marked "via proxy"
+localrouter proxy inspect add api.example.com # read this host's HTTPS requests
+localrouter proxy trust                       # trust the inspection CA (password)
+localrouter proxy off
+```
+
+HTTPS is a tunnel by default: LocalRouter sees only the host name. A host in
+the inspect list is read with a second CA, the inspection CA, which you trust
+separately. The real server's certificate is always checked with the macOS
+trust store. The menu bar icon's right-click menu has **Open Chrome via
+Proxy** when Google Chrome is installed.
 
 ## HTTPS
 

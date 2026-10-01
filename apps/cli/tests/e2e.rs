@@ -388,3 +388,142 @@ async fn instances_journey() {
     drop(release);
     assert_eq!(https_get(&dev.home().join("ca/ca.pem"), "shop.localhost", dev_https, "/x").await["path"], "/x");
 }
+
+/// HTTPS echo server for `test.example`, signed by a fresh test CA. Returns
+/// its port and the CA certificate as PEM.
+async fn test_internet_server() -> (u16, String) {
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params.distinguished_name.push(rcgen::DnType::CommonName, "E1 Internet CA");
+    let ca_pem = ca_params.self_signed(&ca_key).unwrap().pem();
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["test.example".into()]).unwrap().signed_by(&key, &issuer).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (s, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut s) = acceptor.accept(s).await else { return };
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = json!({"server": "test.example", "path": path}).to_string();
+                let resp = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let _ = s.write_all(resp.as_bytes()).await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    (port, ca_pem)
+}
+
+fn via_proxy(proxy: &str, ca_pem: &[u8]) -> reqwest::Client {
+    reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy).unwrap())
+        .tls_certs_only([reqwest::Certificate::from_pem(ca_pem).unwrap()])
+        .build()
+        .unwrap()
+}
+
+/// Wait until `localrouter logs` shows a line with every word.
+async fn wait_for_log(d: &Daemon, words: &[&str]) -> String {
+    for _ in 0..50 {
+        let (_, out, _) = d.cli(&["logs"]);
+        if let Some(line) = out.lines().find(|l| words.iter().all(|w| l.contains(w))) {
+            return line.to_string();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("no log line with {words:?}: {}", d.cli(&["logs"]).1);
+}
+
+/// E1d (ADR 06): the forward proxy through the real binaries.
+///
+/// Replaced: the internet is a local HTTPS server with a test CA; DNS and the
+/// macOS trust store are replaced by the daemon's debug-only test settings;
+/// keychain trust is the inspection ca.pem given to reqwest. M1 and M2 use
+/// the real ones.
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_journey() {
+    // 1. A test internet server, an echo server, and the daemon that sends
+    //    test.example to the test server and trusts only the test CA.
+    let (server, internet_ca) = test_internet_server().await;
+    let echo = echo_upstream().await;
+    let ca_file = tempfile::Builder::new().prefix("lrca").suffix(".pem").tempfile().unwrap();
+    std::fs::write(ca_file.path(), &internet_ca).unwrap();
+    let resolve = format!("test.example=127.0.0.1:{server}");
+    let d = Daemon::start_env(&[
+        ("LOCALROUTER_TEST_RESOLVE", &resolve),
+        ("LOCALROUTER_TEST_UPSTREAM_CA", ca_file.path().to_str().unwrap()),
+    ]);
+
+    // 2. Proxy on. Check: two loopback addresses.
+    assert!(d.cli(&["proxy", "port", "0"]).0);
+    let (ok, _, err) = d.cli(&["proxy", "on"]);
+    assert!(ok, "{err}");
+    let status = d.status();
+    let port = status["proxy"]["port"].as_u64().unwrap();
+    assert_eq!(status["proxy"]["bound"], json!([format!("127.0.0.1:{port}"), format!("[::1]:{port}")]));
+    let (_, out, _) = d.cli(&["proxy"]);
+    assert!(out.contains(&format!("on: http://127.0.0.1:{port}")), "{out}");
+    let proxy = format!("http://127.0.0.1:{port}");
+
+    // 3. Plain HTTP through the proxy. Check: the echo saw /x; the log says via proxy.
+    let client = via_proxy(&proxy, internet_ca.as_bytes());
+    let resp = client.get(format!("http://127.0.0.1:{echo}/x?q=1")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    assert_eq!(body["path"], "/x?q=1");
+    let line = wait_for_log(&d, &["GET", "/x", "via proxy (http)"]).await;
+    assert!(!line.contains("q=1"), "{line}");
+
+    // 4. HTTPS, no inspect host: a tunnel. The client trusts the test CA and
+    //    gets the real server. Check: one tunnel entry.
+    let resp = client.get("https://test.example/t").send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    wait_for_log(&d, &["CONNECT", "test.example", "via proxy (tunnel)"]).await;
+
+    // 5. Inspect test.example. Check: inspect-ca/ exists; a client that trusts
+    //    only the inspection CA gets 200; an inspect entry with path /i.
+    let (ok, _, err) = d.cli(&["proxy", "inspect", "add", "test.example"]);
+    assert!(ok, "{err}");
+    let inspection_pem = std::fs::read(d.home().join("inspect-ca/ca.pem")).unwrap();
+    let inspected = via_proxy(&proxy, &inspection_pem);
+    let resp = inspected.get("https://test.example/i?secret=1").send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    assert_eq!(body["server"], "test.example", "the real server answered");
+    assert_eq!(body["path"], "/i?secret=1");
+    let line = wait_for_log(&d, &["GET", "test.example/i", "via proxy (inspect)"]).await;
+    assert!(!line.contains("secret"), "{line}");
+
+    // 6. MCP get_proxy. Check: test.example is inspected, and
+    //    NODE_EXTRA_CA_CERTS is the file used in step 5.
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_localrouter"));
+    cmd.arg("mcp").env("LOCALROUTER_HOME", d.home());
+    let mcp = ().serve(TokioChildProcess::new(cmd).unwrap()).await.unwrap();
+    let r = mcp.call_tool(CallToolRequestParams::new(Cow::Borrowed("get_proxy"))).await.unwrap();
+    let text = serde_json::to_value(&r.content).unwrap()[0]["text"].as_str().unwrap().to_string();
+    let p: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(p["inspect_set"], json!(["test.example"]));
+    assert_eq!(p["env"]["NODE_EXTRA_CA_CERTS"], d.home().join("inspect-ca/ca.pem").display().to_string());
+    mcp.cancel().await.unwrap();
+
+    // 7. Proxy off. Check: the next request through it fails to connect.
+    assert!(d.cli(&["proxy", "off"]).0);
+    let fresh = via_proxy(&proxy, internet_ca.as_bytes());
+    let e = fresh.get(format!("http://127.0.0.1:{echo}/after")).send().await.unwrap_err();
+    assert!(e.is_connect(), "{e:?}");
+}

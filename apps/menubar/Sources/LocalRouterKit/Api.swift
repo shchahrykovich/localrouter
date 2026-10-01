@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.2"
+public let apiVersion = "1.3"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -181,6 +181,19 @@ public struct StatusResult: Codable, Equatable, Sendable {
     public var routes: Int
     public var routesFileProblem: String?
     public var listenFailed: [String]
+    /// The forward proxy (ADR 06). Nil from daemons before API 1.3.
+    public var proxy: ProxyStatus?
+}
+
+/// The forward proxy port and the inspection CA (ADR 06).
+public struct ProxyStatus: Codable, Equatable, Sendable {
+    public var enabled: Bool
+    public var configured: UInt16
+    public var port: UInt16?
+    public var bound: [String]
+    public var errors: [String]
+    /// Nil until the inspection CA exists.
+    public var inspectCa: CaStatus?
 }
 
 public struct RegisterRouteResult: Codable, Equatable, Sendable {
@@ -227,26 +240,41 @@ public struct GetLogsParams: Codable, Equatable, Sendable {
     }
 }
 
+/// How the forward proxy carried a request (ADR 06): `via: "proxy"` with
+/// `mode` `http`, `inspect` or `tunnel`, and bytes for a tunnel.
+public struct ProxyTraffic: Equatable, Sendable {
+    public var mode: String
+    public var bytesIn: UInt64?
+    public var bytesOut: UInt64?
+    public init(mode: String, bytesIn: UInt64? = nil, bytesOut: UInt64? = nil) {
+        self.mode = mode
+        self.bytesIn = bytesIn
+        self.bytesOut = bytesOut
+    }
+}
+
 public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
     /// `route` is the key of the route that answered, for example `shop/blog`.
-    case http(time: UInt64, method: String, host: String, path: String, status: UInt16, durationMs: UInt64, route: String?)
+    /// `proxy` is set for traffic of the forward proxy (ADR 06).
+    case http(time: UInt64, method: String, host: String, path: String, status: UInt16, durationMs: UInt64, route: String?,
+              proxy: ProxyTraffic?)
     case tcp(time: UInt64, host: String, listenPort: UInt16, bytesIn: UInt64, bytesOut: UInt64, durationMs: UInt64, failed: Bool)
 
     public var id: String {
         switch self {
-        case let .http(time, method, host, path, status, _, _): "\(time)-\(method)-\(host)\(path)-\(status)"
+        case let .http(time, method, host, path, status, _, _, _): "\(time)-\(method)-\(host)\(path)-\(status)"
         case let .tcp(time, host, port, bytesIn, _, _, _): "\(time)-\(host):\(port)-\(bytesIn)"
         }
     }
 
     public var host: String {
         switch self {
-        case let .http(_, _, host, _, _, _, _), let .tcp(_, host, _, _, _, _, _): host
+        case let .http(_, _, host, _, _, _, _, _), let .tcp(_, host, _, _, _, _, _): host
         }
     }
 
     enum CodingKeys: String, CodingKey {
-        case kind, timeMs, method, host, path, status, durationMs, route, listenPort, bytesIn, bytesOut, failed
+        case kind, timeMs, method, host, path, status, durationMs, route, listenPort, bytesIn, bytesOut, failed, via, mode
     }
 
     public init(from decoder: Decoder) throws {
@@ -256,9 +284,15 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
         let duration = try c.decode(UInt64.self, forKey: .durationMs)
         switch try c.decode(String.self, forKey: .kind) {
         case "http":
+            var proxy: ProxyTraffic?
+            if try c.decodeIfPresent(String.self, forKey: .via) == "proxy" {
+                proxy = ProxyTraffic(mode: try c.decodeIfPresent(String.self, forKey: .mode) ?? "",
+                                     bytesIn: try c.decodeIfPresent(UInt64.self, forKey: .bytesIn),
+                                     bytesOut: try c.decodeIfPresent(UInt64.self, forKey: .bytesOut))
+            }
             self = .http(time: time, method: try c.decode(String.self, forKey: .method), host: host,
                          path: try c.decode(String.self, forKey: .path), status: try c.decode(UInt16.self, forKey: .status),
-                         durationMs: duration, route: try c.decodeIfPresent(String.self, forKey: .route))
+                         durationMs: duration, route: try c.decodeIfPresent(String.self, forKey: .route), proxy: proxy)
         case "tcp":
             self = .tcp(time: time, host: host, listenPort: try c.decode(UInt16.self, forKey: .listenPort),
                         bytesIn: try c.decode(UInt64.self, forKey: .bytesIn), bytesOut: try c.decode(UInt64.self, forKey: .bytesOut),
@@ -271,7 +305,7 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .http(time, method, host, path, status, duration, route):
+        case let .http(time, method, host, path, status, duration, route, proxy):
             try c.encode("http", forKey: .kind)
             try c.encode(time, forKey: .timeMs)
             try c.encode(method, forKey: .method)
@@ -280,6 +314,12 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
             try c.encode(status, forKey: .status)
             try c.encode(duration, forKey: .durationMs)
             try c.encodeIfPresent(route, forKey: .route)
+            if let proxy {
+                try c.encode("proxy", forKey: .via)
+                try c.encode(proxy.mode, forKey: .mode)
+                try c.encodeIfPresent(proxy.bytesIn, forKey: .bytesIn)
+                try c.encodeIfPresent(proxy.bytesOut, forKey: .bytesOut)
+            }
         case let .tcp(time, host, port, bytesIn, bytesOut, duration, failed):
             try c.encode("tcp", forKey: .kind)
             try c.encode(time, forKey: .timeMs)
@@ -317,6 +357,10 @@ public struct Config: Codable, Equatable, Sendable {
     public var fallback: Bool
     public var allowLan: Bool
     public var logSize: Int
+    /// The forward proxy (ADR 06). Optional: a daemon before API 1.3 has none.
+    public var proxyEnabled: Bool?
+    public var proxyPort: UInt16?
+    public var inspectHosts: [String]?
 }
 
 public struct SetConfigParams: Codable, Equatable, Sendable {
@@ -325,9 +369,17 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     public var fallback: Bool?
     public var allowLan: Bool?
     public var logSize: Int?
-    public init(fallback: Bool? = nil, allowLan: Bool? = nil) {
+    public var proxyEnabled: Bool?
+    public var proxyPort: UInt16?
+    /// Replaces the whole list.
+    public var inspectHosts: [String]?
+    public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
+                inspectHosts: [String]? = nil) {
         self.fallback = fallback
         self.allowLan = allowLan
+        self.proxyEnabled = proxyEnabled
+        self.proxyPort = proxyPort
+        self.inspectHosts = inspectHosts
     }
 }
 
@@ -339,4 +391,22 @@ public struct SetConfigResult: Codable, Equatable, Sendable {
 public struct ResetCaResult: Codable, Equatable, Sendable {
     public var pemPath: String
     public var commonName: String
+}
+
+/// Everything a client needs to use the forward proxy (ADR 06).
+public struct GetProxyResult: Codable, Equatable, Sendable {
+    public var enabled: Bool
+    public var url: String
+    public var port: UInt16
+    public var bound: [String]
+    public var errors: [String]
+    public var inspectHosts: [String]
+    public var inspectSet: [String]
+    public var inspectCa: CaStatus?
+    /// Keys are variable names such as `HTTPS_PROXY`; JSONDecoder leaves
+    /// dictionary keys as they are.
+    public var env: [String: String]
+    /// The arguments every client gives Chrome; none builds its own (I18).
+    public var chromeArgs: [String]
+    public var notes: [String]
 }

@@ -1,7 +1,7 @@
 //! `localrouterd`: the LocalRouter daemon. One per user.
 //!
 //! Start-up order: lock, config, CA, routes, shared HTTP listeners, TCP route
-//! listeners, socket. See ADR 01.
+//! listeners, forward proxy port, socket. See ADR 01 and ADR 06.
 
 mod daemon;
 mod listen;
@@ -111,6 +111,7 @@ async fn run(paths: Paths, instance: Instance) -> anyhow::Result<()> {
     let daemon = Daemon::load(paths, instance, pids, ca, ca_problem);
     daemon.start_http_listeners()?;
     daemon.start_saved_tcp_routes();
+    daemon.start_saved_proxy();
     let listener = socket::bind(&daemon)?;
     tokio::spawn(socket::serve(daemon.clone(), listener));
 

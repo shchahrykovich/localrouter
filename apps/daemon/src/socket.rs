@@ -141,6 +141,14 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, write: &Arc<Mutex<OwnedWri
         "get_config" => json(daemon.get_config()),
         "set_config" => json(daemon.set_config(params::<SetConfigParams>(req.params)?).await?),
         "reset_ca" => json(daemon.reset_ca().await?),
+        "get_proxy" => {
+            let _: Empty = params(req.params)?;
+            json(daemon.get_proxy().await)
+        }
+        "reset_inspect_ca" => {
+            let _: Empty = params(req.params)?;
+            json(daemon.reset_inspect_ca().await?)
+        }
         other => Err(ApiError::new(ErrorCode::UnknownMethod, format!("unknown method {other}"))),
     }
 }

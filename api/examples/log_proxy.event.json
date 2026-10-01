@@ -1,0 +1,14 @@
+{
+  "event": "log",
+  "entry": {
+    "kind": "http",
+    "time_ms": 1790000003000,
+    "method": "POST",
+    "host": "api.example.com",
+    "path": "/v1/messages",
+    "status": 200,
+    "duration_ms": 830,
+    "via": "proxy",
+    "mode": "inspect"
+  }
+}

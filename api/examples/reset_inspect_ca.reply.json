@@ -1,0 +1,7 @@
+{
+  "id": 15,
+  "result": {
+    "pem_path": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem",
+    "common_name": "LocalRouter Inspection 0c1d2e3f"
+  }
+}

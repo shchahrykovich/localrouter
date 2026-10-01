@@ -5,6 +5,8 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var fallback = true
     @State private var allowLan = false
+    @State private var proxyOn = false
+    @State private var newInspectHost = ""
     @State private var loaded = false
     @State private var confirmUninstall = false
     @State private var openAtLogin = false
@@ -55,6 +57,7 @@ struct SettingsView: View {
                     Text("Start the daemon to create the CA.").foregroundStyle(.secondary)
                 }
             }
+            if model.status?.proxy != nil { proxySection }
             // Shown when the ports are not 80 and 443, or something is wrong (ADR 04, I12).
             let errors = (model.status?.http.errors ?? []) + (model.status?.https.errors ?? [])
             let routesFileProblem = model.status?.routesFileProblem
@@ -114,9 +117,64 @@ struct SettingsView: View {
             if let c = await model.config {
                 fallback = c.fallback
                 allowLan = c.allowLan
+                proxyOn = c.proxyEnabled ?? false
             }
             loaded = true
         }
+    }
+
+    /// The forward proxy (ADR 06): on and off, the inspect list, and trust
+    /// for the inspection CA.
+    @ViewBuilder private var proxySection: some View {
+        Section("Proxy") {
+            Toggle("Forward proxy", isOn: $proxyOn)
+                .onChange(of: proxyOn) { _, on in if loaded { Task { await model.setProxyEnabled(on) } } }
+            Text("Chrome or a program you start with the proxy settings sends its traffic through LocalRouter, and Logs shows it. Only this Mac can reach the port.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let p = model.proxy {
+                LabeledContent("Address", value: p.bound.isEmpty ? (p.enabled ? "not listening" : "off, port \(p.port)") : p.url)
+                ForEach(p.errors, id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
+                ForEach(p.inspectHosts, id: \.self) { host in
+                    HStack {
+                        Text(host).font(.callout.monospaced())
+                        Spacer()
+                        Button("Remove") { Task { await model.stopInspecting(host) } }
+                    }
+                }
+                HStack {
+                    TextField("Inspect host: api.example.com or *.example.com", text: $newInspectHost)
+                        .onSubmit(addInspectHost)
+                    Button("Inspect", action: addInspectHost).disabled(newInspectHost.isEmpty)
+                }
+                Text("Other HTTPS hosts pass through unread: Logs shows only their name.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let ca = p.inspectCa {
+                    LabeledContent("Inspection CA", value: ca.commonName ?? "?")
+                    LabeledContent("Trusted", value: ca.trusted == true ? "yes" : ca.trusted == false ? "no" : "unknown")
+                    if let problem = ca.problem { Text(problem).foregroundStyle(.red).font(.caption) }
+                    HStack {
+                        let actions = TrustActions.for(trusted: ca.trusted)
+                        if actions.contains(.trust) {
+                            Button("Trust Inspection…") { Task { await model.trustInspectionCA() } }.disabled(model.busy)
+                        }
+                        if actions.contains(.untrust) {
+                            Button("Untrust") { Task { await model.untrustInspectionCA() } }.disabled(model.busy)
+                        }
+                    }
+                    Text("Trust lets \(Instance.current.appName) read HTTPS traffic for the hosts you list.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if model.chromeInstalled {
+                    Button("Open Chrome via Proxy") { Task { await model.openChromeViaProxy() } }
+                }
+            }
+        }
+    }
+
+    private func addInspectHost() {
+        let host = newInspectHost
+        newInspectHost = ""
+        Task { await model.inspect(host) }
     }
 
     private var configURL: URL { Paths.dataDir.appendingPathComponent("config.json") }

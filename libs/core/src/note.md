@@ -72,3 +72,22 @@ the project.
   change the production build too.
 - Run `{{CLI}} list` first. Adding a host and path that exist replaces that
   route.
+
+## Proxy
+
+{{APP}} can be the HTTP proxy of Chrome or a program, on
+`127.0.0.1:{{PROXY_PORT}}`, so the user sees which servers it calls. Off by
+default.
+
+- `{{CLI}} proxy on`, then MCP `get_proxy` or `{{CLI}} proxy` gives the URL,
+  the environment variables and the Chrome flags.
+- Start a command through it: `eval "$({{CLI}} proxy env)" && npm test`.
+  Chrome: `{{CLI}} proxy chrome`.
+- To read the HTTPS requests of a host: `{{CLI}} proxy inspect add <host>`.
+  The user must trust the inspection CA (`{{CLI}} proxy trust`; macOS asks for
+  their password).
+- You cannot change the proxy of a program that is already running, and that
+  includes yourself: a program reads the proxy settings when it starts.
+- Never write proxy settings into project files (`.env`,
+  `.claude/settings.json`, test configs): other people on the project may not
+  have {{APP}}.

@@ -353,3 +353,98 @@ fn folder_route_from_a_relative_path() {
     let (ok, _, err) = d.cli(&["add", "docs"]);
     assert!(!ok && err.contains("--folder"), "{err}");
 }
+
+// ---- ADR 06, T10: proxy commands. Port 0 first: tests never take 8877.
+
+fn proxy_on(d: &Daemon) -> String {
+    let (ok, _, err) = d.cli(&["proxy", "port", "0"]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = d.cli(&["proxy", "on"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("The proxy is on: http://127.0.0.1:"), "{out}");
+    out
+}
+
+#[test]
+fn proxy_on_shows_the_url_and_off_warns_about_running_programs() {
+    let d = Daemon::start();
+    let (ok, out, _) = d.cli(&["proxy"]);
+    assert!(ok);
+    assert!(out.contains("off (port 8877)"), "the release default port: {out}");
+    proxy_on(&d);
+    let (ok, out, _) = d.cli(&["proxy"]);
+    assert!(ok);
+    assert!(out.contains("on: http://127.0.0.1:"), "{out}");
+    assert!(out.contains("none: every CONNECT is a tunnel"), "{out}");
+
+    let (ok, out, err) = d.cli(&["proxy", "inspect", "add", "api.example.com"]);
+    assert!(ok, "{err}");
+    let (_, out2, _) = d.cli(&["proxy"]);
+    assert!(out2.contains("Inspected      api.example.com"), "{out2}");
+    // The temp CA is not in the keychain.
+    assert!(out.contains("not trusted") || out2.contains("NOT trusted"), "{out}{out2}");
+
+    let (ok, out, _) = d.cli(&["proxy", "off"]);
+    assert!(ok);
+    assert!(out.contains("now fail to connect. Restart them without it."), "{out}");
+}
+
+#[test]
+fn proxy_env_prints_four_exports_then_five_with_the_ca() {
+    let d = Daemon::start();
+    proxy_on(&d);
+    let (ok, out, _) = d.cli(&["proxy", "env"]);
+    assert!(ok);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4, "{out}");
+    assert!(lines[0].starts_with("export HTTPS_PROXY=http://127.0.0.1:"), "{out}");
+    assert!(lines[1].starts_with("export HTTP_PROXY="));
+    assert!(lines[2].contains("NO_PROXY=") && lines[2].contains(".localhost"), "{out}");
+    assert_eq!(lines[3], "export NODE_USE_ENV_PROXY=1");
+
+    assert!(d.cli(&["proxy", "inspect", "add", "api.example.com"]).0);
+    let (_, out, _) = d.cli(&["proxy", "env"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 5, "{out}");
+    let (_, ca_path, _) = d.cli(&["proxy", "ca-path"]);
+    assert_eq!(lines[4], format!("export NODE_EXTRA_CA_CERTS={}", ca_path.trim()));
+}
+
+#[test]
+fn proxy_inspect_add_rm_and_a_bad_pattern() {
+    let d = Daemon::start();
+    assert!(d.cli(&["proxy", "inspect", "add", "api.example.com"]).0);
+    assert!(d.cli(&["proxy", "inspect", "add", "API.example.com"]).0);
+    let (_, out, _) = d.cli(&["proxy", "inspect", "list"]);
+    assert_eq!(out, "api.example.com\n", "listed once");
+    let (ok, _, err) = d.cli(&["proxy", "inspect", "add", "*.com"]);
+    assert!(!ok);
+    assert!(err.contains("top-level domain"), "{err}");
+    assert!(d.cli(&["proxy", "inspect", "rm", "api.example.com"]).0);
+    let (_, out, _) = d.cli(&["proxy", "inspect", "list"]);
+    assert!(out.contains("No inspected hosts"), "{out}");
+    let (ok, _, err) = d.cli(&["proxy", "inspect", "rm", "api.example.com"]);
+    assert!(!ok);
+    assert!(err.contains("not in the inspect list"), "{err}");
+}
+
+// I18: the printed Chrome command uses exactly the daemon's chrome_args.
+#[test]
+fn proxy_chrome_print_shows_the_proxy_flag_and_a_separate_profile() {
+    let d = Daemon::start();
+    let (ok, out, err) = d.cli(&["proxy", "chrome", "--print"]);
+    assert!(ok, "{err}");
+    assert!(out.starts_with("open -na 'Google Chrome' --args --user-data-dir="), "{out}");
+    assert!(out.contains("--proxy-server=http://127.0.0.1:8877"), "{out}");
+    assert!(out.contains("chrome-proxy"), "{out}");
+    assert!(!out.contains("Google/Chrome"), "never the default profile: {out}");
+    assert!(!d.status()["proxy"]["enabled"].as_bool().unwrap(), "--print changes nothing");
+}
+
+#[test]
+fn proxy_trust_before_the_ca_exists_says_how_to_make_it() {
+    let d = Daemon::start();
+    let (ok, _, err) = d.cli(&["proxy", "trust"]);
+    assert!(!ok);
+    assert!(err.contains("proxy inspect add"), "{err}");
+}

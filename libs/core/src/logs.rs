@@ -1,6 +1,8 @@
 //! Request log: a fixed-size ring buffer in memory, plus a live stream.
 //!
 //! Entries never hold query strings, headers or bodies (invariant I10).
+//! Traffic of the forward proxy uses the same `http` entry with optional
+//! fields, so older clients still decode `get_logs` (ADR 06, I16).
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -26,6 +28,18 @@ pub enum LogEntry {
         /// the 404 page and the help page.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         route: Option<String>,
+        /// `proxy` for traffic of the forward proxy; absent for the router.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<Via>,
+        /// How the forward proxy carried the request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<ProxyMode>,
+        /// Tunnels only: bytes from the client to the server.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_in: Option<u64>,
+        /// Tunnels only: bytes from the server to the client.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_out: Option<u64>,
     },
     /// One TCP connection, written when it closes.
     Tcp {
@@ -41,6 +55,25 @@ pub enum LogEntry {
     },
 }
 
+/// Which way in a request came (ADR 06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    Proxy,
+}
+
+/// How the forward proxy carried a request (ADR 06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    /// An absolute-form `http://` request.
+    Http,
+    /// One HTTP request read inside an inspected `CONNECT`.
+    Inspect,
+    /// A `CONNECT` whose bytes were copied, not read.
+    Tunnel,
+}
+
 impl LogEntry {
     /// An HTTP entry. The query string is removed here, so no caller can store it.
     pub fn http(method: &str, host: &str, path_and_query: &str, status: u16, duration_ms: u64) -> Self {
@@ -54,7 +87,32 @@ impl LogEntry {
             status,
             duration_ms,
             route: None,
+            via: None,
+            mode: None,
+            bytes_in: None,
+            bytes_out: None,
         }
+    }
+
+    /// A closed tunnel of the forward proxy: method `CONNECT`, empty path,
+    /// and the bytes each way. It takes no path, so it cannot store a query.
+    pub fn tunnel(host: &str, status: u16, duration_ms: u64, bytes_in: u64, bytes_out: u64) -> Self {
+        let mut entry = Self::http("CONNECT", host, "", status, duration_ms).via_proxy(ProxyMode::Tunnel);
+        if let LogEntry::Http { path, bytes_in: i, bytes_out: o, .. } = &mut entry {
+            path.clear();
+            *i = Some(bytes_in);
+            *o = Some(bytes_out);
+        }
+        entry
+    }
+
+    /// Mark an HTTP entry as forward proxy traffic.
+    pub fn via_proxy(mut self, how: ProxyMode) -> Self {
+        if let LogEntry::Http { via, mode, .. } = &mut self {
+            *via = Some(Via::Proxy);
+            *mode = Some(how);
+        }
+        self
     }
 
     /// Set the key of the route that answered (HTTP entries only).
@@ -173,6 +231,40 @@ mod tests {
         let json = serde_json::to_string(&e).unwrap();
         assert!(!json.contains("token"), "{json}");
         assert!(matches!(e, LogEntry::Http { ref path, ref host, .. } if path == "/cb" && host == "shop.localhost"));
+    }
+
+    // ADR 06, T13, I11: a proxy entry stores no query either.
+    #[test]
+    fn proxy_entries_keep_no_query_and_mark_the_way_in() {
+        let e = LogEntry::http("GET", "api.example.com:443", "/a?token=x", 200, 3).via_proxy(ProxyMode::Inspect);
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["path"], "/a");
+        assert_eq!(json["host"], "api.example.com");
+        assert_eq!(json["via"], "proxy");
+        assert_eq!(json["mode"], "inspect");
+        assert!(json.get("bytes_in").is_none());
+        assert!(!json.to_string().contains("token"));
+    }
+
+    #[test]
+    fn a_tunnel_entry_has_connect_an_empty_path_and_bytes() {
+        let e = LogEntry::tunnel("example.com:443", 200, 50, 10, 20);
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["kind"], "http");
+        assert_eq!(json["method"], "CONNECT");
+        assert_eq!(json["path"], "");
+        assert_eq!(json["host"], "example.com");
+        assert_eq!(json["mode"], "tunnel");
+        assert_eq!((json["bytes_in"].as_u64(), json["bytes_out"].as_u64()), (Some(10), Some(20)));
+    }
+
+    // ADR 06, I16: a router entry looks exactly as before.
+    #[test]
+    fn a_router_entry_has_no_proxy_fields() {
+        let json = serde_json::to_value(LogEntry::http("GET", "shop.localhost", "/", 200, 1)).unwrap();
+        for key in ["via", "mode", "bytes_in", "bytes_out"] {
+            assert!(json.get(key).is_none(), "{key}");
+        }
     }
 
     #[test]

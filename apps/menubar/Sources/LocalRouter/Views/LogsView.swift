@@ -44,7 +44,7 @@ struct LogRow: View {
 
     var body: some View {
         switch entry {
-        case let .http(t, method, host, path, status, duration, route):
+        case let .http(t, method, host, path, status, duration, route, proxy):
             HStack(spacing: 6) {
                 Text(time(t)).foregroundStyle(.secondary)
                 Text("\(status)").foregroundStyle(status >= 500 ? .red : status >= 400 ? .orange : .green)
@@ -52,6 +52,14 @@ struct LogRow: View {
                 Text(host + path).lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if let route { Text(route).foregroundStyle(.secondary).lineLimit(1).help("The route that answered") }
+                if let proxy {
+                    // ADR 06: traffic of the forward proxy, and how it was carried.
+                    Text("proxy").foregroundStyle(.purple)
+                        .help("Through the proxy (\(proxy.mode))")
+                    if let bytesIn = proxy.bytesIn, let bytesOut = proxy.bytesOut {
+                        Text("↑\(bytesIn) ↓\(bytesOut) B").foregroundStyle(.secondary)
+                    }
+                }
                 Text("\(duration) ms").foregroundStyle(.secondary)
             }
             .font(.caption.monospaced())

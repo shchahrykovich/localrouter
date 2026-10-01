@@ -10,11 +10,14 @@
       "cli": "localrouter",
       "data_folder": "Library/Application Support/LocalRouter",
       "logs_folder": "Library/Logs/LocalRouter",
+      "caches_folder": "Library/Caches/LocalRouter",
       "note": "LocalRouter.md",
       "mcp_name": "localrouter",
       "ca_name_prefix": "LocalRouter CA",
+      "inspect_ca_name_prefix": "LocalRouter Inspection",
       "http_port": 80,
       "https_port": 443,
+      "proxy_port": 8877,
       "default_help_url": "http://router.localhost"
     },
     {
@@ -26,11 +29,14 @@
       "cli": "localrouter-dev",
       "data_folder": "Library/Application Support/LocalRouter-dev",
       "logs_folder": "Library/Logs/LocalRouter-dev",
+      "caches_folder": "Library/Caches/LocalRouter-dev",
       "note": "LocalRouter-dev.md",
       "mcp_name": "localrouter-dev",
       "ca_name_prefix": "LocalRouter-dev CA",
+      "inspect_ca_name_prefix": "LocalRouter-dev Inspection",
       "http_port": 7080,
       "https_port": 7443,
+      "proxy_port": 7877,
       "default_help_url": "http://router.localhost:7080"
     },
     {
@@ -42,11 +48,14 @@
       "cli": "localrouter-test2",
       "data_folder": "Library/Application Support/LocalRouter-test2",
       "logs_folder": "Library/Logs/LocalRouter-test2",
+      "caches_folder": "Library/Caches/LocalRouter-test2",
       "note": "LocalRouter-test2.md",
       "mcp_name": "localrouter-test2",
       "ca_name_prefix": "LocalRouter-test2 CA",
+      "inspect_ca_name_prefix": "LocalRouter-test2 Inspection",
       "http_port": 7080,
       "https_port": 7443,
+      "proxy_port": 7877,
       "default_help_url": "http://router.localhost:7080"
     },
     {
@@ -58,11 +67,14 @@
       "cli": "localrouter-abcdefghijklmno",
       "data_folder": "Library/Application Support/LocalRouter-abcdefghijklmno",
       "logs_folder": "Library/Logs/LocalRouter-abcdefghijklmno",
+      "caches_folder": "Library/Caches/LocalRouter-abcdefghijklmno",
       "note": "LocalRouter-abcdefghijklmno.md",
       "mcp_name": "localrouter-abcdefghijklmno",
       "ca_name_prefix": "LocalRouter-abcdefghijklmno CA",
+      "inspect_ca_name_prefix": "LocalRouter-abcdefghijklmno Inspection",
       "http_port": 7080,
       "https_port": 7443,
+      "proxy_port": 7877,
       "default_help_url": "http://router.localhost:7080"
     }
   ],

@@ -171,6 +171,18 @@ One line in the request log. There are two kinds.
 
 Headers and bodies are never stored.
 
+Traffic of the forward proxy uses the same HTTP entry, with optional fields,
+so older clients still read it ([ADR 06](adr/06-forward-proxy-2026-10-01/README.md)):
+
+| Field | Meaning |
+|---|---|
+| `via` | `proxy`; absent for router traffic |
+| `mode` | `http` (absolute-form request), `inspect` (one request inside an inspected `CONNECT`), `tunnel` |
+| `bytes_in`, `bytes_out` | tunnels only: bytes from and to the client |
+
+A tunnel entry has method `CONNECT`, an empty path, and is written when the
+tunnel closes.
+
 **TCP entry**, for TCP routes. It is created when the connection closes: time,
 route host, listen port, bytes in each direction, duration, and `failed` if the
 target did not answer within 2 seconds. The bytes themselves are never stored.
@@ -192,6 +204,9 @@ The user's settings, stored in `config.json` and written only by the daemon.
 | fallback | on | a host key with no route uses the route of its parent (see Fallback) |
 | `allow_lan` | off | accept connections from other machines |
 | log size | 1,000 | entries in the request log |
+| `proxy_enabled` | off | bind the proxy port (ADR 06) |
+| `proxy_port` | `8877` (`7877` for a suffixed instance) | the proxy port |
+| `inspect_hosts` | empty | host patterns whose `CONNECT`s are inspected |
 
 ### Local CA
 
@@ -221,6 +236,52 @@ The setting in the macOS **login keychain** that says "certificates signed by
 `localrouter trust`, and removes it with `localrouter untrust`. macOS asks for
 the password. The daemon never sets it.
 
+### Forward proxy
+
+A server that a client is told to use for **all** its requests (with a flag
+such as Chrome's `--proxy-server`, or `HTTPS_PROXY`). The client sends each
+request to the proxy, and the proxy sends it on. LocalRouter's forward proxy
+runs in the daemon ([ADR 06](adr/06-forward-proxy-2026-10-01/README.md)). It
+is the opposite of the router: the router takes requests for `.localhost`
+names and sends them to dev servers; the forward proxy takes any request of a
+client that chose it. `.localhost` names that reach it still go to the route
+table and never leave the Mac.
+
+### Proxy port
+
+The port of the forward proxy: `127.0.0.1` and `::1` only, never the LAN,
+whatever `allow_lan` says. Off by default; turned on and off without a
+restart.
+
+### Tunnel
+
+What the forward proxy does with a `CONNECT host:443` by default: it copies
+bytes both ways and reads nothing. The log shows only the host and the bytes.
+
+### Inspect, inspect set
+
+To **inspect** a host is to answer the client's TLS inside its `CONNECT`
+with a leaf of the inspection CA, read each HTTP request, and send it to the
+real server over a new, checked TLS connection. The **inspect set** is the
+list of host patterns that are inspected: `inspect_hosts` in the config
+(later also the hosts of ADR 07 scripts). A pattern is an exact name
+(`api.example.com`) or `*.` plus a name of at least two labels
+(`*.example.com`, which does not match `example.com` itself).
+
+### Inspection CA
+
+The second CA, in `inspect-ca/`, used only by the forward proxy. It signs
+leaves only for names in the inspect set, never for `.localhost` names. It is
+made the first time the inspect set is not empty, trusted separately
+(`localrouter proxy trust`), and replaced only by `localrouter proxy ca reset`.
+The local CA never signs names that are not `.localhost`.
+
+### Upstream server
+
+The real server on the internet that a proxied request goes to. The daemon
+checks its certificate with the macOS trust store; there is no switch that
+accepts any certificate.
+
 ## Programs and parts
 
 | Term | Meaning |
@@ -240,10 +301,10 @@ the password. The daemon never sets it.
 
 | Term | Meaning |
 |---|---|
-| **socket API** | The only way clients talk to the daemon. Newline-delimited JSON over the Unix socket `daemon.sock`. Shaped like JSON-RPC 2.0. Has 11 methods. |
+| **socket API** | The only way clients talk to the daemon. Newline-delimited JSON over the Unix socket `daemon.sock`. Shaped like JSON-RPC 2.0. Has 13 methods; ADR 06 added `get_proxy` and `reset_inspect_ca`. |
 | **method** | One call of the socket API, for example `register_route`. |
-| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes. A client stops when the major number differs from its own. |
-| **MCP tool** | One function an agent can call through the MCP shim. There are six: `register_route`, `unregister_route`, `list_routes`, `find_free_port`, `get_logs`, `status`. |
+| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes, `1.3` the forward proxy. A client stops when the major number differs from its own. |
+| **MCP tool** | One function an agent can call through the MCP shim. There are seven: `register_route`, `unregister_route`, `list_routes`, `find_free_port`, `get_logs`, `status`, `get_proxy`. |
 | **API example** | One JSON file in `api/examples/`. Both the Rust and the Swift tests decode every example, so the two type sets stay equal. |
 
 ## Behaviour

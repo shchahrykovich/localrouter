@@ -191,6 +191,8 @@ public final class DaemonClient: Sendable {
     }
     public func config() async throws -> Config { try await call("get_config", Empty()) }
     public func setConfig(_ p: SetConfigParams) async throws -> SetConfigResult { try await call("set_config", p) }
+    public func proxy() async throws -> GetProxyResult { try await call("get_proxy", Empty()) }
+    public func resetInspectCa() async throws -> ResetCaResult { try await call("reset_inspect_ca", Empty()) }
 }
 
 /// Live log stream on its own connection and thread.

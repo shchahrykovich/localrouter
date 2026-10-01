@@ -11,17 +11,20 @@ use std::time::{Duration, Instant};
 
 use localrouter_core::api::{
     self, ApiError, CaState, CaStatus, ErrorCode, FindFreePortParams, FindFreePortResult, GetLogsParams, GetLogsResult,
-    HelloParams, HelloResult, HostParams, ListRoutesResult, PortStatus, RegisterRouteResult, ResetCaResult, RouteView,
-    SetConfigParams, SetConfigResult, StatusResult, UnregisterRouteResult,
+    GetProxyResult, HelloParams, HelloResult, HostParams, ListRoutesResult, PortStatus, ProxyStatus, RegisterRouteResult,
+    ResetCaResult, RouteView, SetConfigParams, SetConfigResult, StatusResult, UnregisterRouteResult,
 };
 use localrouter_core::config::Config;
+use localrouter_core::forward::ForwardProxy;
+use localrouter_core::inspect::{self, InspectSet};
 use localrouter_core::logs::RequestLog;
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
 use localrouter_core::tcp::{self, TcpRouteInfo};
-use localrouter_core::tls::{CertStore, LocalCa};
+use localrouter_core::tls::{CaKind, CaLoad, CertStore, LocalCa};
+use localrouter_core::upstream::Upstream;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +40,11 @@ pub struct Shared {
     pub config: RwLock<Config>,
     pub http_port: AtomicU16,
     pub https_port: AtomicU16,
+    /// Hosts the forward proxy inspects (ADR 06), from `inspect_hosts`.
+    pub inspect: RwLock<InspectSet>,
+    /// The forward proxy port while bound, else `0`. The proxy reads it for
+    /// its loop check (I9).
+    pub proxy_port: Arc<AtomicU16>,
 }
 
 impl RouteSource for Shared {
@@ -60,6 +68,15 @@ struct TcpHandle {
     cancel: CancellationToken,
 }
 
+/// The bound forward proxy port (ADR 06). Cancelling closes the listeners
+/// and every open proxy connection (I2).
+struct ProxyHandle {
+    /// `proxy_port` from the config when it was bound (`0` = any port).
+    configured: u16,
+    port: u16,
+    cancel: CancellationToken,
+}
+
 #[derive(Default)]
 struct Problems {
     ca: Option<String>,
@@ -68,6 +85,10 @@ struct Problems {
     https: Option<PortStatus>,
     /// TCP routes whose port could not be bound at start.
     listen_failed: Vec<String>,
+    /// Why the inspection CA could not be loaded or made.
+    inspect_ca: Option<String>,
+    /// Why the proxy port is not bound while it should be.
+    proxy: Vec<String>,
 }
 
 pub struct Daemon {
@@ -79,15 +100,22 @@ pub struct Daemon {
     pub shared: Arc<Shared>,
     pub log: Arc<RequestLog>,
     pub certs: Arc<CertStore>,
+    /// The inspection CA's leaves, only for names in the inspect set (I3).
+    pub inspect_certs: Arc<CertStore>,
     pub proxy: Arc<Proxy>,
+    pub forward: Arc<ForwardProxy>,
     pub shutdown: CancellationToken,
     pids: PidWatch,
     tcp: Mutex<HashMap<String, TcpHandle>>,
+    proxy_listener: Mutex<Option<ProxyHandle>>,
     problems: Mutex<Problems>,
-    trust_cache: Mutex<Option<(Instant, Option<bool>)>>,
+    trust_cache: TrustCache,
+    inspect_trust_cache: TrustCache,
     write: tokio::sync::Mutex<()>,
     refusals: RefusalLog,
 }
+
+type TrustCache = Mutex<Option<(Instant, Option<bool>)>>;
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ApiError {
     ApiError::new(code, message)
@@ -107,6 +135,8 @@ impl Daemon {
             config: RwLock::new(config.value.clone()),
             http_port: AtomicU16::new(0),
             https_port: AtomicU16::new(0),
+            inspect: RwLock::new(InspectSet::new(&config.value.inspect_hosts)),
+            proxy_port: Arc::new(AtomicU16::new(0)),
         });
         if (config.problem.is_some() || !paths.config().exists())
             && let Err(e) = store::save_config(&paths.config(), &config.value)
@@ -125,8 +155,22 @@ impl Daemon {
             }),
         ));
 
+        // The inspection CA is loaded when it exists, never made at start (I5).
+        let (inspect_ca, inspect_problem) = match LocalCa::load_existing(&paths, CaKind::Inspection) {
+            None => (None, None),
+            Some(CaLoad::Ready(ca)) => (Some(*ca), None),
+            Some(CaLoad::Broken(why)) => {
+                tracing::error!("the inspection CA cannot be used: {why}");
+                (None, Some(why))
+            }
+        };
+        let set = shared.clone();
+        let inspect_certs =
+            Arc::new(CertStore::inspection(inspect_ca, Arc::new(move |name: &str| set.inspect.read().unwrap().matches(name))));
+
         let loaded = store::load_routes(&paths.routes());
-        let mut problems = Problems { ca: ca_problem, routes_file: loaded.problem, ..Default::default() };
+        let mut problems =
+            Problems { ca: ca_problem, routes_file: loaded.problem, inspect_ca: inspect_problem, ..Default::default() };
         if let Some(p) = &config.problem {
             tracing::warn!("{p}");
         }
@@ -162,6 +206,15 @@ impl Daemon {
                     Box::pin(async move { Some(this.upgrade()?.status().await) })
                 })),
             });
+            let forward = Arc::new(ForwardProxy {
+                instance: instance.clone(),
+                router: proxy.clone(),
+                upstream: Arc::new(upstream()),
+                log: log.clone(),
+                local_certs: certs.clone(),
+                inspect_certs: inspect_certs.clone(),
+                own_port: shared.proxy_port.clone(),
+            });
             Self {
                 paths,
                 instance,
@@ -169,12 +222,16 @@ impl Daemon {
                 shared,
                 log,
                 certs,
+                inspect_certs,
                 proxy,
+                forward,
                 shutdown: CancellationToken::new(),
                 pids,
                 tcp: Mutex::new(HashMap::new()),
+                proxy_listener: Mutex::new(None),
                 problems: Mutex::new(problems),
                 trust_cache: Mutex::new(None),
+                inspect_trust_cache: Mutex::new(None),
                 write: tokio::sync::Mutex::new(()),
                 refusals: RefusalLog::new(),
             }
@@ -312,6 +369,68 @@ impl Daemon {
         self.problems.lock().unwrap().listen_failed.retain(|h| h != host);
     }
 
+    // ---- forward proxy port (ADR 06)
+
+    /// Bind the proxy port at start when the config says so. A taken port is
+    /// reported in `status.proxy`, not fatal.
+    pub fn start_saved_proxy(self: &Arc<Self>) {
+        let config = self.config();
+        if !config.proxy_enabled {
+            return;
+        }
+        match bind_proxy(config.proxy_port) {
+            Ok((listeners, port)) => self.start_proxy(listeners, config.proxy_port, port),
+            Err(e) => {
+                tracing::error!("the forward proxy is off: {}", e.message);
+                self.problems.lock().unwrap().proxy = vec![e.message];
+            }
+        }
+    }
+
+    fn start_proxy(self: &Arc<Self>, listeners: Vec<std::net::TcpListener>, configured: u16, port: u16) {
+        let cancel = self.shutdown.child_token();
+        for l in listeners {
+            let Ok(listener) = TcpListener::from_std(l) else { continue };
+            let this = self.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (stream, peer) = tokio::select! {
+                        r = listener.accept() => match r {
+                            Ok(x) => x,
+                            Err(_) => { tokio::time::sleep(Duration::from_millis(50)).await; continue; }
+                        },
+                        _ = cancel.cancelled() => return,
+                    };
+                    // Loopback only, whatever allow_lan says (I1). The
+                    // sockets are bound to loopback; this is the second check.
+                    if !listen::is_loopback_peer(peer.ip()) {
+                        this.refusals.refused(peer);
+                        continue;
+                    }
+                    let _ = stream.set_nodelay(true);
+                    tokio::spawn(this.forward.clone().serve(stream, peer, cancel.child_token()));
+                }
+            });
+        }
+        self.shared.proxy_port.store(port, Ordering::Relaxed);
+        self.problems.lock().unwrap().proxy.clear();
+        if let Some(old) = self.proxy_listener.lock().unwrap().replace(ProxyHandle { configured, port, cancel }) {
+            old.cancel.cancel();
+        }
+        tracing::info!("forward proxy on 127.0.0.1:{port} and [::1]:{port}");
+    }
+
+    /// Close the proxy listeners and every open proxy connection (I2).
+    fn stop_proxy(&self) {
+        if let Some(handle) = self.proxy_listener.lock().unwrap().take() {
+            handle.cancel.cancel();
+            tracing::info!("forward proxy off");
+        }
+        self.shared.proxy_port.store(0, Ordering::Relaxed);
+        self.problems.lock().unwrap().proxy.clear();
+    }
+
     // ---- owner processes
 
     pub async fn remove_owned_by(self: &Arc<Self>, pid: u32) {
@@ -349,6 +468,7 @@ impl Daemon {
 
     pub async fn status(&self) -> StatusResult {
         let trusted = if self.certs.has_ca() { self.ca_trusted().await } else { None };
+        let proxy = self.proxy_status().await;
         let problems = self.problems.lock().unwrap();
         let empty = |configured| PortStatus { configured, port: None, bound: vec![], errors: vec![] };
         let config = self.config();
@@ -378,29 +498,44 @@ impl Daemon {
             routes: self.shared.routes.read().unwrap().len(),
             routes_file_problem,
             listen_failed,
+            proxy: Some(proxy),
         }
+    }
+
+    async fn proxy_status(&self) -> ProxyStatus {
+        let config = self.config();
+        let bound_port = self.proxy_listener.lock().unwrap().as_ref().map(|h| h.port);
+        let bound = bound_port.map_or_else(Vec::new, |p| vec![format!("127.0.0.1:{p}"), format!("[::1]:{p}")]);
+        let errors = self.problems.lock().unwrap().proxy.clone();
+        ProxyStatus {
+            enabled: config.proxy_enabled,
+            configured: config.proxy_port,
+            port: bound_port,
+            bound,
+            errors,
+            inspect_ca: self.inspect_ca_status().await,
+        }
+    }
+
+    /// `None` until the inspection CA exists (I5).
+    async fn inspect_ca_status(&self) -> Option<CaStatus> {
+        let pem_path = self.paths.inspect_ca_pem().display().to_string();
+        if self.inspect_certs.has_ca() {
+            let trusted = check_trust(self.paths.inspect_ca_pem(), &self.inspect_trust_cache).await;
+            return Some(CaStatus { state: CaState::Ok, problem: None, pem_path, common_name: self.inspect_certs.common_name(), trusted });
+        }
+        let problem = self.problems.lock().unwrap().inspect_ca.clone()?;
+        Some(CaStatus { state: CaState::Broken, problem: Some(problem), pem_path, common_name: None, trusted: None })
     }
 
     /// Ask macOS whether `ca.pem` is trusted for TLS. Cached for 10 seconds.
     async fn ca_trusted(&self) -> Option<bool> {
-        if let Some((at, value)) = *self.trust_cache.lock().unwrap()
-            && at.elapsed() < Duration::from_secs(10)
-        {
-            return value;
-        }
-        let pem = self.paths.ca_pem();
-        let out = tokio::process::Command::new("/usr/bin/security")
-            .args(["verify-cert", "-L", "-q", "-p", "ssl", "-c"])
-            .arg(&pem)
-            .output()
-            .await;
-        let value = out.ok().map(|o| o.status.success());
-        *self.trust_cache.lock().unwrap() = Some((Instant::now(), value));
-        value
+        check_trust(self.paths.ca_pem(), &self.trust_cache).await
     }
 
     pub fn forget_trust_cache(&self) {
         *self.trust_cache.lock().unwrap() = None;
+        *self.inspect_trust_cache.lock().unwrap() = None;
     }
 
     fn view(&self, route: &Route) -> RouteView {
@@ -599,7 +734,7 @@ impl Daemon {
         self.config()
     }
 
-    pub async fn set_config(&self, p: SetConfigParams) -> Result<SetConfigResult, ApiError> {
+    pub async fn set_config(self: &Arc<Self>, p: SetConfigParams) -> Result<SetConfigResult, ApiError> {
         let _guard = self.write.lock().await;
         // Start from the file, not from memory: ports are edited there by
         // hand, and a Settings switch must not put the old ones back (ADR 04,
@@ -624,13 +759,69 @@ impl Daemon {
             }
             new.log_size = v;
         }
+        if let Some(v) = p.proxy_enabled {
+            new.proxy_enabled = v;
+        }
+        if let Some(v) = p.proxy_port {
+            new.proxy_port = v;
+        }
+        if let Some(list) = &p.inspect_hosts {
+            new.inspect_hosts = inspect::normalize(list).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
+        }
         if new.http_port != 0 && new.http_port == new.https_port {
             return Err(err(ErrorCode::InvalidRequest, "http_port and https_port must differ"));
         }
+        // On macOS a loopback socket can bind next to the wildcard one of
+        // port 80 and take its loopback traffic: refuse the shared ports.
+        if new.proxy_port != 0 && (new.proxy_port == new.http_port || new.proxy_port == new.https_port) {
+            return Err(err(ErrorCode::InvalidRequest, "proxy_port must differ from http_port and https_port"));
+        }
+
+        // The proxy port: bind the new pair before anything is written, so a
+        // taken port changes nothing (I12). Only when the call names a proxy
+        // field: another switch must not fail on a port taken at start.
+        let current = self.proxy_listener.lock().unwrap().as_ref().map(|h| h.configured);
+        let mut new_listener = None;
+        let mut stop_listener = false;
+        if p.proxy_enabled.is_some() || p.proxy_port.is_some() {
+            if !new.proxy_enabled {
+                stop_listener = current.is_some();
+            } else if current != Some(new.proxy_port) {
+                new_listener = Some(bind_proxy(new.proxy_port)?);
+            }
+        }
+
+        // The inspection CA is made the first time the inspect set is not
+        // empty (I5), and never replaced here (I4).
+        if p.inspect_hosts.is_some() && !new.inspect_hosts.is_empty() && !self.inspect_certs.has_ca() {
+            if let Some(problem) = self.problems.lock().unwrap().inspect_ca.clone() {
+                return Err(err(
+                    ErrorCode::CaUnavailable,
+                    format!("the inspection CA cannot be used: {problem}. Run `{} proxy ca reset --yes`", self.instance.cli()),
+                ));
+            }
+            match LocalCa::load_or_create_kind(&self.paths, &self.instance, CaKind::Inspection) {
+                CaLoad::Ready(ca) => {
+                    tracing::info!("made the inspection CA {}", ca.common_name());
+                    self.inspect_certs.set_ca(Some(*ca));
+                    self.forget_trust_cache();
+                }
+                CaLoad::Broken(why) => return Err(err(ErrorCode::CaUnavailable, why)),
+            }
+        }
+
+        // A failed write drops the new listeners unused (I4).
         store::save_config(&self.paths.config(), &new)
             .map_err(|e| err(ErrorCode::Io, format!("could not save config.json: {e}")))?;
         *self.shared.config.write().unwrap() = new.clone();
+        // New CONNECTs use the new set; open tunnels stay tunnels.
+        *self.shared.inspect.write().unwrap() = InspectSet::new(&new.inspect_hosts);
         self.log.set_capacity(new.log_size);
+        if let Some((listeners, port)) = new_listener {
+            self.start_proxy(listeners, new.proxy_port, port);
+        } else if stop_listener {
+            self.stop_proxy();
+        }
         let restart_needed = (new.http_port, new.https_port) != self.start_ports;
         Ok(SetConfigResult { config: new, restart_needed })
     }
@@ -644,6 +835,186 @@ impl Daemon {
         self.forget_trust_cache();
         tracing::warn!("CA reset: new CA {common_name}");
         Ok(ResetCaResult { pem_path: self.paths.ca_pem().display().to_string(), common_name })
+    }
+
+    /// Everything a client needs to use the forward proxy (ADR 06, change 3).
+    pub async fn get_proxy(&self) -> GetProxyResult {
+        let config = self.config();
+        let status = self.proxy_status().await;
+        let port = status.port.unwrap_or(config.proxy_port);
+        let url = format!("http://127.0.0.1:{port}");
+        let cli = self.instance.cli();
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("HTTPS_PROXY".to_string(), url.clone());
+        env.insert("HTTP_PROXY".to_string(), url.clone());
+        // Dev servers are reached directly, as without the proxy.
+        env.insert("NO_PROXY".to_string(), "localhost,127.0.0.1,::1,.localhost".to_string());
+        // The built-in fetch of recent Node.js reads HTTPS_PROXY only with this.
+        env.insert("NODE_USE_ENV_PROXY".to_string(), "1".to_string());
+        let ca_ready = status.inspect_ca.as_ref().is_some_and(|ca| ca.state == CaState::Ok);
+        if ca_ready {
+            env.insert("NODE_EXTRA_CA_CERTS".to_string(), self.paths.inspect_ca_pem().display().to_string());
+        }
+        let chrome_args = vec![
+            format!("--user-data-dir={}", self.paths.chrome_profile().display()),
+            format!("--proxy-server={url}"),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+        ];
+        let inspect_set = self.shared.inspect.read().unwrap().patterns();
+        let mut notes = vec![];
+        if !config.proxy_enabled {
+            notes.push(format!("The proxy is off. Programs that use it cannot connect. Turn it on: {cli} proxy on"));
+        } else if status.port.is_none() {
+            notes.push(format!("The proxy port is not bound: {}", status.errors.join("; ")));
+        }
+        match &status.inspect_ca {
+            Some(ca) if ca.state == CaState::Broken => notes.push(format!(
+                "The inspection CA cannot be used: {}. Inspected hosts fail. Run: {cli} proxy ca reset --yes",
+                ca.problem.as_deref().unwrap_or("unknown problem")
+            )),
+            Some(ca) if !inspect_set.is_empty() && ca.trusted == Some(false) => notes.push(format!(
+                "The inspection CA is not trusted in the login keychain: Chrome will refuse inspected hosts. Run: {cli} proxy trust"
+            )),
+            _ => {}
+        }
+        GetProxyResult {
+            enabled: config.proxy_enabled,
+            url,
+            port,
+            bound: status.bound,
+            errors: status.errors,
+            inspect_hosts: config.inspect_hosts,
+            inspect_set,
+            inspect_ca: status.inspect_ca,
+            env,
+            chrome_args,
+            notes,
+        }
+    }
+
+    /// Delete the inspection CA and make a new one. A user action, not an
+    /// MCP tool (ADR 06, change 2).
+    pub async fn reset_inspect_ca(&self) -> Result<ResetCaResult, ApiError> {
+        let _guard = self.write.lock().await;
+        let ca = LocalCa::reset_kind(&self.paths, &self.instance, CaKind::Inspection)
+            .map_err(|e| err(ErrorCode::CaUnavailable, format!("could not make a new inspection CA: {e}")))?;
+        let common_name = ca.common_name().to_string();
+        self.inspect_certs.set_ca(Some(ca));
+        self.problems.lock().unwrap().inspect_ca = None;
+        self.forget_trust_cache();
+        tracing::warn!("inspection CA reset: new CA {common_name}");
+        Ok(ResetCaResult { pem_path: self.paths.inspect_ca_pem().display().to_string(), common_name })
+    }
+}
+
+/// Ask macOS whether a CA file is trusted for TLS. Cached for 10 seconds.
+async fn check_trust(pem: std::path::PathBuf, cache: &TrustCache) -> Option<bool> {
+    if let Some((at, value)) = *cache.lock().unwrap()
+        && at.elapsed() < Duration::from_secs(10)
+    {
+        return value;
+    }
+    let out = tokio::process::Command::new("/usr/bin/security")
+        .args(["verify-cert", "-L", "-q", "-p", "ssl", "-c"])
+        .arg(&pem)
+        .output()
+        .await;
+    let value = out.ok().map(|o| o.status.success());
+    *cache.lock().unwrap() = Some((Instant::now(), value));
+    value
+}
+
+/// Bind the proxy port on 127.0.0.1 and ::1, both or neither (I1).
+fn bind_proxy(port: u16) -> Result<(Vec<std::net::TcpListener>, u16), ApiError> {
+    tcp_listen::bind_loopback(port).map_err(|e| {
+        let why = if e.kind() == std::io::ErrorKind::AddrInUse {
+            format!("port {port} is in use by another program")
+        } else {
+            e.to_string()
+        };
+        err(ErrorCode::PortInUse, format!("cannot listen on 127.0.0.1:{port} and [::1]:{port}: {why}"))
+    })
+}
+
+/// The upstream client: the macOS trust store and resolver. Debug builds
+/// accept two test settings for the end-to-end test, as they accept
+/// `LOCALROUTER_TEST_API_VERSION`; release builds ignore them.
+fn upstream() -> Upstream {
+    use localrouter_core::upstream::{SystemResolver, platform_tls};
+    #[cfg(debug_assertions)]
+    if let Some(test) = test_upstream::from_env() {
+        return test;
+    }
+    let tls = platform_tls().unwrap_or_else(|e| {
+        // Never less safe: without the platform verifier, trust nothing.
+        tracing::error!("cannot use the macOS trust store: {e}; the proxy refuses every TLS server");
+        let config = rustls::ClientConfig::builder_with_provider(localrouter_core::tls::provider())
+            .with_safe_default_protocol_versions()
+            .expect("ring supports the default versions")
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+        Arc::new(config)
+    });
+    Upstream::new(tls, Arc::new(SystemResolver))
+}
+
+/// `LOCALROUTER_TEST_RESOLVE=test.example=127.0.0.1:4443` sends a name to a
+/// local server; `LOCALROUTER_TEST_UPSTREAM_CA=<pem>` trusts only that CA.
+#[cfg(debug_assertions)]
+mod test_upstream {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    use localrouter_core::upstream::{BoxFuture, Resolve, SystemResolver, Upstream, platform_tls};
+
+    struct MapResolver(HashMap<String, SocketAddr>);
+
+    impl Resolve for MapResolver {
+        fn resolve(&self, host: &str, port: u16) -> BoxFuture<std::io::Result<Vec<SocketAddr>>> {
+            match self.0.get(host) {
+                Some(addr) => {
+                    let addr = *addr;
+                    Box::pin(async move { Ok(vec![addr]) })
+                }
+                None => SystemResolver.resolve(host, port),
+            }
+        }
+    }
+
+    pub fn from_env() -> Option<Upstream> {
+        let names = std::env::var("LOCALROUTER_TEST_RESOLVE").ok();
+        let ca = std::env::var("LOCALROUTER_TEST_UPSTREAM_CA").ok();
+        if names.is_none() && ca.is_none() {
+            return None;
+        }
+        let map = names
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|pair| {
+                let (name, addr) = pair.split_once('=')?;
+                Some((name.to_string(), addr.parse().ok()?))
+            })
+            .collect();
+        let tls = match ca {
+            Some(path) => {
+                use rustls::pki_types::pem::PemObject;
+                let mut roots = rustls::RootCertStore::empty();
+                for cert in rustls::pki_types::CertificateDer::pem_file_iter(&path).ok()?.flatten() {
+                    roots.add(cert).ok()?;
+                }
+                let config = rustls::ClientConfig::builder_with_provider(localrouter_core::tls::provider())
+                    .with_safe_default_protocol_versions()
+                    .ok()?
+                    .with_root_certificates(roots)
+                    .with_no_client_auth();
+                Arc::new(config)
+            }
+            None => platform_tls().ok()?,
+        };
+        tracing::warn!("test upstream settings in use");
+        Some(Upstream::new(tls, Arc::new(MapResolver(map))))
     }
 }
 

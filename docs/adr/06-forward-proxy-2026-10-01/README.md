@@ -1,6 +1,8 @@
 # ADR 06. Forward proxy: send Chrome or Claude Code through LocalRouter
 
-**Status:** Proposed on 2026-10-01. Not built.
+**Status:** Accepted. Built on 2026-10-01: tasks 1 to 10 and the automated
+end-to-end test E1d. Open: manual tests M1 to M6, the decision on U2, and the
+release (task 12). Differences from the plan: [08-tasks.md](08-tasks.md#plan-vs-actual).
 
 ## Summary
 

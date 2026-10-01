@@ -95,6 +95,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func showMenu() {
         let menu = NSMenu()
         menu.addItem(menuItem("Open LocalRouter", #selector(openWindow)))
+        // Only when Google Chrome is installed, checked at each open (ADR 06, I17).
+        if model.chromeInstalled {
+            menu.addItem(menuItem("Open Chrome via Proxy", #selector(openChromeViaProxy)))
+        }
         menu.addItem(.separator())
         let helpHost = model.agentHelpURL.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: "")
         menu.addItem(menuItem("Open Agent Instructions (\(helpHost))", #selector(openAgentHelp)))
@@ -121,6 +125,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Menu actions run while the menu is closing; open the window after it.
     @objc private func openWindow() {
         DispatchQueue.main.async { self.showWindow() }
+    }
+
+    /// The window opens to show the result: the proxy address, or why
+    /// Chrome was not started.
+    @objc private func openChromeViaProxy() {
+        Task { @MainActor in
+            await model.openChromeViaProxy()
+            showWindow()
+        }
     }
 
     @objc private func openAgentHelp() { model.open(model.agentHelpURL) }

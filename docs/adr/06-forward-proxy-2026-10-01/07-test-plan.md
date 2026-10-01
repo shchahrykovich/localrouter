@@ -1,6 +1,7 @@
 # 7. Test plan
 
-**Status:** Proposed. These tests are to be written; none exists yet.
+**Status:** The automated tests T1 to T14 and E1d exist and pass (2026-10-01).
+The manual tests M1 to M6 have not been run yet.
 
 ## What the repository can run today
 

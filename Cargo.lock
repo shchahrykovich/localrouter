@@ -1014,23 +1014,26 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "localrouter"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "clap",
  "localrouter-core",
+ "rcgen",
  "reqwest",
  "rmcp",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
 name = "localrouter-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1040,6 +1043,7 @@ dependencies = [
  "percent-encoding",
  "rcgen",
  "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "tempfile",
@@ -1050,17 +1054,19 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tower-http",
+ "tower-service",
  "tracing",
  "x509-parser",
 ]
 
 [[package]]
 name = "localrouterd"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "libc",
  "localrouter-core",
+ "rustls",
  "serde",
  "serde_json",
  "socket2",

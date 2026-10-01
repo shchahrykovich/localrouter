@@ -1,6 +1,7 @@
 # 8. Tasks
 
-**Status:** Proposed. No task is started.
+**Status:** Tasks 1 to 10 are done (2026-10-01). Task 11: E1d is done, the
+manual tests are not. Task 12 is open.
 
 | # | Task | Depends on |
 |---|---|---|
@@ -167,3 +168,22 @@ Actual table, and flip the README status.
 | I16 older clients decode logs | 1, 6 |
 | I17 Chrome item only with Chrome; own profile | 10 |
 | I18 one Chrome argument list | 5, 7, 10 |
+
+## Plan vs actual
+
+What the build did differently from this plan, and why.
+
+| # | Planned | Built | Why |
+|---|---|---|---|
+| 1 | An empty hook function for ADR 07 in `forward.rs` and `proxy.rs` | Not added | A function that does nothing cannot be tested. ADR 07 adds it with its first rule. |
+| 2 | Nothing about the proxy port and ports 80/443 | `proxy_port` must differ from `http_port` and `https_port` (`invalid_request`) | On macOS a socket on `127.0.0.1:80` can bind next to the router's `0.0.0.0:80` and take its loopback traffic. |
+| 3 | `set_config` binds the proxy port | It binds only when the call names `proxy_enabled` or `proxy_port` | A Settings switch (fallback, LAN) must not fail because the proxy port was taken at start. |
+| 4 | The inspection leaf is chosen by SNI | It is chosen by the `CONNECT` host | The upstream connection goes to the `CONNECT` host, so the client sees a certificate for the host it is really connected to. |
+| 5 | Not said | A host in the inspect set while the inspection CA is missing or broken is tunnelled | Never less safe: nothing is read, and `get_proxy` has a note. |
+| 6 | Not said | `CONNECT shop.localhost:443` is logged with mode `inspect` | The router reads those requests, so they are not a tunnel. |
+| 7 | `proxy chrome` opens Chrome | It turns the proxy on first, as the menu item does; `--print` changes nothing | One behaviour for the CLI and the app. |
+| 8 | The Chrome profile is in `~/Library/Caches/LocalRouter<suffix>/chrome-proxy` | The same, and `<LOCALROUTER_HOME>/caches/chrome-proxy` when `LOCALROUTER_HOME` is set | Tests never touch `~/Library`. |
+| 9 | E1 uses "a test-only upstream resolver" | Debug builds of the daemon read `LOCALROUTER_TEST_RESOLVE` and `LOCALROUTER_TEST_UPSTREAM_CA` | Like `LOCALROUTER_TEST_API_VERSION`: release builds ignore them. |
+| 10 | A 502 page for every upstream failure | A certificate failure has its own title: "The server's certificate is not trusted" | It is not an outage, and the user should not look for one. |
+| 11 | `instance-names.json` unchanged | It gained `caches_folder`, `inspect_ca_name_prefix` and `proxy_port` | The Rust and Swift copies of these names are checked against it. |
+| 12 | A new file `apps/daemon/src/proxy_listen.rs` | The listener is in `daemon.rs` (`start_proxy`, `stop_proxy`) and binds with `tcp_listen::bind_loopback` | The loopback pair, both or neither, already existed for TCP routes; a second copy would drift. |

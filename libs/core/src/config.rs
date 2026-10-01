@@ -20,6 +20,13 @@ pub struct Config {
     pub allow_lan: bool,
     /// Entries kept in the request log.
     pub log_size: usize,
+    /// Bind the forward proxy port on loopback (ADR 06).
+    pub proxy_enabled: bool,
+    /// The forward proxy port. `0` means "any free port" (tests).
+    pub proxy_port: u16,
+    /// Host patterns whose `CONNECT`s are inspected instead of tunnelled:
+    /// `api.example.com` or `*.example.com`.
+    pub inspect_hosts: Vec<String>,
 }
 
 impl Config {
@@ -27,7 +34,7 @@ impl Config {
     /// other instance 7080 and 7443 (ADR 04).
     pub fn defaults_for(instance: &Instance) -> Self {
         let (http_port, https_port) = instance.default_ports();
-        Self { http_port, https_port, ..Self::default() }
+        Self { http_port, https_port, proxy_port: instance.default_proxy_port(), ..Self::default() }
     }
 
     /// Parse `config.json`. A field the file does not have gets the
@@ -53,6 +60,9 @@ impl Default for Config {
             fallback: true,
             allow_lan: false,
             log_size: 1000,
+            proxy_enabled: false,
+            proxy_port: Instance::release().default_proxy_port(),
+            inspect_hosts: vec![],
         }
     }
 }
@@ -73,6 +83,29 @@ mod tests {
         let d = Config::defaults_for(&dev());
         assert_eq!((d.http_port, d.https_port), (7080, 7443));
         assert_eq!(d.log_size, r.log_size);
+    }
+
+    // ADR 06, T8: the proxy is off by default, on the instance's own port.
+    #[test]
+    fn proxy_fields_default_per_instance() {
+        let r = Config::defaults_for(&Instance::release());
+        assert_eq!((r.proxy_enabled, r.proxy_port, r.inspect_hosts.len()), (false, 8877, 0));
+        let d = Config::defaults_for(&dev());
+        assert_eq!((d.proxy_enabled, d.proxy_port), (false, 7877));
+        // A file written before ADR 06 has none of the fields.
+        let old = Config::parse(r#"{"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":5}"#, &dev())
+            .unwrap();
+        assert_eq!((old.proxy_enabled, old.proxy_port, old.inspect_hosts.len()), (false, 7877, 0));
+    }
+
+    #[test]
+    fn proxy_fields_round_trip() {
+        let mut c = Config::defaults_for(&dev());
+        c.proxy_enabled = true;
+        c.proxy_port = 9000;
+        c.inspect_hosts = vec!["api.example.com".into(), "*.example.org".into()];
+        let text = serde_json::to_string(&c).unwrap();
+        assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
     }
 
     #[test]

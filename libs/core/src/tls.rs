@@ -3,6 +3,10 @@
 //! See ADR 01, change 4. Invariants: I5 (leaf only for routed `.localhost`
 //! names), I6 (`ca.key` is 0600 and never leaves the folder), I7 (an existing
 //! CA is never replaced except by an explicit reset).
+//!
+//! The forward proxy has a second CA, the inspection CA in `inspect-ca/`
+//! (ADR 06, change 2). It is made with the same code, only when first needed,
+//! and its leaves are only for names in the inspect set (ADR 06, I3 to I5).
 
 use std::collections::HashMap;
 use std::fs;
@@ -40,7 +44,38 @@ pub enum TlsError {
     Rustls(#[from] rustls::Error),
 }
 
-/// A loaded local CA.
+/// Which of the two CAs: the local CA for `.localhost` names, or the
+/// inspection CA of the forward proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaKind {
+    Local,
+    Inspection,
+}
+
+impl CaKind {
+    fn dir(self, paths: &Paths) -> std::path::PathBuf {
+        match self {
+            CaKind::Local => paths.ca_dir(),
+            CaKind::Inspection => paths.inspect_ca_dir(),
+        }
+    }
+
+    fn folder_name(self) -> &'static str {
+        match self {
+            CaKind::Local => "ca",
+            CaKind::Inspection => "inspect-ca",
+        }
+    }
+
+    fn name_prefix(self, instance: &Instance) -> String {
+        match self {
+            CaKind::Local => instance.ca_name_prefix(),
+            CaKind::Inspection => instance.inspect_ca_name_prefix(),
+        }
+    }
+}
+
+/// A loaded CA: the local CA or the inspection CA.
 pub struct LocalCa {
     issuer: Issuer<'static, KeyPair>,
     cert_der: CertificateDer<'static>,
@@ -73,24 +108,44 @@ impl LocalCa {
     /// Load `ca/`, or create it when it does not exist. Never replaces an
     /// existing CA: a damaged one is reported as [`CaLoad::Broken`].
     pub fn load_or_create(paths: &Paths, instance: &Instance) -> CaLoad {
-        remove_leftover_tmp_dirs(&paths.data);
-        if !paths.ca_dir().exists() {
-            return match Self::create(paths, instance) {
+        Self::load_or_create_kind(paths, instance, CaKind::Local)
+    }
+
+    /// [`LocalCa::load_or_create`] for either CA.
+    pub fn load_or_create_kind(paths: &Paths, instance: &Instance, kind: CaKind) -> CaLoad {
+        remove_leftover_tmp_dirs(&paths.data, kind);
+        if !kind.dir(paths).exists() {
+            return match Self::create(paths, instance, kind) {
                 Ok(ca) => CaLoad::Ready(Box::new(ca)),
                 Err(e) => CaLoad::Broken(format!("could not create the CA: {e}")),
             };
         }
-        match Self::load(paths) {
+        match Self::load(paths, kind) {
             Ok(ca) => CaLoad::Ready(Box::new(ca)),
             Err(reason) => CaLoad::Broken(reason),
         }
     }
 
-    fn load(paths: &Paths) -> Result<Self, String> {
-        let key_pem = fs::read_to_string(paths.ca_key())
-            .map_err(|e| format!("cannot read {}: {e}", paths.ca_key().display()))?;
-        let cert_pem = fs::read_to_string(paths.ca_pem())
-            .map_err(|e| format!("cannot read {}: {e}", paths.ca_pem().display()))?;
+    /// Load a CA only when its folder exists; never create one. The daemon
+    /// starts with this for the inspection CA (ADR 06, I5).
+    pub fn load_existing(paths: &Paths, kind: CaKind) -> Option<CaLoad> {
+        remove_leftover_tmp_dirs(&paths.data, kind);
+        if !kind.dir(paths).exists() {
+            return None;
+        }
+        Some(match Self::load(paths, kind) {
+            Ok(ca) => CaLoad::Ready(Box::new(ca)),
+            Err(reason) => CaLoad::Broken(reason),
+        })
+    }
+
+    fn load(paths: &Paths, kind: CaKind) -> Result<Self, String> {
+        let dir = kind.dir(paths);
+        let (key_path, pem_path) = (dir.join("ca.key"), dir.join("ca.pem"));
+        let key_pem =
+            fs::read_to_string(&key_path).map_err(|e| format!("cannot read {}: {e}", key_path.display()))?;
+        let cert_pem =
+            fs::read_to_string(&pem_path).map_err(|e| format!("cannot read {}: {e}", pem_path.display()))?;
         let key = KeyPair::from_pem(&key_pem).map_err(|e| format!("ca.key does not parse: {e}"))?;
         let der = pem_to_der(&cert_pem).ok_or("ca.pem holds no certificate")?;
         let common_name = common_name_of(&der).ok_or("ca.pem does not parse")?;
@@ -99,12 +154,13 @@ impl LocalCa {
     }
 
     /// Create a new CA into `ca.tmp-<pid>/`, then rename the folder to `ca/`,
-    /// so `ca/` either holds both files or does not exist.
-    fn create(paths: &Paths, instance: &Instance) -> Result<Self, TlsError> {
+    /// so `ca/` either holds both files or does not exist. The inspection CA
+    /// uses `inspect-ca.tmp-<pid>/` and `inspect-ca/`.
+    fn create(paths: &Paths, instance: &Instance, kind: CaKind) -> Result<Self, TlsError> {
         fs::create_dir_all(&paths.data)?;
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
         // The instance's name, so two CAs in one keychain tell which is which (ADR 04).
-        let common_name = format!("{} {}", instance.ca_name_prefix(), short_id(&key));
+        let common_name = format!("{} {}", kind.name_prefix(instance), short_id(&key));
 
         let mut params = CertificateParams::default();
         let mut dn = DistinguishedName::new();
@@ -117,7 +173,7 @@ impl LocalCa {
         params.not_before = now - time::Duration::days(1);
         params.not_after = now + time::Duration::days(CA_VALIDITY_DAYS);
         #[cfg(feature = "name-constraints")]
-        {
+        if kind == CaKind::Local {
             params.name_constraints = Some(rcgen::NameConstraints {
                 permitted_subtrees: vec![rcgen::GeneralSubtree::DnsName(crate::TLD.into())],
                 excluded_subtrees: vec![],
@@ -125,13 +181,13 @@ impl LocalCa {
         }
         let cert = params.self_signed(&key)?;
 
-        let tmp = paths.data.join(format!("ca.tmp-{}", std::process::id()));
+        let tmp = paths.data.join(format!("{}.tmp-{}", kind.folder_name(), std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir(&tmp)?;
         write_file(&tmp.join("ca.key"), key.serialize_pem().as_bytes(), 0o600)?;
         write_file(&tmp.join("ca.pem"), cert.pem().as_bytes(), 0o644)?;
         fsync_dir(&tmp)?;
-        fs::rename(&tmp, paths.ca_dir())?;
+        fs::rename(&tmp, kind.dir(paths))?;
         fsync_dir(&paths.data)?;
 
         let issuer = Issuer::new(params, key);
@@ -140,10 +196,15 @@ impl LocalCa {
 
     /// Delete the CA and make a new one. Only for an explicit user action.
     pub fn reset(paths: &Paths, instance: &Instance) -> Result<Self, TlsError> {
-        if paths.ca_dir().exists() {
-            fs::remove_dir_all(paths.ca_dir())?;
+        Self::reset_kind(paths, instance, CaKind::Local)
+    }
+
+    /// [`LocalCa::reset`] for either CA.
+    pub fn reset_kind(paths: &Paths, instance: &Instance, kind: CaKind) -> Result<Self, TlsError> {
+        if kind.dir(paths).exists() {
+            fs::remove_dir_all(kind.dir(paths))?;
         }
-        Self::create(paths, instance)
+        Self::create(paths, instance, kind)
     }
 
     /// A 90-day certificate for exactly one name.
@@ -198,10 +259,11 @@ fn fsync_dir(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.sync_all()
 }
 
-fn remove_leftover_tmp_dirs(data: &Path) {
+fn remove_leftover_tmp_dirs(data: &Path, kind: CaKind) {
+    let prefix = format!("{}.tmp-", kind.folder_name());
     let Ok(entries) = fs::read_dir(data) else { return };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with("ca.tmp-") {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
             let _ = fs::remove_dir_all(entry.path());
         }
     }
@@ -216,6 +278,7 @@ pub struct CertStore {
     ca: RwLock<Option<Arc<LocalCa>>>,
     leaves: Mutex<HashMap<String, (Arc<CertifiedKey>, Instant)>>,
     allow: AllowName,
+    kind: CaKind,
 }
 
 impl std::fmt::Debug for CertStore {
@@ -225,8 +288,20 @@ impl std::fmt::Debug for CertStore {
 }
 
 impl CertStore {
+    /// The store of the local CA: `.localhost` names only, and only those
+    /// `allow` accepts (a route serves them), plus `router.localhost`.
     pub fn new(ca: Option<LocalCa>, allow: AllowName) -> Self {
-        Self { ca: RwLock::new(ca.map(Arc::new)), leaves: Mutex::new(HashMap::new()), allow }
+        Self::with_kind(ca, allow, CaKind::Local)
+    }
+
+    /// The store of the inspection CA: names that are not `.localhost`, and
+    /// only those `allow` accepts (the inspect set at that moment, I3).
+    pub fn inspection(ca: Option<LocalCa>, allow: AllowName) -> Self {
+        Self::with_kind(ca, allow, CaKind::Inspection)
+    }
+
+    fn with_kind(ca: Option<LocalCa>, allow: AllowName, kind: CaKind) -> Self {
+        Self { ca: RwLock::new(ca.map(Arc::new)), leaves: Mutex::new(HashMap::new()), allow, kind }
     }
 
     /// Replace the CA (after a reset). Drops every cached leaf.
@@ -245,8 +320,18 @@ impl CertStore {
 
     /// A certificate for `name`, or `None` when the name must be refused (I5).
     pub fn cert_for(&self, name: &str) -> Option<Arc<CertifiedKey>> {
-        if host_key(name)? != HELP_HOST && !(self.allow)(name) {
-            return None;
+        match self.kind {
+            CaKind::Local => {
+                if host_key(name)? != HELP_HOST && !(self.allow)(name) {
+                    return None;
+                }
+            }
+            // Never a .localhost name: those belong to the local CA (I3).
+            CaKind::Inspection => {
+                if name.is_empty() || host_key(name).is_some() || !(self.allow)(name) {
+                    return None;
+                }
+            }
         }
         let name = name.trim_end_matches('.').to_ascii_lowercase();
         if let Some((cert, made)) = self.leaves.lock().unwrap().get(&name)
@@ -471,6 +556,62 @@ mod tests {
         let a = store.cert_for("shop.localhost").unwrap();
         let b = store.cert_for("shop.localhost").unwrap();
         assert!(Arc::ptr_eq(&a, &b), "cached");
+    }
+
+    // ADR 06, T5, I4: the inspection CA has its own folder, key mode and name.
+    #[test]
+    fn the_inspection_ca_is_its_own_ca() {
+        let (_d, p) = paths();
+        let dev = Instance::new("-dev").unwrap();
+        assert!(LocalCa::load_existing(&p, CaKind::Inspection).is_none(), "never made at load (I5)");
+        assert!(!p.inspect_ca_dir().exists());
+        fs::create_dir_all(p.data.join("inspect-ca.tmp-9")).unwrap();
+        let ca = ready(LocalCa::load_or_create_kind(&p, &dev, CaKind::Inspection));
+        assert!(!p.data.join("inspect-ca.tmp-9").exists(), "leftover tmp folder deleted");
+        assert!(ca.common_name().starts_with("LocalRouter-dev Inspection "), "{}", ca.common_name());
+        let mode = fs::metadata(p.inspect_ca_key()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!p.ca_dir().exists(), "the local CA is not touched");
+        let again = ready(LocalCa::load_existing(&p, CaKind::Inspection).unwrap());
+        assert_eq!(again.common_name(), ca.common_name(), "loaded, not replaced");
+        let new = LocalCa::reset_kind(&p, &dev, CaKind::Inspection).unwrap();
+        assert_ne!(new.common_name(), ca.common_name());
+    }
+
+    // ADR 06, T5, I4: a damaged inspection CA is reported, not replaced.
+    #[test]
+    fn a_damaged_inspection_ca_is_reported() {
+        let (_d, p) = paths();
+        ready(LocalCa::load_or_create_kind(&p, &Instance::release(), CaKind::Inspection));
+        fs::remove_file(p.inspect_ca_key()).unwrap();
+        match LocalCa::load_existing(&p, CaKind::Inspection).unwrap() {
+            CaLoad::Broken(why) => assert!(why.contains("ca.key"), "{why}"),
+            CaLoad::Ready(_) => panic!("a damaged CA must not load"),
+        }
+        match LocalCa::load_or_create_kind(&p, &Instance::release(), CaKind::Inspection) {
+            CaLoad::Broken(_) => {}
+            CaLoad::Ready(_) => panic!("must not be replaced"),
+        }
+        assert!(!p.inspect_ca_key().exists());
+    }
+
+    // ADR 06, T5, I3: the inspection store signs only names in the set, never
+    // a .localhost name, and the local store never signs those names.
+    #[test]
+    fn the_inspection_store_signs_only_inspect_set_names() {
+        let (_d, p) = paths();
+        let ca = ready(LocalCa::load_or_create_kind(&p, &Instance::release(), CaKind::Inspection));
+        let set = crate::inspect::InspectSet::new(&["api.example.com".into(), "*.shop.localhost".into()]);
+        let store = CertStore::inspection(Some(ca), Arc::new(move |n: &str| set.matches(n)));
+        assert!(store.cert_for("api.example.com").is_some());
+        assert!(store.cert_for("other.example.com").is_none());
+        assert!(store.cert_for("router.localhost").is_none());
+        assert!(store.cert_for("shop.localhost").is_none());
+        assert!(store.cert_for("").is_none());
+
+        let local = ready(LocalCa::load_or_create(&p, &Instance::release()));
+        let local = CertStore::new(Some(local), Arc::new(|_: &str| true));
+        assert!(local.cert_for("api.example.com").is_none(), "the local CA never signs internet names");
     }
 
     #[test]

@@ -7,7 +7,10 @@
       "https_port": 443,
       "fallback": true,
       "allow_lan": true,
-      "log_size": 1000
+      "log_size": 1000,
+      "proxy_enabled": false,
+      "proxy_port": 8877,
+      "inspect_hosts": []
     },
     "restart_needed": false
   }

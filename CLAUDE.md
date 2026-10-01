@@ -7,8 +7,9 @@ of ports: `https://feat-login.shop.localhost` for HTTP, `db.shop.localhost:15432
 for TCP. Coding agents manage routes through an MCP server. Design and
 decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
 `docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater),
-`docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path) and
-`docs/adr/05-folder-routes-2026-09-30/` (a folder served with no dev server).
+`docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path),
+`docs/adr/05-folder-routes-2026-09-30/` (a folder served with no dev server) and
+`docs/adr/06-forward-proxy-2026-10-01/` (a forward proxy for Chrome and Claude Code).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 
@@ -57,7 +58,10 @@ browser :80/:443 (by name), TCP clients :<listen_port> (by port) ─────
   proxy on hyper (`proxy.rs`), folder routes served from disk with
   tower-http's `ServeFile` (`folder.rs`), TCP byte copy (`tcp.rs`), local CA and per-name
   leaf certificates chosen by SNI (`tls.rs`), request log ring buffer
-  (`logs.rs`), socket API types (`api.rs`). No I/O at start; testable alone.
+  (`logs.rs`), socket API types (`api.rs`). The forward proxy (ADR 06):
+  `forward.rs` (absolute form, `CONNECT` tunnel or inspect), `upstream.rs`
+  (the only code that connects to other machines), `inspect.rs` (host
+  patterns). No I/O at start; testable alone.
 - `apps/daemon` (`localrouterd`): the **only writer** of the data folder. Binds
   the shared HTTP ports, one loopback listener pair per TCP route, serves the
   socket API (`socket.rs` dispatch → `daemon.rs` methods), watches owner pids
@@ -86,7 +90,7 @@ walk `api/examples/`, round-trip every file, and fail on a method without an
 example. Bump the major of `API_VERSION` only for breaking changes; clients
 refuse a different major.
 
-The MCP server exposes exactly six tools; `apps/cli/tests/mcp.rs` checks the
+The MCP server exposes exactly seven tools; `apps/cli/tests/mcp.rs` checks the
 list, so a new tool needs that test changed on purpose.
 
 ## Things that are easy to get wrong
@@ -131,7 +135,16 @@ list, so a new tool needs that test changed on purpose.
   close-on-exec only after creation. Keep a probe socket instead of re-binding
   a freed port (see `tcp_listen.rs` tests).
 - Debug builds of the daemon read `LOCALROUTER_TEST_API_VERSION` (used by the
-  version-mismatch test); release builds ignore it.
+  version-mismatch test), `LOCALROUTER_TEST_RESOLVE` and
+  `LOCALROUTER_TEST_UPSTREAM_CA` (the proxy end-to-end test); release builds
+  ignore them.
+- **The forward proxy (ADR 06)**: its port binds 127.0.0.1 and ::1 only, never
+  with `allow_lan`, and never the HTTP or HTTPS port. A `.localhost` name that
+  reaches it goes to the route table, never to DNS. Upstream TLS always uses a
+  verifying `ClientConfig` (`upstream::platform_tls`); never add an
+  accept-any switch there. The inspection CA (`inspect-ca/`) is made only when
+  `inspect_hosts` first becomes non-empty, and its `CertStore` never signs a
+  `.localhost` name. Tests set `proxy_port` 0 before turning the proxy on.
 
 ## Bundle and release
 

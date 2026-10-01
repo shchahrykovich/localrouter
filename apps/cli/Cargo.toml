@@ -17,7 +17,11 @@ rmcp = { version = "3", features = ["server", "transport-io", "macros"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+# E1d (ADR 06): a local HTTPS server with a test CA plays the internet.
+rcgen.workspace = true
 rmcp = { version = "3", features = ["client", "transport-child-process"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+rustls.workspace = true
 tempfile = "3"
 tokio.workspace = true
+tokio-rustls.workspace = true

@@ -36,15 +36,15 @@ fn is_error(result: &CallToolResult) -> bool {
     result.is_error == Some(true)
 }
 
-// I13
+// I13, ADR 06 I14: the seventh tool, get_proxy, was added on purpose.
 #[tokio::test]
-async fn exactly_six_tools_are_listed() {
+async fn exactly_seven_tools_are_listed() {
     let d = Daemon::start();
     let client = mcp_client(d.home()).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    assert_eq!(names, ["find_free_port", "get_logs", "list_routes", "register_route", "status", "unregister_route"]);
+    assert_eq!(names, ["find_free_port", "get_logs", "get_proxy", "list_routes", "register_route", "status", "unregister_route"]);
     let register = tools.iter().find(|t| t.name == "register_route").unwrap();
     let schema = serde_json::to_value(&register.input_schema).unwrap();
     for field in ["host", "path", "strip_path", "protocol", "target", "port", "folder", "listen_port", "note", "owner_pid", "persistent"] {
@@ -106,6 +106,7 @@ async fn every_tool_says_not_running_without_a_daemon() {
         ("find_free_port", json!({})),
         ("get_logs", json!({})),
         ("status", json!({})),
+        ("get_proxy", json!({})),
     ] {
         let r = call(&client, name, args).await;
         assert!(is_error(&r), "{name}");
@@ -168,7 +169,7 @@ async fn a_dev_mcp_server_names_the_dev_instance() {
     let instructions = info.instructions.clone().unwrap_or_default();
     assert!(instructions.contains("`localrouter-dev guide`"), "{instructions}");
     assert!(instructions.contains("only when the user asks"), "{instructions}");
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 6);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 7);
     client.cancel().await.unwrap();
 }
 
@@ -205,6 +206,36 @@ async fn folder_routes_through_mcp() {
         let r = call(&client, "register_route", args.clone()).await;
         assert!(is_error(&r), "{args}");
         assert!(text(&r).contains(want), "{args}: {}", text(&r));
+    }
+    client.cancel().await.unwrap();
+}
+
+// ADR 06, T11: get_proxy reads and changes nothing; unknown arguments fail.
+#[tokio::test]
+async fn get_proxy_reads_the_proxy_settings_and_changes_nothing() {
+    let d = Daemon::start();
+    let (ok, before, err) = d.cli(&["proxy", "inspect", "list"]);
+    assert!(ok, "{err}");
+    let client = mcp_client(d.home()).await;
+    let r = call(&client, "get_proxy", json!({})).await;
+    assert!(!is_error(&r), "{}", text(&r));
+    let p: Value = serde_json::from_str(&text(&r)).unwrap();
+    assert_eq!(p["enabled"], false);
+    assert!(p["notes"][0].as_str().unwrap().contains("The proxy is off"), "{p}");
+    assert_eq!(p["env"]["NO_PROXY"], "localhost,127.0.0.1,::1,.localhost");
+    assert!(p["inspect_ca"].is_null(), "no CA before the first inspect host (I5)");
+    assert!(p["chrome_args"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().starts_with("--proxy-server=http://127.0.0.1:")));
+    let config_before = d.cli(&["status", "--json"]).1;
+    call(&client, "get_proxy", json!({})).await;
+    let (_, after, _) = d.cli(&["proxy", "inspect", "list"]);
+    assert_eq!(before, after);
+    assert_eq!(serde_json::from_str::<Value>(&config_before).unwrap()["proxy"]["enabled"], false);
+
+    let params = CallToolRequestParams::new(Cow::Borrowed("get_proxy"))
+        .with_arguments(json!({"enable": true}).as_object().unwrap().clone());
+    match client.call_tool(params).await {
+        Ok(r) => assert!(is_error(&r), "an unknown argument was accepted: {}", text(&r)),
+        Err(e) => assert!(e.to_string().contains("enable"), "{e}"),
     }
     client.cancel().await.unwrap();
 }

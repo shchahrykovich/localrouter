@@ -25,7 +25,7 @@ use tokio::net::TcpStream;
 
 use crate::api::StatusResult;
 use crate::instance::Instance;
-use crate::logs::{LogEntry, RequestLog};
+use crate::logs::{LogEntry, ProxyMode, RequestLog};
 use crate::routes::{HELP_HOST, Route, Scheme, host_key};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -81,9 +81,18 @@ impl Proxy {
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        self.serve_as(io, scheme, peer, None).await
+    }
+
+    /// [`Proxy::serve`] for a connection that came through the forward proxy
+    /// (`CONNECT shop.localhost:443`): log entries say `via proxy` (ADR 06).
+    pub async fn serve_as<IO>(self: Arc<Self>, io: IO, scheme: ClientScheme, peer: SocketAddr, via: Option<ProxyMode>)
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let service = hyper::service::service_fn(move |req| {
             let proxy = self.clone();
-            async move { Ok::<_, Infallible>(proxy.handle(req, scheme, peer).await) }
+            async move { Ok::<_, Infallible>(proxy.handle(req, scheme, peer, via).await) }
         });
         let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
         if let Err(e) = builder.serve_connection_with_upgrades(TokioIo::new(io), service).await {
@@ -91,7 +100,15 @@ impl Proxy {
         }
     }
 
-    async fn handle(&self, req: Request<Incoming>, scheme: ClientScheme, peer: SocketAddr) -> Response<Body> {
+    /// Answer one request for a `.localhost` name. The forward proxy calls
+    /// this for `GET http://shop.localhost/…`, with `via` set (ADR 06, I8).
+    pub async fn handle(
+        &self,
+        req: Request<Incoming>,
+        scheme: ClientScheme,
+        peer: SocketAddr,
+        via: Option<ProxyMode>,
+    ) -> Response<Body> {
         let start = Instant::now();
         let host = request_host(&req).unwrap_or_default();
         let method = req.method().to_string();
@@ -125,7 +142,11 @@ impl Proxy {
             }
         };
         let millis = start.elapsed().as_millis() as u64;
-        self.log.push(LogEntry::http(&method, &host, &path, response.status().as_u16(), millis).with_route(answered_by));
+        let mut entry = LogEntry::http(&method, &host, &path, response.status().as_u16(), millis).with_route(answered_by);
+        if let Some(mode) = via {
+            entry = entry.via_proxy(mode);
+        }
+        self.log.push(entry);
         response
     }
 
@@ -252,7 +273,7 @@ fn strip_prefix(prefix: &str, path_and_query: &str) -> String {
     if rest.starts_with('/') { rest.to_string() } else { format!("/{rest}") }
 }
 
-fn is_upgrade(headers: &HeaderMap) -> bool {
+pub(crate) fn is_upgrade(headers: &HeaderMap) -> bool {
     headers.contains_key(header::UPGRADE)
         && headers
             .get_all(header::CONNECTION)
@@ -264,7 +285,7 @@ fn is_upgrade(headers: &HeaderMap) -> bool {
 const HOP_HEADERS: [&str; 7] =
     ["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
 
-fn remove_hop_headers(headers: &mut HeaderMap, keep_upgrade: bool) {
+pub(crate) fn remove_hop_headers(headers: &mut HeaderMap, keep_upgrade: bool) {
     // Headers named in Connection are hop-by-hop too.
     let named: Vec<String> = headers
         .get_all(header::CONNECTION)

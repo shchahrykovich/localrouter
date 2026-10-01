@@ -19,7 +19,13 @@ pub fn render(
     https_port: Option<u16>,
     status: Option<&StatusResult>,
 ) -> String {
-    fill(TEMPLATE, instance, http_port, https_port)
+    // The proxy port the daemon uses, else the instance's default (in fill).
+    let proxy_port = status.and_then(|s| s.proxy.as_ref()).map(|p| p.port.unwrap_or(p.configured)).filter(|&p| p != 0);
+    let template = match proxy_port {
+        Some(port) => TEMPLATE.replace("{{PROXY_PORT}}", &port.to_string()),
+        None => TEMPLATE.to_string(),
+    };
+    fill(&template, instance, http_port, https_port)
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
         .replace("{{STATUS}}", &status_table(status))
         .replace("{{ROUTES}}", &route_list(routes, https_port))
@@ -93,6 +99,7 @@ fn fill(template: &str, instance: &Instance, http_port: Option<u16>, https_port:
         .replace("{{DEFAULT_HELP_URL}}", &instance.default_help_url())
         .replace("{{HTTP_PORT}}", &http.to_string())
         .replace("{{HTTPS_PORT}}", &https.to_string())
+        .replace("{{PROXY_PORT}}", &instance.default_proxy_port().to_string())
         .replace("{{HTTP}}", &port_part(http, 80))
         .replace("{{HTTPS}}", &port_part(https, 443))
 }
@@ -119,8 +126,19 @@ fn status_table(status: Option<&StatusResult>) -> String {
         Some(false) => "no",
         None => "unknown",
     };
+    let proxy = match &s.proxy {
+        None => String::new(),
+        Some(p) => {
+            let state = match (p.enabled, p.port) {
+                (true, Some(port)) => format!("on, 127.0.0.1:{port}"),
+                (true, None) => format!("not listening: {}", p.errors.join("; ")),
+                (false, _) => "off".into(),
+            };
+            format!("\n| Proxy | {} |", state.replace('|', "/"))
+        }
+    };
     format!(
-        "| Part | State |\n|---|---|\n| HTTP | {} |\n| HTTPS | {} |\n| Local CA | {} |\n| CA trusted by macOS | {trusted} |",
+        "| Part | State |\n|---|---|\n| HTTP | {} |\n| HTTPS | {} |\n| Local CA | {} |\n| CA trusted by macOS | {trusted} |{proxy}",
         port(&s.http).replace('|', "/"),
         port(&s.https).replace('|', "/"),
         ca.replace('|', "/"),
@@ -202,6 +220,7 @@ mod tests {
             routes: 0,
             routes_file_problem: None,
             listen_failed: vec![],
+            proxy: None,
         }
     }
 

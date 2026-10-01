@@ -49,6 +49,7 @@ Use the first one that works:
 | `find_free_port` | - | A free TCP port on 127.0.0.1 |
 | `get_logs` | `{{CLI}} logs [host]` | Recent requests and connections |
 | `status` | `{{CLI}} status` | Daemon version, ports, local CA |
+| `get_proxy` | `{{CLI}} proxy` | Proxy URL, environment variables, Chrome flags (see "Proxy" below) |
 | - | `{{CLI}} which <url>` | Which route answers a URL, and why (no MCP tool) |
 
 ## Step 2: choose names
@@ -245,6 +246,40 @@ keychain on your own.
   `export REQUESTS_CA_BUNDLE="$({{CLI}} ca-path)"`
 - **Firefox:** open `about:config` and set
   `security.enterprise_roots.enabled` to `true`.
+
+## Proxy: see what a browser or a program sends
+
+{{APP}} can also be the HTTP proxy of a program, so the user sees which
+servers it calls. It is off by default and listens on
+`127.0.0.1:{{PROXY_PORT}}` only.
+
+1. Turn it on: `{{CLI}} proxy on`. Then `{{CLI}} proxy` (MCP `get_proxy`)
+   shows the URL, the environment variables and the Chrome flags.
+2. Start a program through it:
+   - a command: `eval "$({{CLI}} proxy env)" && npm test`
+   - Chrome: `{{CLI}} proxy chrome` opens a separate Chrome window with its
+     own profile. The user's normal Chrome does not change.
+3. `{{CLI}} logs` (MCP `get_logs`) shows each request, marked `via proxy`.
+
+- HTTPS is a tunnel by default: the log shows the host, not the requests. To
+  see each request of a host, inspect it:
+  `{{CLI}} proxy inspect add api.example.com` (or `*.example.com`).
+- An inspected host works only in a program that trusts the inspection CA.
+  Only the user can trust it, because macOS asks for their password: ask them
+  to run `{{CLI}} proxy trust`. Node.js and Claude Code read
+  `NODE_EXTRA_CA_CERTS` instead; `{{CLI}} proxy env` sets it.
+- A program reads the proxy settings when it starts. You cannot change the
+  proxy of a program that is already running, and that includes yourself.
+  Start other programs with the `env` values, or ask the user to restart
+  Claude Code with `eval "$({{CLI}} proxy env)" && claude`.
+- **Never write proxy settings into project files** (`.env`,
+  `.claude/settings.json`, test configs). Other people on the project may not
+  have {{APP}}, and every request of theirs would fail. Pass the values to a
+  command, or let the user put them in their own shell.
+- `.localhost` names do not go through the proxy (`NO_PROXY`); they work as
+  before.
+- `{{CLI}} proxy off` closes the port. Programs started with the proxy
+  settings then fail to connect until they are started again without them.
 
 ## Step 7: write it down in the project
 

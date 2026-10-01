@@ -2,7 +2,7 @@
   "id": 2,
   "result": {
     "daemon_version": "0.1.0",
-    "api_version": "1.2",
+    "api_version": "1.3",
     "pid": 812,
     "data_dir": "/Users/me/Library/Application Support/LocalRouter",
     "http": {
@@ -29,6 +29,22 @@
       "trusted": true
     },
     "routes": 2,
-    "listen_failed": []
+    "listen_failed": [],
+    "proxy": {
+      "enabled": true,
+      "configured": 8877,
+      "port": 8877,
+      "bound": [
+        "127.0.0.1:8877",
+        "[::1]:8877"
+      ],
+      "errors": [],
+      "inspect_ca": {
+        "state": "ok",
+        "pem_path": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem",
+        "common_name": "LocalRouter Inspection 5e6f7a8b",
+        "trusted": false
+      }
+    }
   }
 }

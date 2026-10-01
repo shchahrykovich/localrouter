@@ -114,10 +114,28 @@ impl Instance {
         format!("{} CA", self.app_name())
     }
 
+    /// The common name of a new inspection CA starts with this (ADR 06), so
+    /// the keychain shows which CA is which.
+    pub fn inspect_ca_name_prefix(&self) -> String {
+        format!("{} Inspection", self.app_name())
+    }
+
+    /// The caches folder, relative to the home folder. Chrome writes the
+    /// proxy profile there, not the daemon (ADR 06).
+    pub fn caches_folder(&self) -> String {
+        format!("Library/Caches/{}", self.app_name())
+    }
+
     /// Ports a new `config.json` gets: 80 and 443 for the release, 7080 and
     /// 7443 otherwise. 8080 is avoided: many dev servers use it.
     pub fn default_ports(&self) -> (u16, u16) {
         if self.is_release() { (80, 443) } else { (7080, 7443) }
+    }
+
+    /// The forward proxy port a new `config.json` gets (ADR 06): 8877 for the
+    /// release, 7877 otherwise, so two instances can both run a proxy.
+    pub fn default_proxy_port(&self) -> u16 {
+        if self.is_release() { 8877 } else { 7877 }
     }
 
     /// The help page at the default HTTP port; right until the user changes
@@ -184,8 +202,11 @@ mod tests {
             ("note", i.note().into()),
             ("mcp_name", i.cli().into()),
             ("ca_name_prefix", i.ca_name_prefix().into()),
+            ("inspect_ca_name_prefix", i.inspect_ca_name_prefix().into()),
+            ("caches_folder", i.caches_folder().into()),
             ("http_port", http.into()),
             ("https_port", https.into()),
+            ("proxy_port", i.default_proxy_port().into()),
             ("default_help_url", i.default_help_url().into()),
         ]
     }
@@ -226,7 +247,9 @@ mod tests {
         let t = table();
         let instances: Vec<Instance> =
             t["rows"].as_array().unwrap().iter().map(|r| Instance::new(r["suffix"].as_str().unwrap()).unwrap()).collect();
-        for key in ["app_name", "bundle_id", "daemon_label", "daemon_program", "cli", "data_folder", "logs_folder", "note"] {
+        for key in
+            ["app_name", "bundle_id", "daemon_label", "daemon_program", "cli", "data_folder", "logs_folder", "caches_folder", "note"]
+        {
             let values: HashSet<String> = instances
                 .iter()
                 .map(|i| names(i).into_iter().find(|(k, _)| *k == key).unwrap().1.as_str().unwrap().to_string())

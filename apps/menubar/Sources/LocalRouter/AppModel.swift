@@ -19,6 +19,8 @@ final class AppModel {
 
     let client = DaemonClient()
     var status: StatusResult?
+    /// The forward proxy (ADR 06); nil while the daemon is older or not running.
+    var proxy: GetProxyResult?
     var routes: [RouteView] = []
     var logs: [LogEntry] = []
     var daemonProblem: String?
@@ -125,10 +127,13 @@ final class AppModel {
             let r = try await client.listRoutes()
             status = s
             routes = r
+            // The trust check behind get_proxy is cached by the daemon for 10 s.
+            proxy = s.proxy == nil ? nil : try? await client.proxy()
             daemonProblem = nil
             if logSubscription == nil { startLogs() }
         } catch {
             status = nil
+            proxy = nil
             routes = []
             daemonProblem = error.localizedDescription
             stopLogs()
@@ -184,6 +189,49 @@ final class AppModel {
 
     func setFallback(_ on: Bool) async { await setConfig(SetConfigParams(fallback: on)) }
     func setAllowLan(_ on: Bool) async { await setConfig(SetConfigParams(allowLan: on)) }
+
+    // MARK: Forward proxy (ADR 06)
+
+    func setProxyEnabled(_ on: Bool) async { await setConfig(SetConfigParams(proxyEnabled: on)) }
+
+    /// Adds a host to the inspect list. The first one makes the inspection CA.
+    func inspect(_ host: String) async {
+        let host = host.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty else { return }
+        await setConfig(SetConfigParams(inspectHosts: (proxy?.inspectHosts ?? []) + [host]))
+    }
+
+    func stopInspecting(_ host: String) async {
+        await setConfig(SetConfigParams(inspectHosts: (proxy?.inspectHosts ?? []).filter { $0 != host }))
+    }
+
+    func trustInspectionCA() async {
+        busy = true
+        let (ok, out) = await runTool(["proxy", "trust"])
+        busy = false
+        message = ok ? "The inspection CA is trusted. Restart programs that use the proxy." : out
+        try? await Task.sleep(for: .seconds(1))
+        await refresh()
+    }
+
+    func untrustInspectionCA() async {
+        busy = true
+        let (ok, out) = await runTool(["proxy", "untrust"])
+        busy = false
+        message = ok ? "The inspection CA is no longer trusted." : out
+        await refresh()
+    }
+
+    /// Asked each time the right-click menu opens (I17).
+    var chromeInstalled: Bool { ChromeLauncher(daemon: client).chromeInstalled }
+
+    /// Starts a separate Chrome that uses the proxy, turning the proxy on
+    /// first if needed. The result goes to the window footer.
+    func openChromeViaProxy() async {
+        let feedback = await ChromeLauncher(daemon: client).launch()
+        message = feedback.summary
+        await refresh()
+    }
 
     private func setConfig(_ p: SetConfigParams) async {
         do {

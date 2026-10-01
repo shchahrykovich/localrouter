@@ -2,6 +2,7 @@
 
 mod client;
 mod mcp;
+mod proxy;
 mod trust;
 
 use std::process::ExitCode;
@@ -14,7 +15,7 @@ use localrouter_core::api::{
 };
 use localrouter_core::config::Config;
 use localrouter_core::help;
-use localrouter_core::logs::LogEntry;
+use localrouter_core::logs::{LogEntry, ProxyMode};
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::routes::{Explanation, FOLDER_SCHEME, Protocol, Route, RouteTable, Step};
@@ -110,6 +111,11 @@ enum Command {
         #[command(subcommand)]
         command: CaCommand,
     },
+    /// The forward proxy: send Chrome, Claude Code or a test run through LocalRouter and see their requests.
+    Proxy {
+        #[command(subcommand)]
+        command: Option<proxy::ProxyCommand>,
+    },
     /// Print the full guide for coding agents, with the current ports, status and routes.
     Guide,
     /// Run the MCP server over stdio (for coding agents).
@@ -161,6 +167,7 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
     let paths = Paths::from_env(&instance);
     match command {
         Command::Mcp => mcp::run(paths.socket(), instance).await,
+        Command::Proxy { command } => proxy::run(command, &paths, &instance).await,
         Command::Note => {
             print!("{}", help::render_note(&instance));
             Ok(())
@@ -382,9 +389,19 @@ fn print_status(instance: &Instance, s: &StatusResult) {
 
 fn format_entry(e: &LogEntry) -> String {
     match e {
-        LogEntry::Http { time_ms, method, host, path, status, duration_ms, route } => {
+        LogEntry::Http { time_ms, method, host, path, status, duration_ms, route, via: _, mode, bytes_in, bytes_out } => {
             let route = route.as_deref().map(|r| format!(" route {r}")).unwrap_or_default();
-            format!("{} {status} {method:<6} {host}{path} {duration_ms} ms{route}", clock(*time_ms))
+            let via = match mode {
+                Some(ProxyMode::Http) => " via proxy (http)",
+                Some(ProxyMode::Inspect) => " via proxy (inspect)",
+                Some(ProxyMode::Tunnel) => " via proxy (tunnel)",
+                None => "",
+            };
+            let bytes = match (bytes_in, bytes_out) {
+                (Some(i), Some(o)) => format!(" in {i} B, out {o} B,"),
+                _ => String::new(),
+            };
+            format!("{} {status} {method:<6} {host}{path}{bytes} {duration_ms} ms{route}{via}", clock(*time_ms))
         }
         LogEntry::Tcp { time_ms, host, listen_port, bytes_in, bytes_out, duration_ms, failed } => {
             let state = if *failed { "FAILED" } else { "tcp" };

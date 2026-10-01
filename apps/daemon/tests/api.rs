@@ -647,3 +647,187 @@ fn folder_route_is_checked_saved_served_and_reported_up() {
     assert_eq!(list["routes"][0]["target"], format!("file://{}", gone.display()));
     assert_eq!(list["routes"][0]["upstream_up"], false);
 }
+
+// ---- ADR 06: the forward proxy port
+
+fn proxy_on(c: &mut Client) -> u16 {
+    c.call("set_config", json!({"proxy_enabled": true, "proxy_port": 0}));
+    c.call("status", json!({}))["proxy"]["port"].as_u64().expect("the proxy port is bound") as u16
+}
+
+/// `CONNECT target` through the proxy; the stream after the 200.
+fn connect_through(proxy: u16, target: &str) -> TcpStream {
+    let mut s = TcpStream::connect(("127.0.0.1", proxy)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).unwrap();
+    let mut head = vec![];
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        s.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&head));
+    s
+}
+
+// T1, I1: the proxy port is 127.0.0.1 and ::1 only, even with allow_lan.
+#[test]
+fn proxy_port_binds_loopback_only_even_with_allow_lan() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    c.call("set_config", json!({"allow_lan": true}));
+    let port = proxy_on(&mut c);
+    let s = c.call("status", json!({}));
+    assert_eq!(s["proxy"]["bound"], json!([format!("127.0.0.1:{port}"), format!("[::1]:{port}")]));
+    assert_eq!(s["proxy"]["enabled"], true);
+    assert_eq!(s["proxy"]["errors"], json!([]));
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["url"], format!("http://127.0.0.1:{port}"));
+    assert_eq!(p["env"]["HTTPS_PROXY"], format!("http://127.0.0.1:{port}"));
+}
+
+// T7, I2, I12: on and off without a restart; off closes open tunnels; routes
+// are not touched.
+#[test]
+fn proxy_on_and_off_without_restart_closes_open_tunnels() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    c.call("register_route", http_route("shop", 5173));
+    let routes_before = c.call("list_routes", json!({}))["routes"].clone();
+    assert!(c.call("status", json!({}))["proxy"]["port"].is_null(), "off by default");
+
+    let port = proxy_on(&mut c);
+    let target = echo_server();
+    let mut tunnel = connect_through(port, &format!("127.0.0.1:{target}"));
+    tunnel.write_all(b"ping").unwrap();
+    let mut buf = [0u8; 4];
+    tunnel.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"ping");
+
+    c.call("set_config", json!({"proxy_enabled": false}));
+    assert_eq!(tunnel.read(&mut buf).unwrap_or(0), 0, "the open tunnel is closed");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_err(), "the listener is closed");
+    assert!(c.call("status", json!({}))["proxy"]["port"].is_null());
+    assert_eq!(c.call("list_routes", json!({}))["routes"], routes_before);
+    assert_eq!(read_config(&d)["proxy_enabled"], false);
+
+    // The tunnel left one log entry, via the proxy.
+    let logs = c.call("get_logs", json!({}))["entries"].clone();
+    assert!(logs.as_array().unwrap().iter().any(|e| e["method"] == "CONNECT" && e["mode"] == "tunnel"), "{logs}");
+}
+
+// T7, I12: a port taken on ::1 only fails the call and changes nothing.
+#[test]
+fn a_taken_proxy_port_changes_nothing() {
+    // A port below the ephemeral range, free on both addresses (see the
+    // tcp_listen tests): keep its ::1 socket as the probe, free 127.0.0.1.
+    let (port, _held_v6) = (20000 + (std::process::id() % 5000) as u16..30000)
+        .find_map(|p| {
+            let v4 = std::net::TcpListener::bind(("127.0.0.1", p)).ok()?;
+            let v6 = std::net::TcpListener::bind(("::1", p)).ok()?;
+            drop(v4);
+            Some((p, v6))
+        })
+        .expect("a free port");
+    let d = Daemon::start();
+    let mut c = d.client();
+    let file_before = read_config(&d);
+    assert_eq!(c.error_code("set_config", json!({"proxy_enabled": true, "proxy_port": port})), "port_in_use");
+    let config = c.call("get_config", json!({}));
+    assert_eq!(config["proxy_enabled"], false);
+    assert_ne!(config["proxy_port"], port);
+    assert_eq!(read_config(&d), file_before, "config.json is not written");
+    assert!(c.call("status", json!({}))["proxy"]["port"].is_null());
+    let mut v4 = std::net::TcpListener::bind(("127.0.0.1", port));
+    for _ in 0..40 {
+        if v4.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        v4 = std::net::TcpListener::bind(("127.0.0.1", port));
+    }
+    assert!(v4.is_ok(), "127.0.0.1:{port} still held after the failed call");
+}
+
+// On macOS a loopback socket can bind next to the wildcard one of the HTTP
+// port and take its traffic: the proxy may not share a port with the router.
+#[test]
+fn proxy_port_may_not_be_the_http_port() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
+    c.call("set_config", json!({"http_port": http}));
+    assert_eq!(c.error_code("set_config", json!({"proxy_enabled": true, "proxy_port": http})), "invalid_request");
+}
+
+// T7: a saved proxy_enabled binds at start.
+#[test]
+fn a_saved_proxy_is_bound_at_start() {
+    let d = Daemon::start_with(|dir| {
+        let mut config: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+        config["proxy_enabled"] = json!(true);
+        config["proxy_port"] = json!(0);
+        std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+    });
+    let mut c = d.client();
+    let port = c.call("status", json!({}))["proxy"]["port"].as_u64().expect("bound at start");
+    assert!(TcpStream::connect(("127.0.0.1", port as u16)).is_ok());
+}
+
+// T5, I4, I5: the inspection CA is made on first need, kept when the list
+// empties, replaced only by reset_inspect_ca, and its key never leaves.
+#[test]
+fn the_inspection_ca_is_made_on_need_and_kept() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    proxy_on(&mut c);
+    let ca_dir = d.dir.path().join("inspect-ca");
+    assert!(!ca_dir.exists(), "no inspect host, no CA (I5)");
+    assert!(c.call("status", json!({}))["proxy"]["inspect_ca"].is_null());
+    assert!(c.call("get_proxy", json!({}))["env"].get("NODE_EXTRA_CA_CERTS").is_none());
+
+    assert_eq!(c.error_code("set_config", json!({"inspect_hosts": ["*.com"]})), "invalid_request");
+    assert!(!ca_dir.exists());
+
+    let r = c.call("set_config", json!({"inspect_hosts": ["API.example.com", "api.example.com", "*.example.org"]}));
+    assert_eq!(r["config"]["inspect_hosts"], json!(["api.example.com", "*.example.org"]), "checked, lower case, no duplicates");
+    assert!(ca_dir.join("ca.pem").exists());
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(ca_dir.join("ca.key")).unwrap().permissions().mode() & 0o777, 0o600);
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["inspect_set"], json!(["api.example.com", "*.example.org"]));
+    let first = p["inspect_ca"]["common_name"].as_str().unwrap().to_string();
+    assert!(first.starts_with("LocalRouter Inspection "), "{first}");
+    assert_eq!(p["env"]["NODE_EXTRA_CA_CERTS"], ca_dir.join("ca.pem").display().to_string());
+
+    c.call("set_config", json!({"inspect_hosts": []}));
+    assert!(ca_dir.exists(), "an empty list keeps the CA");
+    assert_eq!(c.call("get_proxy", json!({}))["inspect_ca"]["common_name"], first.as_str());
+
+    let mut replies = String::new();
+    let reset = c.raw("reset_inspect_ca", json!({}));
+    replies.push_str(&reset.to_string());
+    assert_ne!(reset["result"]["common_name"], first.as_str());
+    replies.push_str(&c.raw("get_proxy", json!({})).to_string());
+    replies.push_str(&c.raw("status", json!({})).to_string());
+    replies.push_str(&c.raw("get_config", json!({})).to_string());
+    assert!(!replies.contains("PRIVATE KEY"), "I4");
+    let key = std::fs::read_to_string(ca_dir.join("ca.key")).unwrap();
+    let body: String = key.lines().filter(|l| !l.starts_with("-----")).collect();
+    assert!(!replies.contains(&body[..20]));
+}
+
+// T9: the two new methods are known; get_proxy names the Chrome profile.
+#[test]
+fn get_proxy_gives_chrome_args_with_their_own_profile() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let p = c.call("get_proxy", json!({}));
+    let args: Vec<String> = serde_json::from_value(p["chrome_args"].clone()).unwrap();
+    let profile = d.dir.path().join("caches/chrome-proxy").display().to_string();
+    assert_eq!(args[0], format!("--user-data-dir={profile}"));
+    assert!(args[1].starts_with("--proxy-server=http://127.0.0.1:"));
+    assert!(!profile.contains("Google/Chrome"), "never Chrome's own profile (I17)");
+    assert!(!d.dir.path().join("caches").exists(), "the daemon writes nothing there");
+}

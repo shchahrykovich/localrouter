@@ -1,0 +1,12 @@
+{
+  "id": 13,
+  "method": "set_config",
+  "params": {
+    "proxy_enabled": true,
+    "proxy_port": 8877,
+    "inspect_hosts": [
+      "api.example.com",
+      "*.anthropic.com"
+    ]
+  }
+}

@@ -42,7 +42,9 @@ fn params(method: &str, params: Value, file: &str) {
         "get_logs" => check::<GetLogsParams>(params, file),
         "subscribe_logs" => check::<SubscribeLogsParams>(params, file),
         "set_config" => check::<SetConfigParams>(params, file),
-        "status" | "list_routes" | "get_config" | "reset_ca" => check::<Empty>(params, file),
+        "status" | "list_routes" | "get_config" | "reset_ca" | "get_proxy" | "reset_inspect_ca" => {
+            check::<Empty>(params, file)
+        }
         other => panic!("{file}: unknown method {other}"),
     }
 }
@@ -59,7 +61,8 @@ fn result(method: &str, result: Value, file: &str) {
         "subscribe_logs" => check::<SubscribeLogsResult>(result, file),
         "get_config" => check::<Config>(result, file),
         "set_config" => check::<SetConfigResult>(result, file),
-        "reset_ca" => check::<ResetCaResult>(result, file),
+        "reset_ca" | "reset_inspect_ca" => check::<ResetCaResult>(result, file),
+        "get_proxy" => check::<GetProxyResult>(result, file),
         other => panic!("{file}: unknown method {other}"),
     }
 }
@@ -125,4 +128,46 @@ fn examples_cover_path_routes() {
     assert!(read("unregister_route_path.request.json")["params"]["path"].is_string());
     assert!(read("log.event.json")["entry"]["route"].is_string(), "a log entry needs route");
     assert!(read("get_logs.reply.json")["result"]["entries"][0]["route"].is_string());
+}
+
+/// ADR 06: the examples carry the proxy fields, so both contract tests check
+/// that they survive a round trip.
+#[test]
+fn examples_cover_the_forward_proxy() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../api/examples");
+    let read = |file: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"))).unwrap()
+    };
+    assert!(read("status.reply.json")["result"]["proxy"]["inspect_ca"].is_object());
+    assert!(read("get_config.reply.json")["result"]["inspect_hosts"].is_array());
+    assert!(read("set_config_proxy.request.json")["params"]["inspect_hosts"].is_array());
+    let proxy = read("get_proxy.reply.json");
+    assert!(proxy["result"]["chrome_args"].as_array().unwrap().len() >= 2);
+    assert!(proxy["result"]["env"]["NODE_EXTRA_CA_CERTS"].is_string());
+    assert_eq!(read("log_proxy.event.json")["entry"]["via"], "proxy");
+    let entries = read("get_logs.reply.json")["result"]["entries"].clone();
+    assert!(entries.as_array().unwrap().iter().any(|e| e["mode"] == "tunnel" && e["bytes_in"].is_u64()));
+}
+
+/// The `http` log entry as API 1.2 knew it, before ADR 06.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+#[allow(dead_code)]
+enum LogEntry12 {
+    Http { time_ms: u64, method: String, host: String, path: String, status: u16, duration_ms: u64, route: Option<String> },
+    Tcp { time_ms: u64, host: String, listen_port: u16, bytes_in: u64, bytes_out: u64, duration_ms: u64, failed: bool },
+}
+
+/// ADR 06, I16: an older client decodes proxy entries from a newer daemon,
+/// because they keep `kind: "http"` and only add optional fields.
+#[test]
+fn proxy_log_entries_decode_with_the_1_2_shape() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../api/examples");
+    let event: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("log_proxy.event.json")).unwrap()).unwrap();
+    let old: LogEntry12 = serde_json::from_value(event["entry"].clone()).expect("1.2 decodes a proxy entry");
+    assert!(matches!(old, LogEntry12::Http { status: 200, .. }));
+    let logs: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("get_logs.reply.json")).unwrap()).unwrap();
+    for entry in logs["result"]["entries"].as_array().unwrap() {
+        serde_json::from_value::<LogEntry12>(entry.clone()).unwrap_or_else(|e| panic!("{entry}: {e}"));
+    }
 }
