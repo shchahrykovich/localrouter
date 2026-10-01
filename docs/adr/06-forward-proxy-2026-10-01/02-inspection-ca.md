@@ -32,6 +32,13 @@ have a route (ADR 01, invariant I5).
    A pattern is an exact name, or `*.` plus a name, which matches one or more
    labels in front of it (`*.example.com` matches `a.example.com` and
    `a.b.example.com`, not `example.com`). Matching ignores case and the port.
+
+   Added 2026-10-01: `*` alone is the **all hosts** pattern. It matches every
+   host outside `.localhost`, IP addresses included, so every `CONNECT` is
+   inspected. It is accepted because a user who asks for it asks on purpose;
+   `*.com` is still refused, because that is more likely a typing mistake.
+   `get_proxy` adds a note while `*` is in the set, since decision 1 (banking
+   sites and pinned apps pass unchanged) then no longer holds.
 3. **A second CA, the inspection CA**, in `inspect-ca/` (`ca.key` mode `0600`,
    `ca.pem`). Common name `LocalRouter<suffix> Inspection <short id>`, so the
    keychain shows which CA is which.

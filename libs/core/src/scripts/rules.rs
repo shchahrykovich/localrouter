@@ -34,7 +34,8 @@ pub enum OnError {
 pub struct ScriptRule {
     /// The rule's name: label rules, for example `claude-capture`.
     pub id: String,
-    /// `api.example.com`, `*.example.com`, or a `.localhost` name.
+    /// `api.example.com`, `*.example.com`, `*` (every host outside
+    /// `.localhost`), or a `.localhost` name.
     pub host: String,
     /// A path prefix with the route path match: `/v1` matches `/v1/x`, not `/v1x`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,7 +111,8 @@ impl ScriptRule {
 /// The host of a rule: an internet pattern (ADR 06) or a `.localhost` name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleHost {
-    /// Proxy traffic: `api.example.com` or `*.example.com`.
+    /// Proxy traffic: `api.example.com`, `*.example.com`, or `*` for every
+    /// host outside `.localhost`.
     Internet(HostPattern),
     /// Router traffic: the host key `shop` of `shop.localhost`, or a
     /// wildcard `*.shop.localhost` (one or more labels in front of `shop`).
@@ -139,6 +141,9 @@ impl RuleHost {
             return Err(format!("{text:?}: name a route, for example shop.localhost or *.shop.localhost"));
         }
         let pattern = HostPattern::parse(text)?;
+        if pattern.is_all() {
+            return Ok(RuleHost::Internet(pattern));
+        }
         if !wildcard && !name.contains('.') {
             return Err(format!(
                 "{text:?} is one word: for a route use {name}.localhost, for an internet host its full name"
@@ -298,7 +303,7 @@ mod tests {
     // T1
     #[test]
     fn hosts_are_patterns_or_localhost_names() {
-        for good in ["api.example.com", "*.example.com", "shop.localhost", "*.shop.localhost", "API.Example.com."] {
+        for good in ["api.example.com", "*.example.com", "*", "shop.localhost", "*.shop.localhost", "API.Example.com."] {
             assert!(check(&mut rule("a", good)).is_ok(), "{good}");
         }
         for bad in ["*.com", "router.localhost", "localhost", "shop", "a b.com", "", "*.localhost"] {
@@ -381,6 +386,17 @@ mod tests {
         assert!(!any.matches("shop.localhost", "/", "GET"));
         let internet = rule("a", "*.example.com");
         assert!(!internet.matches("x.example.com.localhost", "/", "GET"));
+    }
+
+    // T2
+    #[test]
+    fn a_star_rule_matches_every_internet_host_and_no_route() {
+        let all = rule("a", "*");
+        assert!(all.pattern().is_internet(), "its host goes into the inspect set");
+        assert!(all.matches("api.example.com:443", "/", "GET"));
+        assert!(all.matches("other.net", "/v1", "POST"));
+        assert!(!all.matches("shop.localhost", "/", "GET"));
+        assert!(!all.matches("feat.shop.localhost:7443", "/", "GET"));
     }
 
     // T2

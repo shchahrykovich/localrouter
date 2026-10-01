@@ -19,7 +19,7 @@ A **script rule** is one entry in a new rule table in the daemon.
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | string, label rules (`a-z`, `0-9`, `-`, 1 to 63) | the rule's name, for example `claude-capture`. Setting a rule with an existing id replaces it |
-| `host` | host pattern | `api.example.com`, `*.example.com` (ADR 06 patterns), or a `.localhost` name such as `shop.localhost` |
+| `host` | host pattern | `api.example.com`, `*.example.com`, `*` for every host outside `.localhost` (ADR 06 patterns), or a `.localhost` name such as `shop.localhost` |
 | `path` | string, optional | a path prefix with the route **path match**: `/v1` matches `/v1` and `/v1/messages`, never `/v1x` |
 | `methods` | list, optional | `["POST"]`; absent: every method |
 | `script` | absolute path | a `.lua` file, at most 1 MB |

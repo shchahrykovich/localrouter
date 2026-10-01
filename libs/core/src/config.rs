@@ -25,7 +25,8 @@ pub struct Config {
     /// The forward proxy port. `0` means "any free port" (tests).
     pub proxy_port: u16,
     /// Host patterns whose `CONNECT`s are inspected instead of tunnelled:
-    /// `api.example.com` or `*.example.com`.
+    /// `api.example.com`, `*.example.com`, or `*` for every host outside
+    /// `.localhost`.
     pub inspect_hosts: Vec<String>,
     /// Header names scripts see as `[redacted]`, besides the defaults
     /// (`authorization`, `cookie`, ...; ADR 07, change 4). Not written while

@@ -801,6 +801,15 @@ fn the_inspection_ca_is_made_on_need_and_kept() {
     assert!(first.starts_with("LocalRouter Inspection "), "{first}");
     assert_eq!(p["env"]["NODE_EXTRA_CA_CERTS"], ca_dir.join("ca.pem").display().to_string());
 
+    assert!(!p["notes"].to_string().contains("'*'"), "no note without '*'");
+
+    let r = c.call("set_config", json!({"inspect_hosts": [" * ", "api.example.com"]}));
+    assert_eq!(r["config"]["inspect_hosts"], json!(["*", "api.example.com"]), "'*' is every host outside .localhost");
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["inspect_set"], json!(["*", "api.example.com"]));
+    let notes = p["notes"].to_string();
+    assert!(notes.contains("every HTTPS host is inspected"), "{notes}");
+
     c.call("set_config", json!({"inspect_hosts": []}));
     assert!(ca_dir.exists(), "an empty list keeps the CA");
     assert_eq!(c.call("get_proxy", json!({}))["inspect_ca"]["common_name"], first.as_str());
@@ -919,6 +928,24 @@ fn a_rule_on_an_internet_host_makes_it_inspected_until_removed() {
     c.call("set_script_rule", json!({"id": "api", "host": "api.test.example", "script": script}));
     c.call("remove_script_rule", json!({"id": "api"}));
     assert_eq!(c.call("get_proxy", json!({}))["inspect_set"], json!(["api.test.example"]), "inspect_hosts still lists it");
+}
+
+#[test]
+fn a_rule_on_every_host_inspects_every_host_until_removed() {
+    let (_s, script, _) = script_dir("add.lua", INTERCEPT_LUA);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("set_script_rule", json!({"id": "all", "host": "*", "script": script}));
+    assert_eq!(r["rule"]["host"], "*");
+    assert_eq!(r["inspect"]["host_added"], true);
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["inspect_set"], json!(["*"]));
+    assert!(p["notes"].to_string().contains("every HTTPS host is inspected"), "{}", p["notes"]);
+
+    c.call("remove_script_rule", json!({"id": "all"}));
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["inspect_set"], json!([]));
+    assert!(!p["notes"].to_string().contains("'*'"));
 }
 
 #[test]

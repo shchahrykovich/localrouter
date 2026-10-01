@@ -43,7 +43,7 @@ through the proxy (`{{CLI}} proxy env`) and trust the inspection CA
 | Field | Meaning |
 |---|---|
 | `id` | the rule's name: `a-z`, `0-9`, `-`. Setting an existing id replaces that rule |
-| `host` | `api.example.com`, `*.example.com` (one or more labels in front), or a route: `shop.localhost`, `*.shop.localhost` |
+| `host` | `api.example.com`, `*.example.com` (one or more labels in front), `*` (every host outside `.localhost`; it makes the proxy inspect every host), or a route: `shop.localhost`, `*.shop.localhost` |
 | `path` | a path prefix: `/v1` matches `/v1` and `/v1/messages`, never `/v1x` |
 | `methods` | `["POST"]`; none means every method |
 | `script` | absolute path of the `.lua` file, at most 1 MB |

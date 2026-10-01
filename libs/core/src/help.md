@@ -266,6 +266,9 @@ servers it calls. It is off by default and listens on
 - HTTPS is a tunnel by default: the log shows the host, not the requests. To
   see each request of a host, inspect it:
   `{{CLI}} proxy inspect add api.example.com` (or `*.example.com`).
+  `{{CLI}} proxy inspect add '*'` inspects every host outside `.localhost`:
+  then banking sites and apps that pin certificates fail too, so use it
+  only for a short session. Quote the `*` in a shell.
 - An inspected host works only in a program that trusts the inspection CA.
   Only the user can trust it, because macOS asks for their password: ask them
   to run `{{CLI}} proxy trust`. Node.js and Claude Code read

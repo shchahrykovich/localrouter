@@ -3,24 +3,37 @@
 //! A `CONNECT` is a tunnel unless its host matches a pattern of the inspect
 //! set. A pattern is an exact name (`api.example.com`) or `*.` plus a name of
 //! at least two labels (`*.example.com`), which matches one or more labels in
-//! front of that name, never the name itself. Matching ignores case, a final
-//! dot and the port.
+//! front of that name, never the name itself. `*` alone matches every host
+//! outside `.localhost`. Matching ignores case, a final dot and the port.
 
 /// One parsed pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPattern {
-    /// The name after `*.`, or the whole name. Lower case.
+    /// The name after `*.`, or the whole name. Lower case. Empty for `*`.
     name: String,
-    wildcard: bool,
+    kind: PatternKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatternKind {
+    /// `api.example.com`: this name only.
+    Exact,
+    /// `*.example.com`: one or more labels in front of the name.
+    Under,
+    /// `*`: every host outside `.localhost`.
+    All,
 }
 
 impl HostPattern {
     /// Parse and check one pattern. The error says what is wrong.
     pub fn parse(text: &str) -> Result<Self, String> {
         let lower = text.trim().trim_end_matches('.').to_ascii_lowercase();
-        let (wildcard, name) = match lower.strip_prefix("*.") {
-            Some(rest) => (true, rest.to_string()),
-            None => (false, lower.clone()),
+        if lower == "*" {
+            return Ok(Self { name: String::new(), kind: PatternKind::All });
+        }
+        let (kind, name) = match lower.strip_prefix("*.") {
+            Some(rest) => (PatternKind::Under, rest.to_string()),
+            None => (PatternKind::Exact, lower.clone()),
         };
         if name.is_empty() {
             return Err(format!("{text:?} is not a host name"));
@@ -38,32 +51,50 @@ impl HostPattern {
                 ));
             }
         }
-        if wildcard && name.split('.').count() < 2 {
-            return Err(format!("{text:?} would inspect a whole top-level domain; name at least two parts after '*.'"));
+        if kind == PatternKind::Under && name.split('.').count() < 2 {
+            return Err(format!(
+                "{text:?} would inspect a whole top-level domain; name at least two parts after '*.', or use '*' for every host"
+            ));
         }
-        if name == crate::TLD || name.ends_with(&format!(".{}", crate::TLD)) {
+        if is_local(&name) {
             return Err(format!("{text:?}: .{} names never leave this Mac, so there is nothing to inspect", crate::TLD));
         }
-        Ok(Self { name, wildcard })
+        Ok(Self { name, kind })
+    }
+
+    /// `*`: the pattern of every host outside `.localhost`.
+    pub fn is_all(&self) -> bool {
+        self.kind == PatternKind::All
     }
 
     /// Does `host` (a name, maybe with a port) match this pattern?
     pub fn matches(&self, host: &str) -> bool {
         let host = bare_host(host);
-        if self.wildcard {
-            host.len() > self.name.len() + 1
-                && host.ends_with(&self.name)
-                && host.as_bytes()[host.len() - self.name.len() - 1] == b'.'
-        } else {
-            host == self.name
+        match self.kind {
+            PatternKind::Exact => host == self.name,
+            PatternKind::Under => {
+                host.len() > self.name.len() + 1
+                    && host.ends_with(&self.name)
+                    && host.as_bytes()[host.len() - self.name.len() - 1] == b'.'
+            }
+            PatternKind::All => !host.is_empty() && !is_local(&host),
         }
     }
 }
 
 impl std::fmt::Display for HostPattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.wildcard { write!(f, "*.{}", self.name) } else { f.write_str(&self.name) }
+        match self.kind {
+            PatternKind::Exact => f.write_str(&self.name),
+            PatternKind::Under => write!(f, "*.{}", self.name),
+            PatternKind::All => f.write_str("*"),
+        }
     }
+}
+
+/// `localhost` or a name under it, in lower case and without a port.
+fn is_local(name: &str) -> bool {
+    name == crate::TLD || name.ends_with(&format!(".{}", crate::TLD))
 }
 
 /// Patterns as the user wrote them, checked, lower case and without
@@ -99,6 +130,11 @@ impl InspectSet {
 
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
+    }
+
+    /// The set holds `*`: every host outside `.localhost` is inspected.
+    pub fn inspects_all(&self) -> bool {
+        self.patterns.iter().any(HostPattern::is_all)
     }
 
     /// The patterns, as `get_proxy` shows them.
@@ -151,6 +187,21 @@ mod tests {
 
     // T4
     #[test]
+    fn a_star_matches_every_host_outside_localhost() {
+        let all = p("*");
+        assert!(all.is_all());
+        assert_eq!(all.to_string(), "*");
+        for host in ["api.example.com", "example.com:443", "com", "1.2.3.4", "[2001:db8::1]:443", "API.Example.com."] {
+            assert!(all.matches(host), "{host}");
+        }
+        for host in ["shop.localhost", "feat.shop.localhost:7443", "localhost", "Shop.LOCALHOST.", ""] {
+            assert!(!all.matches(host), "{host:?} must stay with the route table");
+        }
+        assert_eq!(p(" * ").to_string(), "*");
+        assert_eq!(p("*.").to_string(), "*", "a final dot is ignored, as for every pattern");
+    }
+
+    #[test]
     fn case_final_dot_and_port_are_ignored() {
         assert!(p("API.Example.com").matches("api.EXAMPLE.com:443"));
         assert!(p("*.example.com.").matches("A.Example.Com.:8443"));
@@ -160,7 +211,7 @@ mod tests {
     // T4
     #[test]
     fn bad_patterns_are_refused() {
-        for bad in ["", "*", "*.", "*.com", "a*.b.com", "a.*.com", "under_score.com", "a..b", "shop.localhost", "*.shop.localhost", "localhost", "é.com"] {
+        for bad in ["", "**", "*.*", "*.com", "a*.b.com", "a.*.com", "under_score.com", "a..b", "shop.localhost", "*.shop.localhost", "localhost", "é.com"] {
             assert!(HostPattern::parse(bad).is_err(), "{bad:?} must be refused");
         }
         let why = HostPattern::parse("*.com").unwrap_err();
@@ -172,6 +223,7 @@ mod tests {
         let list = normalize(&["API.example.com".into(), "api.example.com".into(), "*.Example.org".into()]).unwrap();
         assert_eq!(list, ["api.example.com", "*.example.org"]);
         assert!(normalize(&["ok.com".into(), "*.com".into()]).is_err());
+        assert_eq!(normalize(&["*".into(), " * ".into(), "api.example.com".into()]).unwrap(), ["*", "api.example.com"]);
     }
 
     #[test]
@@ -182,6 +234,12 @@ mod tests {
         assert!(!set.matches("other.com"), "a bad pattern is left out");
         assert_eq!(set.patterns(), ["api.example.com", "*.example.org"]);
         assert!(InspectSet::default().is_empty());
+        assert!(!set.inspects_all());
+
+        let all = InspectSet::new(&["api.example.com".into(), "*".into()]);
+        assert!(all.inspects_all());
+        assert!(all.matches("other.net:443"));
+        assert!(!all.matches("shop.localhost"));
     }
 
     #[test]

@@ -614,6 +614,23 @@ mod tests {
         assert!(local.cert_for("api.example.com").is_none(), "the local CA never signs internet names");
     }
 
+    // `*` in the inspect set: every internet name gets a leaf, a .localhost
+    // name still never does (I3).
+    #[test]
+    fn a_star_in_the_inspect_set_never_reaches_localhost_names() {
+        let (_d, p) = paths();
+        let ca = ready(LocalCa::load_or_create_kind(&p, &Instance::release(), CaKind::Inspection));
+        let set = crate::inspect::InspectSet::new(&["*".into()]);
+        let store = CertStore::inspection(Some(ca), Arc::new(move |n: &str| set.matches(n)));
+        assert!(store.cert_for("api.example.com").is_some());
+        assert!(store.cert_for("other.net").is_some());
+        assert!(store.cert_for("1.2.3.4").is_some(), "an IP address gets an IP address leaf");
+        assert!(store.cert_for("2001:db8::1").is_some());
+        assert!(store.cert_for("shop.localhost").is_none());
+        assert!(store.cert_for("router.localhost").is_none());
+        assert!(store.cert_for("localhost").is_none());
+    }
+
     #[test]
     fn store_without_ca_gives_nothing() {
         let store = CertStore::new(None, Arc::new(|_: &str| true));

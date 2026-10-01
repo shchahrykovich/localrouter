@@ -265,8 +265,9 @@ with a leaf of the inspection CA, read each HTTP request, and send it to the
 real server over a new, checked TLS connection. The **inspect set** is the
 list of host patterns that are inspected: `inspect_hosts` in the config, and
 the hosts outside `.localhost` of enabled script rules (ADR 07). A pattern is an exact name
-(`api.example.com`) or `*.` plus a name of at least two labels
-(`*.example.com`, which does not match `example.com` itself).
+(`api.example.com`), `*.` plus a name of at least two labels
+(`*.example.com`, which does not match `example.com` itself), or `*` alone,
+which matches every host outside `.localhost`.
 
 ### Inspection CA
 

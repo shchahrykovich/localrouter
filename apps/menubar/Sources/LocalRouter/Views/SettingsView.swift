@@ -144,7 +144,7 @@ struct SettingsView: View {
                     }
                 }
                 HStack {
-                    TextField("Inspect host: api.example.com or *.example.com", text: $newInspectHost)
+                    TextField("Inspect host: api.example.com, *.example.com or *", text: $newInspectHost)
                         .onSubmit(addInspectHost)
                     Button("Inspect", action: addInspectHost).disabled(newInspectHost.isEmpty)
                 }

@@ -139,7 +139,7 @@ pub struct NoArgs {}
 pub struct ScriptRuleArgs {
     /// The rule's name, a-z, 0-9 and '-', for example "claude-capture". An existing id is replaced.
     pub id: String,
-    /// "api.example.com", "*.example.com", or a route such as "shop.localhost".
+    /// "api.example.com", "*.example.com", "*" (every host outside .localhost), or a route such as "shop.localhost".
     pub host: String,
     /// Absolute path of the .lua file.
     pub script: String,

@@ -895,7 +895,10 @@ impl Daemon {
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
         ];
-        let inspect_set = self.shared.inspect.read().unwrap().patterns();
+        let (inspect_set, inspects_all) = {
+            let set = self.shared.inspect.read().unwrap();
+            (set.patterns(), set.inspects_all())
+        };
         let mut notes = vec![];
         if !config.proxy_enabled {
             notes.push(format!("The proxy is off. Programs that use it cannot connect. Turn it on: {cli} proxy on"));
@@ -911,6 +914,11 @@ impl Daemon {
                 "The inspection CA is not trusted in the login keychain: Chrome will refuse inspected hosts. Run: {cli} proxy trust"
             )),
             _ => {}
+        }
+        if inspects_all {
+            notes.push(format!(
+                "The inspect set holds '*': every HTTPS host is inspected, none is tunnelled. Programs that do not trust the inspection CA, and apps that pin certificates, fail on every host. It comes from inspect_hosts ({cli} proxy inspect rm '*') or a script rule with host '*'."
+            ));
         }
         GetProxyResult {
             enabled: config.proxy_enabled,

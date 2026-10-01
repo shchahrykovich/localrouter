@@ -48,7 +48,7 @@ pub enum ProxyCommand {
 
 #[derive(Subcommand)]
 pub enum InspectCommand {
-    /// Inspect a host: api.example.com, or *.example.com for every name under it.
+    /// Inspect a host: api.example.com, *.example.com for every name under it, or '*' for every host.
     Add { pattern: String },
     /// Stop inspecting a host.
     Rm { pattern: String },

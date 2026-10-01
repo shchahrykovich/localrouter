@@ -61,7 +61,7 @@ socket instead of re-binding a freed port.
 
 | Test file | Case |
 |---|---|
-| `inspect.rs` tests (T4) | `api.example.com` matches itself, not `x.api.example.com`; `*.example.com` matches `a.example.com` and `a.b.example.com`, not `example.com`; case and port ignored; bad patterns refused (`*`, `*.com`? see note, `a*.b`, empty, a label with `_`) |
+| `inspect.rs` tests (T4) | `api.example.com` matches itself, not `x.api.example.com`; `*.example.com` matches `a.example.com` and `a.b.example.com`, not `example.com`; case and port ignored; bad patterns refused (`*.com`? see note, `a*.b`, `*.*`, empty, a label with `_`); `*` matches every host outside `.localhost` (added 2026-10-01) |
 | `tls.rs` tests (T5) | inspection CA created in `inspect-ca.tmp-<pid>/` then renamed; `ca.key` mode `0600`; a damaged `inspect-ca/` is reported, not replaced; inspection `CertStore` refuses a name outside the set and a `.localhost` name |
 | `config.rs` tests (T8) | new fields default per instance (8877 release, 7877 `-dev`); a file without them parses; a file with them round-trips |
 | `logs.rs` tests (T13) | a proxy entry built from `GET /a?token=x` stores `/a`; tunnel entry has `CONNECT`, empty path, bytes |

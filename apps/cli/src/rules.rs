@@ -23,7 +23,7 @@ pub enum RulesCommand {
     Add {
         /// The rule's name: a-z, 0-9 and '-'.
         id: String,
-        /// api.example.com, *.example.com, or a route such as shop.localhost.
+        /// api.example.com, *.example.com, '*' (every host outside .localhost), or a route such as shop.localhost.
         #[arg(long)]
         host: String,
         /// The .lua file. A relative path is made absolute.
