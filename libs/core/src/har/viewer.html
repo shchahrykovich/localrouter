@@ -11,10 +11,18 @@
 <div class="app">
   <header class="top">
     <div class="brand"><span class="brand-name">LocalRouter</span><span class="slash">/</span><span class="brand-page">Proxy log</span></div>
-    <div id="state" class="state"></div>
+    <div class="find">
+      <label class="search"><input id="q" type="search" placeholder="Filter by URL, method, status, mode" autocomplete="off" spellcheck="false"></label>
+      <button id="inv" class="check" type="button" title="Show the requests that do not match the text"><span class="box"></span>Invert</button>
+    </div>
     <div class="grow"></div>
+    <button id="live-btn" class="icon-btn live-btn" type="button">
+      <svg id="icon-pause" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"></rect><rect x="9.5" y="2.5" width="3" height="11" rx="1"></rect></svg>
+      <svg id="icon-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" hidden><path d="M4.5 2.8v10.4a.8.8 0 0 0 1.2.7l8.4-5.2a.8.8 0 0 0 0-1.4L5.7 2.1a.8.8 0 0 0-1.2.7z"></path></svg>
+      <span class="live-mark"><span id="live-dot" class="dot"></span></span>
+    </button>
     <div class="anchor">
-      <button id="menu-btn" class="icon-btn" type="button" title="More" aria-haspopup="true"><span></span><span></span><span></span></button>
+      <button id="menu-btn" class="icon-btn dots" type="button" title="More" aria-haspopup="true"><span></span><span></span><span></span></button>
       <div id="menu" class="pop menu right" hidden></div>
     </div>
   </header>
@@ -22,21 +30,24 @@
   <div id="layout" class="layout">
     <main class="list">
       <div class="toolbar">
-        <label class="search"><input id="q" type="search" placeholder="Filter by URL, method, status, mode" autocomplete="off" spellcheck="false"></label>
-        <button id="inv" class="check" type="button" title="Show the requests that do not match the text"><span class="box"></span>Invert</button>
-        <div class="anchor">
-          <button id="filters-btn" class="btn" type="button">Filters<span id="filter-count" class="badge" hidden></span><span class="caret">▾</span></button>
-          <div id="filters" class="pop filters" hidden></div>
+        <div class="seg view">
+          <button id="view-tree" type="button" title="Tree view" aria-label="Tree view"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2.5v9.5h4"></path><path d="M3 7h4"></path><rect x="8.5" y="5" width="5" height="4" rx="1"></rect><rect x="8.5" y="10" width="5" height="4" rx="1"></rect><rect x="1.5" y="1" width="3" height="3" rx="0.8"></rect></svg></button>
+          <button id="view-list" type="button" title="List view" aria-label="List view"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M5.5 4h8"></path><path d="M5.5 8h8"></path><path d="M5.5 12h8"></path><circle cx="2.5" cy="4" r="0.6" fill="currentColor"></circle><circle cx="2.5" cy="8" r="0.6" fill="currentColor"></circle><circle cx="2.5" cy="12" r="0.6" fill="currentColor"></circle></svg></button>
         </div>
         <div class="anchor">
+          <button id="filters-btn" class="btn tight" type="button" title="Filters" aria-label="Filters"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12l-4.5 5.5V13l-3 1.5V8.5z"></path></svg><span id="filter-count" class="badge" hidden></span><span class="caret">▾</span></button>
+          <div id="filters" class="pop filters" hidden></div>
+        </div>
+        <div id="group-anchor" class="anchor">
           <button id="group-btn" class="btn" type="button"><span class="muted">Group</span><span id="group-label">None</span><span class="caret">▾</span></button>
           <div id="group" class="pop right narrow" hidden></div>
         </div>
         <div class="anchor">
           <button id="cols-btn" class="btn" type="button">Columns<span class="caret">▾</span></button>
-          <div id="cols" class="pop right narrow" hidden></div>
+          <div id="cols" class="pop right cols" hidden></div>
         </div>
-        <button id="live-btn" class="btn" type="button" title="Pause or resume new requests"><span id="live-dot" class="dot"></span><span id="live-label">Live</span></button>
+        <button id="tree-expand" class="link-btn tall" type="button">Expand all</button>
+        <button id="tree-collapse" class="link-btn tall" type="button">Collapse all</button>
         <button id="range" class="range mono" type="button" title="Clear time range" hidden></button>
         <span id="count" class="count mono"></span>
       </div>
@@ -46,7 +57,7 @@
         <button id="tl-btn" class="check small" type="button"><span class="box"></span>Timeline</button>
       </div>
       <div id="timeline" class="timeline"><canvas id="tl-canvas"></canvas></div>
-      <div id="scroll" class="scroll dense">
+      <div id="scroll" class="scroll">
         <div id="thead" class="thead"></div>
         <div id="rows"></div>
         <div id="empty" class="empty" hidden></div>
@@ -66,6 +77,7 @@
   </div>
 </div>
 <div id="ctx" class="pop ctx" hidden></div>
+<div id="builder" class="modal-back" hidden></div>
 <div id="toast" class="toast" hidden></div>
 </body>
 </html>

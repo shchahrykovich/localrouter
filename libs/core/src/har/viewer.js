@@ -71,8 +71,8 @@ function load() {
 
 function save() {
   try {
-    const { density, tl, hide, group, detailW } = S;
-    localStorage.setItem(STORE_KEY, JSON.stringify({ density, tl, hide, group, detailW }));
+    const { view, tl, hide, group, detailW } = S;
+    localStorage.setItem(STORE_KEY, JSON.stringify({ view, tl, hide, group, detailW }));
   } catch (e) {
     // Private windows: the view is not remembered.
   }
@@ -143,10 +143,12 @@ const S = {
   inv: false,
   type: "all",
   fM: {}, fS: {}, fMode: {}, fHost: {},
+  view: saved.view === "list" ? "list" : "tree",
   group: saved.group || "none",
-  collapsed: {},
+  collapsed: {},          // list view: closed groups
+  tx: {},                 // tree view: node key → open
+  sort: null,             // {key, dir}
   hide: saved.hide || {},
-  density: saved.density || "compact",
   tl: saved.tl !== false,
   live: true,
   range: null,            // [a, b], fractions of the timeline span
@@ -416,7 +418,28 @@ function anyOn(o) {
   return Object.values(o).some(Boolean);
 }
 
+const SORT_KEYS = {
+  time: (r) => r.start, method: (r) => r.method, status: (r) => r.status, type: (r) => r.type,
+  host: (r) => r.host, request: (r) => r.path, mode: (r) => r.mode,
+  ms: (r) => (r.open ? Infinity : r.ms), bar: (r) => r.start, size: (r) => r.size,
+};
+
+/** The rows the filters let through, newest first or in the picked sort order. */
 function visible(span) {
+  const out = filtered(span);
+  const by = S.sort && SORT_KEYS[S.sort.key];
+  if (by) {
+    const d = S.sort.dir === "asc" ? 1 : -1;
+    out.sort((a, b) => {
+      const x = by(a);
+      const y = by(b);
+      return (x < y ? -1 : x > y ? 1 : 0) * d;
+    });
+  }
+  return out;
+}
+
+function filtered(span) {
   const q = S.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const range = rangeTimes(span);
   return rows.filter((r) => {
@@ -465,49 +488,61 @@ function render() {
   }, wait);
 }
 
+// The table columns: key, label, width. "request" is always on; "host" is a
+// column of its own in the list view only.
 const COLS = [
-  ["time", "Time", "96px"],
-  ["method", "Method", "62px"],
-  ["status", "Status", "46px"],
-  ["type", "Type", "54px"],
-  ["request", "Request", "minmax(0, 1fr)"],
-  ["mode", "Mode", "64px"],
-  ["ms", "Duration", "68px"],
+  ["time", "Time", "90px"],
+  ["method", "Method", "70px"],
+  ["status", "Status", "62px"],
+  ["type", "Type", "52px"],
+  ["host", "Host", "minmax(100px, 0.6fr)"],
+  ["request", "Path", "minmax(120px, 1fr)"],
+  ["mode", "Mode", "84px"],
+  ["ms", "Duration", "84px"],
   ["bar", "Waterfall", "minmax(80px, 140px)"],
-  ["size", "Size", "68px"],
+  ["size", "Size", "64px"],
 ];
+// Columns that step aside while the details are open, to leave the request room.
+const AUTO_HIDE = new Set(["time", "type", "host", "mode", "bar"]);
+// Columns sorted largest first on the first click.
+const NUMERIC = new Set(["time", "ms", "size"]);
 
 function userOn(k) {
   return k === "request" || !S.hide[k];
 }
 
+/** The columns drawn, in order, as [key, label, width]. The tree view puts
+ *  the request first and has no host column: the tree shows the host. */
+function columns(sel) {
+  const tree = S.view === "tree";
+  const list = tree
+    ? [["request", "Request", sel ? "minmax(140px, 1fr)" : "minmax(200px, 1fr)"], ...COLS.filter(([k]) => k !== "request" && k !== "host")]
+    : COLS;
+  return list.filter(([k]) => userOn(k) && !(sel && AUTO_HIDE.has(k)));
+}
+
+let lastVis = [];         // the rows the last draw showed, for Expand all
+
 function draw() {
   const span = timeSpan();
   const vis = visible(span);
-  const sel = S.sel && byKey.get(S.sel);
-  const shownSel = sel && vis.includes(sel) ? sel : sel || null;
+  lastVis = vis;
+  const sel = (S.sel && byKey.get(S.sel)) || null;
   drawHeader();
   drawToolbar(vis);
   drawTypes();
   // The layout first: the timeline reads its canvas width.
-  drawLayout(shownSel);
+  drawLayout(sel);
   $("timeline").hidden = !S.tl;
   $("tl-btn").classList.toggle("on", S.tl);
-  drawTable(span, vis, shownSel);
+  drawTable(span, vis, sel);
   if (S.tl) drawTimeline(span, vis);
-  drawDetail(shownSel);
+  drawDetail(sel);
   drawPops(vis);
   fresh = new Set();
 }
 
 function drawHeader() {
-  const st = $("state");
-  st.textContent = "";
-  if (info) {
-    st.append(h("span", { class: "chip " + (info.proxy ? "on" : "off"), text: "Proxy " + (info.proxy ? "on" : "off") }));
-    st.append(h("span", { class: "chip " + (info.log ? "on" : "off"), text: "Log " + (info.log ? "on" : "off") }));
-    if (info.dropped) st.append(h("span", { class: "chip bad", text: count(info.dropped) + " dropped" }));
-  }
   const b = $("banner");
   b.textContent = "";
   b.className = "banner";
@@ -538,14 +573,27 @@ function drawToolbar(vis) {
   $("cols-btn").classList.toggle("active", S.pop === "cols");
   $("menu-btn").classList.toggle("active", S.pop === "menu");
   $("group-label").textContent = (GROUPS.find((g) => g[0] === S.group) || GROUPS[0])[1];
+  const tree = S.view === "tree";
+  $("view-tree").classList.toggle("on", tree);
+  $("view-list").classList.toggle("on", !tree);
+  $("group-anchor").hidden = tree;
+  $("tree-expand").hidden = !tree;
+  $("tree-collapse").hidden = !tree;
+
   $("live-dot").className = "dot" + (S.live ? " live" : "");
-  $("live-label").textContent = S.live ? "Live" : held.length ? "Paused, " + count(held.length) + " new" : "Paused";
+  $("icon-pause").toggleAttribute("hidden", !S.live);
+  $("icon-play").toggleAttribute("hidden", S.live);
+  const lb = $("live-btn");
+  const title = S.live ? "Live, click to pause" : "Paused, click to resume";
+  lb.title = title;
+  lb.setAttribute("aria-label", title);
+
   const span = timeSpan();
   const range = rangeTimes(span);
   const rb = $("range");
   rb.hidden = !range;
   if (range) rb.textContent = clock(range[0]) + " to " + clock(range[1]);
-  $("count").textContent = count(vis.length) + " of " + count(rows.length);
+  $("count").textContent = count(vis.length) + " of " + count(rows.length) + (!S.live && held.length ? ", " + count(held.length) + " new while paused" : "");
 }
 
 const TYPES = [
@@ -699,37 +747,151 @@ const GROUP_KEYS = {
 };
 const GROUPS = [["none", "None"], ["host", "Host"], ["type", "Type"], ["status", "Status class"], ["method", "Method"], ["mode", "Mode"]];
 
+function svg(attrs, ...kids) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", attrs.tag || "svg");
+  for (const [k, v] of Object.entries(attrs)) if (k !== "tag") el.setAttribute(k, v);
+  for (const kid of kids) el.append(kid);
+  return el;
+}
+
+/** The two small sort arrows of a column head. */
+function sortArrows(dir) {
+  const up = dir ? (dir === "asc" ? "1" : "0.2") : "0.35";
+  const down = dir ? (dir === "desc" ? "1" : "0.2") : "0.35";
+  return svg({ width: "8", height: "11", viewBox: "0 0 8 11", fill: "currentColor", class: "arrows", "aria-hidden": "true" },
+    svg({ tag: "path", d: "M4 0.5L7.2 4.3H0.8z", opacity: up }),
+    svg({ tag: "path", d: "M4 10.5L0.8 6.7h6.4z", opacity: down }));
+}
+
+/** A click on a column head: first order, the other order, then no sort. */
+function cycleSort(k) {
+  const first = NUMERIC.has(k) ? "desc" : "asc";
+  const second = first === "asc" ? "desc" : "asc";
+  const cur = S.sort && S.sort.key === k ? S.sort.dir : null;
+  S.sort = cur === null ? { key: k, dir: first } : cur === first ? { key: k, dir: second } : null;
+  render();
+}
+
+// ---- the tree view: host, then one folder per path segment, then requests
+
+function segments(r) {
+  if (r.mode === "tunnel") return [];
+  return r.path.split(/[?#]/)[0].split("/").filter(Boolean);
+}
+
+/** The last part of the path and the query, as a request shows in the tree. */
+function leafOf(r) {
+  if (r.mode === "tunnel") return { name: "(tunnel)", query: "" };
+  const segs = segments(r);
+  const cut = r.path.search(/[?#]/);
+  const base = cut < 0 ? r.path : r.path.slice(0, cut);
+  const name = segs.length ? segs[segs.length - 1] + (base.endsWith("/") ? "/" : "") : "/";
+  return { name, query: cut < 0 ? "" : r.path.slice(cut) };
+}
+
+/** The tree node keys of a row, from the host down: "host", "host/a", "host/a/b". */
+function nodeKeys(r) {
+  const keys = [r.host || "(no host)"];
+  for (const seg of segments(r).slice(0, -1)) keys.push(keys[keys.length - 1] + "/" + seg);
+  return keys;
+}
+
+/** Hosts start closed, folders open. */
+function nodeOpen(key, kind) {
+  return key in S.tx ? S.tx[key] : kind !== "host";
+}
+
+function setAllNodes(open) {
+  const tx = {};
+  for (const r of lastVis) for (const k of nodeKeys(r)) tx[k] = open;
+  S.tx = tx;
+  render();
+}
+
+function buildTree(vis) {
+  const top = new Map();
+  for (const r of vis) {
+    const keys = nodeKeys(r);
+    const segs = segments(r);
+    let map = top;
+    let node = null;
+    keys.forEach((k, depth) => {
+      let n = map.get(k);
+      if (!n) {
+        const kind = depth === 0 ? "host" : "folder";
+        n = { key: k, label: depth === 0 ? k : segs[depth - 1] + "/", depth, kind, kids: new Map(), reqs: [], n: 0, err: 0, bytes: 0 };
+        map.set(k, n);
+      }
+      n.n++;
+      n.bytes += Math.max(0, r.size);
+      if (isError(r)) n.err++;
+      node = n;
+      map = n.kids;
+    });
+    node.reqs.push(r);
+  }
+  return top;
+}
+
+function nodeEl(n, open) {
+  return h("div", { class: "node k-" + n.kind, style: { paddingLeft: 14 + n.depth * 18 + "px" }, title: n.key, onClick: () => { S.tx[n.key] = !open; render(); } },
+    h("span", { class: "caret-g", text: open ? "▾" : "▸" }),
+    h("span", { class: "label", text: n.label }),
+    h("span", { class: "n", text: count(n.n) }),
+    h("span", { class: "grow" }),
+    n.err ? h("span", { class: "errs", text: count(n.err) + " failed" }) : null,
+    h("span", { class: "totals", text: fmtSize(n.bytes) }));
+}
+
 function drawTable(span, vis, sel) {
-  const cols = {};
-  for (const [k] of COLS) cols[k] = userOn(k) && !(sel && (k === "mode" || k === "bar"));
-  const grid = COLS.filter(([k]) => cols[k]).map((c) => c[2]).join(" ");
+  const tree = S.view === "tree";
+  const cols = columns(sel);
+  const on = new Set(cols.map((c) => c[0]));
   const scroll = $("scroll");
-  scroll.style.setProperty("--cols", grid);
-  scroll.classList.toggle("dense", S.density === "compact");
+  scroll.style.setProperty("--cols", cols.map((c) => c[2]).join(" "));
 
   const head = $("thead");
   head.textContent = "";
-  for (const [k, label] of COLS) {
-    if (!cols[k]) continue;
-    head.append(h("div", { class: k === "ms" || k === "size" ? "r" : "", text: label }));
+  for (const [k, label] of cols) {
+    const dir = S.sort && S.sort.key === k ? S.sort.dir : null;
+    const name = k === "request" ? (tree ? "Request" : "Path") : label;
+    head.append(h("button", {
+      class: "th" + (dir ? " on" : "") + (k === "ms" || k === "size" ? " r" : "") + (k === "request" && tree ? " indent" : ""),
+      type: "button", title: "Sort by " + (k === "request" ? "path" : label.toLowerCase()), onClick: () => cycleSort(k),
+    }, h("span", { text: name }), sortArrows(dir)));
   }
 
   const range = rangeTimes(span);
-  const v0 = range ? range[0] : span.t0;
-  const v1 = range ? range[1] : span.t1;
+  const ctx = {
+    on, sel, tree,
+    v0: range ? range[0] : span.t0,
+    v1: range ? range[1] : span.t1,
+    // The host column steps aside while the details are open: the path then shows it.
+    hostInPath: !tree && !on.has("host") && userOn("host"),
+  };
   const body = $("rows");
   body.textContent = "";
   order = [];
   let drawnRows = 0;
   const frag = document.createDocumentFragment();
-  const addRow = (r, noHost) => {
+  const addRow = (r, opts) => {
     order.push(r.key);
     if (drawnRows >= MAX_DRAWN) return;
     drawnRows++;
-    frag.append(rowEl(r, cols, v0, v1, noHost, sel));
+    frag.append(rowEl(r, ctx, opts));
   };
-  if (S.group === "none") {
-    for (const r of vis) addRow(r, false);
+  if (tree) {
+    const byLabel = (a, b) => a.label.localeCompare(b.label);
+    const walk = (n) => {
+      const open = nodeOpen(n.key, n.kind);
+      frag.append(nodeEl(n, open));
+      if (!open) return;
+      [...n.kids.values()].sort(byLabel).forEach(walk);
+      for (const r of n.reqs) addRow(r, { indent: (n.depth + 1) * 18 + 6 });
+    };
+    [...buildTree(vis).values()].sort(byLabel).forEach(walk);
+  } else if (S.group === "none") {
+    for (const r of vis) addRow(r, {});
   } else {
     const groups = new Map();
     for (const r of vis) {
@@ -748,7 +910,7 @@ function drawTable(span, vis, sel) {
         h("div", { class: "grow" }),
         errs ? h("div", { class: "errs", text: errs + " failed" }) : null,
         h("div", { class: "totals", text: fmtSize(bytes) })));
-      if (!closed) for (const r of list) addRow(r, S.group === "host");
+      if (!closed) for (const r of list) addRow(r, { noHost: S.group === "host" });
     }
   }
   body.append(frag);
@@ -770,37 +932,53 @@ function drawTable(span, vis, sel) {
   $("more").disabled = loadingMore;
 }
 
-function rowEl(r, cols, v0, v1, noHost, sel) {
+/** The request cell: in the tree the last path part, in the list the path. */
+function requestCell(r, ctx, opts) {
+  if (ctx.tree) {
+    const leaf = leafOf(r);
+    return h("div", { class: "c-req", title: r.url, style: { paddingLeft: opts.indent + "px" } },
+      h("span", { class: "path-main", text: leaf.name }), h("span", { class: "path-query", text: leaf.query }));
+  }
+  if (r.mode === "tunnel") {
+    return h("div", { class: "c-req", title: r.url }, ctx.hostInPath && !opts.noHost ? h("span", { class: "host-pre", text: r.host + " " }) : null, h("span", { class: "path-query", text: "(tunnel)" }));
+  }
+  const cut = r.path.search(/[?#]/);
+  return h("div", { class: "c-req", title: r.url },
+    ctx.hostInPath && !opts.noHost ? h("span", { class: "host-pre", text: r.host }) : null,
+    h("span", { class: "path-main", text: cut < 0 ? r.path : r.path.slice(0, cut) }),
+    h("span", { class: "path-query", text: cut < 0 ? "" : r.path.slice(cut) }));
+}
+
+function rowEl(r, ctx, opts) {
   const ws = r.type === "ws";
   const cells = [];
-  if (cols.time) cells.push(h("div", { class: "c-time", text: clock(r.start) }));
-  if (cols.method) cells.push(h("div", { class: "c-method m-" + r.method, text: r.method }));
-  if (cols.status) cells.push(h("div", null, h("span", { class: "pill " + statusClass(r.status), text: r.status ? String(r.status) : "…" })));
-  if (cols.type) cells.push(h("div", null, h("span", { class: "tpill" + (ws ? " ws" : ""), text: r.type })));
-  cells.push(h("div", { class: "c-req", title: r.url },
-    noHost ? null : h("span", { class: "host", text: r.host }),
-    h("span", { class: "path", text: r.mode === "tunnel" ? "" : r.path })));
-  if (cols.mode) cells.push(h("div", { class: "muted", text: r.mode }));
-  if (cols.ms) {
-    let text;
-    let cls = "c-ms r";
-    if (r.open && ws) { text = "live"; cls += " live"; }
-    else if (r.open) { text = "receiving"; cls += " live"; }
-    else if (ws) text = fmtMs(r.receive || r.ms);
-    else { text = fmtMs(r.ms); if (r.ms > 1000) cls += " slow"; }
-    cells.push(h("div", { class: cls, text }));
+  for (const k of ctx.on) {
+    if (k === "request") cells.push(requestCell(r, ctx, opts));
+    else if (k === "time") cells.push(h("div", { class: "c-time", text: clock(r.start) }));
+    else if (k === "method") cells.push(h("div", { class: "c-method m-" + r.method, text: r.method }));
+    else if (k === "status") cells.push(h("div", null, h("span", { class: "pill " + statusClass(r.status), text: r.status ? String(r.status) : "…" })));
+    else if (k === "type") cells.push(h("div", null, h("span", { class: "tpill" + (ws ? " ws" : ""), text: r.type })));
+    else if (k === "host") cells.push(h("div", { class: "c-host", title: r.host, text: r.host }));
+    else if (k === "mode") cells.push(h("div", { class: "c-mode" + (r.mode !== "inspect" ? " other" : ""), text: r.mode }));
+    else if (k === "ms") {
+      let text;
+      let cls = "c-ms r";
+      if (r.open && ws) { text = "live"; cls += " live"; }
+      else if (r.open) { text = "receiving"; cls += " live"; }
+      else if (ws) text = fmtMs(r.receive || r.ms);
+      else { text = fmtMs(r.ms); if (r.ms > 1000) cls += " slow"; }
+      cells.push(h("div", { class: cls, text }));
+    } else if (k === "bar") {
+      const left = Math.max(0, Math.min(98, ((r.start - ctx.v0) / (ctx.v1 - ctx.v0)) * 100));
+      const width = Math.max(1.5, Math.min(100 - left, ((endOf(r) - Math.max(r.start, ctx.v0)) / (ctx.v1 - ctx.v0)) * 100));
+      cells.push(h("div", { class: "wf" }, h("div", { class: ws ? "ws" : isError(r) ? "err" : "", style: { left: left + "%", width: width + "%" } })));
+    } else if (k === "size") {
+      const text = ws ? (r.messages !== null ? count(r.messages) + " msg" : "") : fmtSize(r.size);
+      cells.push(h("div", { class: "c-size r", text }));
+    }
   }
-  if (cols.bar) {
-    const left = Math.max(0, Math.min(98, ((r.start - v0) / (v1 - v0)) * 100));
-    const width = Math.max(1.5, Math.min(100 - left, ((endOf(r) - Math.max(r.start, v0)) / (v1 - v0)) * 100));
-    cells.push(h("div", { class: "wf" }, h("div", { class: ws ? "ws" : isError(r) ? "err" : "", style: { left: left + "%", width: width + "%" } })));
-  }
-  if (cols.size) {
-    const text = ws ? (r.messages !== null ? count(r.messages) + " msg" : "") : fmtSize(r.size);
-    cells.push(h("div", { class: "c-size r", text }));
-  }
-  const el = h("div", {
-    class: "row" + (sel && sel.key === r.key ? " picked" : "") + (fresh.has(r.key) ? " fresh" : ""),
+  return h("div", {
+    class: "row" + (ctx.sel && ctx.sel.key === r.key ? " picked" : "") + (fresh.has(r.key) ? " fresh" : ""),
     onClick: () => select(r.key),
     onContextmenu: (ev) => {
       ev.preventDefault();
@@ -809,7 +987,6 @@ function rowEl(r, cols, v0, v1, noHost, sel) {
       render();
     },
   }, cells);
-  return el;
 }
 
 function select(key) {
@@ -899,7 +1076,8 @@ function drawDetailHead(r, e, tabs, tab) {
   const act = $("dactions");
   act.textContent = "";
   act.append(
-    h("button", { class: "btn small", type: "button", text: "Copy as cURL", onClick: () => copyCurl(r) }),
+    h("button", { class: "btn small dark", type: "button", text: "Copy as cURL", onClick: () => copyCurl(r) }),
+    h("button", { class: "btn small", type: "button", title: "Change the request, then copy it as cURL (E)", text: "Edit as cURL", onClick: () => openBuilder(r) }),
     h("button", { class: "btn small", type: "button", text: "Copy as JSON", onClick: () => copyJson(r) }),
     h("button", { class: "btn small", type: "button", text: "Copy URL", onClick: () => copy("URL copied", r.url) }),
   );
@@ -1213,12 +1391,7 @@ function drawPops(vis) {
 
 function drawMenu(m) {
   m.append(h("div", { class: "pop-title", text: "View" }));
-  const seg = h("div", { class: "seg" });
-  for (const [k, label] of [["compact", "Compact"], ["comfortable", "Comfortable"]]) {
-    seg.append(h("button", { class: S.density === k ? "on" : "", type: "button", text: label, onClick: () => { S.density = k; save(); render(); } }));
-  }
-  m.append(h("div", { class: "row-line" }, h("span", { text: "Row density" }), seg));
-  m.append(h("button", { class: "item check-item" + (S.tl ? " on" : ""), type: "button", onClick: () => { S.tl = !S.tl; save(); render(); } }, h("span", { class: "box" + (S.tl ? " on" : "") }), "Timeline"));
+  m.append(h("button", { class: "item", type: "button", onClick: () => { S.tl = !S.tl; save(); render(); } }, h("span", { class: "box" + (S.tl ? " on" : "") }), "Timeline"));
   const wf = !S.hide.bar;
   m.append(h("button", { class: "item", type: "button", onClick: () => { S.hide.bar = wf; save(); render(); } }, h("span", { class: "box" + (wf ? " on" : "") }), "Waterfall column"));
   m.append(h("div", { class: "pop-sep" }), h("div", { class: "pop-title", text: "Log files" }));
@@ -1241,7 +1414,9 @@ function drawMenu(m) {
     m.append(h("div", { class: "facts" },
       h("span", { text: "Folder" }), h("span", { class: "mono", title: info.folder, text: info.folder }),
       h("span", { text: "Rotation" }), h("span", { text: info.file_mb + " MB or " + count(info.file_requests) + " requests, keep " + info.keep_files + " files" }),
-      h("span", { text: "Bodies" }), h("span", { text: "First 1 MB of each, headers as sent" })));
+      h("span", { text: "Bodies" }), h("span", { text: "First 1 MB of each, headers as sent" }),
+      info.dropped ? h("span", { text: "Dropped" }) : null,
+      info.dropped ? h("span", { class: "bad-text", text: count(info.dropped) + " requests not written (queue full)" }) : null));
   }
 }
 
@@ -1292,10 +1467,10 @@ function drawCols(p) {
   for (const [k, label] of COLS) {
     const locked = k === "request";
     const on = userOn(k);
-    const auto = sel && (k === "mode" || k === "bar");
+    const note = locked ? "always" : k === "host" && S.view === "tree" ? "list view only" : sel && on && AUTO_HIDE.has(k) ? "hidden with details" : "";
     p.append(h("button", { class: "item" + (locked ? " locked" : ""), type: "button", onClick: () => { if (locked) return; S.hide[k] = on; save(); render(); } },
       h("span", { class: "box" + (on ? " on" : "") }), h("span", { class: "grow", text: label }),
-      h("span", { class: "hint", text: locked ? "always" : auto && on ? "hidden with details" : "" })));
+      h("span", { class: "hint", text: note })));
   }
   p.append(h("div", { class: "pop-sep" }), h("button", { class: "link-btn", type: "button", text: "Reset columns", onClick: () => { S.hide = {}; save(); render(); } }));
 }
@@ -1308,17 +1483,122 @@ function drawCtx() {
   if (!r) return;
   document.body.append(scrim(40));
   box.style.left = Math.min(S.ctx.x, window.innerWidth - 242) + "px";
-  box.style.top = Math.min(S.ctx.y, window.innerHeight - 240) + "px";
-  const item = (label, fn) => h("button", { class: "item", type: "button", onClick: () => { S.ctx = null; fn(); render(); } }, label);
+  box.style.top = Math.min(S.ctx.y, window.innerHeight - 280) + "px";
+  const item = (label, fn, hint) => h("button", { class: "item", type: "button", onClick: () => { S.ctx = null; fn(); render(); } },
+    h("span", { text: label }), hint ? h("span", { class: "hint", text: hint }) : null);
   box.append(
     h("div", { class: "ctx-title", text: r.method + " " + r.host + (r.mode === "tunnel" ? "" : r.path) }),
+    item("Build request", () => openBuilder(r), "E"),
+    h("div", { class: "pop-sep" }),
     item("Copy URL", () => copy("URL copied", r.url)),
     item("Copy as cURL", () => copyCurl(r)),
     item("Copy as JSON", () => copyJson(r)),
     h("div", { class: "pop-sep" }),
     item("Show only this host", () => { S.fHost = { [r.host]: true }; }),
-    item("Hide this host", () => { S.q = ""; $("q").value = r.host; S.inv = true; S.q = r.host; }),
+    item("Hide this host", () => { $("q").value = r.host; S.inv = true; S.q = r.host; }),
   );
+}
+
+// ---- the request builder: change a request, then copy it as cURL. The
+// viewer is read only (ADR 08, I10): it never sends a request itself.
+
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
+
+function builderShown() {
+  return !$("builder").hidden;
+}
+
+function closeBuilder() {
+  const back = $("builder");
+  back.hidden = true;
+  back.textContent = "";
+}
+
+async function openBuilder(r) {
+  S.ctx = null;
+  S.pop = null;
+  render();
+  let e = r.e;
+  try {
+    e = (await wholeEntry(r)) || e;
+  } catch (err) {
+    // Without the whole entry the builder has no body.
+  }
+  const p = e.request.postData;
+  const binary = !!(p && p.text && p.encoding === "base64");
+  drawBuilder(r, {
+    method: r.method,
+    url: r.url,
+    headers: curlHeaders(e.request.headers),
+    body: p && p.text && !binary ? p.text : "",
+    binary,
+  });
+}
+
+function drawBuilder(r, b) {
+  const back = $("builder");
+  back.textContent = "";
+  const method = h("select", { class: "field mono method", "aria-label": "Method" });
+  for (const m of METHODS.includes(b.method) ? METHODS : [b.method, ...METHODS]) {
+    method.append(h("option", { text: m, selected: m === b.method }));
+  }
+  const url = h("input", { class: "field mono grow", "aria-label": "URL", spellcheck: "false" });
+  url.value = b.url;
+
+  const list = h("div", { class: "hlist" });
+  const hcount = h("span");
+  const recount = () => { hcount.textContent = count(list.children.length); };
+  const addHeader = (k, v) => {
+    const name = h("input", { class: "field mono name", placeholder: "name", spellcheck: "false" });
+    const value = h("input", { class: "field mono", placeholder: "value", spellcheck: "false" });
+    name.value = k;
+    value.value = v;
+    const row = h("div", { class: "hrow" }, name, value,
+      h("button", { class: "field x", type: "button", title: "Remove header", text: "×", onClick: () => { row.remove(); recount(); } }));
+    list.append(row);
+    return name;
+  };
+  for (const [k, v] of b.headers) addHeader(k, v);
+  recount();
+
+  const body = h("textarea", { class: "field mono body", placeholder: "Raw request body", spellcheck: "false" });
+  body.value = b.body;
+  const bodyNote = h("span");
+  const noBody = () => method.value === "GET" || method.value === "HEAD";
+  const noteBody = () => {
+    bodyNote.textContent = noBody() ? "ignored for " + method.value : b.binary ? "the recorded body is binary and is not shown here" : "";
+  };
+  method.addEventListener("change", noteBody);
+  noteBody();
+
+  const read = () => ({
+    method: method.value,
+    url: url.value.trim(),
+    headers: [...list.children].map((row) => [row.children[0].value.trim(), row.children[1].value]).filter(([k]) => k),
+    body: noBody() ? "" : body.value,
+  });
+  const copyIt = () => {
+    const x = read();
+    copy("cURL copied", curlOf(x.method, x.url, x.headers, x.body, false));
+    closeBuilder();
+  };
+
+  back.append(h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Build request" },
+    h("div", { class: "modal-head" },
+      h("b", { text: "Build request" }),
+      h("span", { class: "sub grow", text: "Based on " + r.method + " " + r.host + " at " + clock(r.start) }),
+      h("button", { class: "btn x", type: "button", title: "Close (Esc)", text: "×", onClick: closeBuilder })),
+    h("div", { class: "modal-body" },
+      h("div", { class: "line" }, method, url),
+      h("div", { class: "sec" }, h("div", { class: "sec-head" }, h("b", { text: "Headers" }), hcount), list,
+        h("div", null, h("button", { class: "link-btn flush", type: "button", text: "Add header", onClick: () => { addHeader("", "").focus(); recount(); } }))),
+      h("div", { class: "sec" }, h("div", { class: "sec-head" }, h("b", { text: "Body" }), bodyNote), body)),
+    h("div", { class: "modal-foot" },
+      h("span", { class: "sub grow", text: "The viewer does not send requests. Run the command in a terminal." }),
+      h("button", { class: "btn", type: "button", text: "Cancel", onClick: closeBuilder }),
+      h("button", { class: "btn teal", type: "button", text: "Copy as cURL", onClick: copyIt }))));
+  back.hidden = false;
+  url.focus();
 }
 
 // ---- copy
@@ -1351,6 +1631,22 @@ function shellQuote(s) {
 
 const SKIP_CURL = new Set(["content-length", "host", "connection", "proxy-connection", "keep-alive", "transfer-encoding"]);
 
+/** The request headers a cURL command carries, as [name, value]. */
+function curlHeaders(list) {
+  return (list || []).filter((x) => !x.name.startsWith(":") && !SKIP_CURL.has(x.name.toLowerCase())).map((x) => [x.name, x.value]);
+}
+
+function curlOf(method, url, headers, body, binary) {
+  const parts = ["curl " + shellQuote(url)];
+  if (method !== "GET" && !(method === "POST" && (body || binary))) parts.push("-X " + method);
+  for (const [k, v] of headers) parts.push("-H " + shellQuote(k + ": " + v));
+  if (headers.some(([k]) => k.toLowerCase() === "accept-encoding")) parts.push("--compressed");
+  if (body) parts.push("--data-raw " + shellQuote(body));
+  // Last: the shell comment ends the command.
+  else if (binary) parts.push("--data-binary @- # base64 body, see Copy as JSON");
+  return parts.join(" \\\n  ");
+}
+
 async function copyCurl(r) {
   let e = r.e;
   try {
@@ -1358,16 +1654,9 @@ async function copyCurl(r) {
   } catch (err) {
     // Without the whole entry the command has no body.
   }
-  const parts = ["curl " + shellQuote(r.url)];
-  if (r.method !== "GET" && !(r.method === "POST" && e.request.postData)) parts.push("-X " + r.method);
-  for (const x of e.request.headers || []) {
-    if (x.name.startsWith(":") || SKIP_CURL.has(x.name.toLowerCase())) continue;
-    parts.push("-H " + shellQuote(x.name + ": " + x.value));
-  }
   const p = e.request.postData;
-  if (p && p.text) parts.push(p.encoding === "base64" ? "--data-binary @- # base64 body, see Copy as JSON" : "--data-raw " + shellQuote(p.text));
-  if (header(e.request.headers, "accept-encoding")) parts.push("--compressed");
-  copy("cURL copied", parts.join(" \\\n  "));
+  const binary = !!(p && p.text && p.encoding === "base64");
+  copy("cURL copied", curlOf(r.method, r.url, curlHeaders(e.request.headers), p && p.text && !binary ? p.text : "", binary));
 }
 
 async function copyJson(r) {
@@ -1406,6 +1695,10 @@ function resizeDown(ev) {
 
 function onKey(e) {
   const tag = e.target.tagName;
+  if (builderShown()) {
+    if (e.key === "Escape") closeBuilder();
+    return;
+  }
   if (e.key === "Escape") {
     if (S.pop || S.ctx) return closePops();
     if (tag === "INPUT" && e.target.value) return;
@@ -1419,6 +1712,11 @@ function onKey(e) {
   if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
     $("q").focus();
+    return;
+  }
+  if ((e.key === "e" || e.key === "E") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const r = S.sel && byKey.get(S.sel);
+    if (r) openBuilder(r);
     return;
   }
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -1449,6 +1747,12 @@ document.addEventListener("DOMContentLoaded", () => {
   $("group-btn").addEventListener("click", toggle("group"));
   $("cols-btn").addEventListener("click", toggle("cols"));
   $("menu-btn").addEventListener("click", toggle("menu"));
+  const view = (v) => () => { S.view = v; save(); render(); };
+  $("view-tree").addEventListener("click", view("tree"));
+  $("view-list").addEventListener("click", view("list"));
+  $("tree-expand").addEventListener("click", () => setAllNodes(true));
+  $("tree-collapse").addEventListener("click", () => setAllNodes(false));
+  $("builder").addEventListener("mousedown", (e) => { if (e.target === $("builder")) closeBuilder(); });
   $("live-btn").addEventListener("click", () => setLive(!S.live));
   $("range").addEventListener("click", () => { S.range = null; render(); });
   $("tl-btn").addEventListener("click", () => { S.tl = !S.tl; save(); render(); });
