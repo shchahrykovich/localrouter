@@ -45,7 +45,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
         case .certificates: ["https", "certificate authority", "ca", "trust", "untrust", "ca.pem"]
         case .proxy: ["forward proxy", "address", "port", "chrome", "proxy log", "har", "requests per file", "mb per file", "viewer"]
         case .inspection: ["inspect host", "https", "inspection ca", "trust", "untrust", "decrypt"]
-        case .scripts: ["lua", "script rules", "intercept", "log", "secrets", "api keys", "cookies"]
+        case .scripts: ["lua", "script rules", "intercept", "log"]
         case .daemon: ["version", "http port", "https port", "config.json", "restart", "errors"]
         case .updates: ["check for updates", "automatically", "version"]
         case .help: ["coding agent", "mcp", "claude", "codex", "command line tool", "terminal", "firefox", "node.js", "python"]

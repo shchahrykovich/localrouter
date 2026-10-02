@@ -553,52 +553,6 @@ fn rules_check_prints_the_file_and_line_of_a_mistake() {
 }
 
 #[test]
-fn reveal_secrets_is_refused_without_a_terminal() {
-    let d = Daemon::start();
-    let dir = script_folder();
-    let (code, _, err) = cli_in(&d, dir.path(), &["rules", "add", "cap", "--host", "shop.localhost", "--script", "cap.lua", "--output-dir", "out", "--reveal-secrets"]);
-    assert_eq!(code, 2, "I9: {err}");
-    assert!(err.contains("needs a terminal"), "{err}");
-    let (_, json, _) = cli_in(&d, dir.path(), &["rules", "--json"]);
-    assert!(json.contains("\"rules\": []"), "nothing was set: {json}");
-}
-
-// I9: in a pseudo-terminal, typing yes sets reveal_secrets.
-#[test]
-fn reveal_secrets_in_a_terminal_asks_for_yes() {
-    use std::io::{Read, Write};
-    let d = Daemon::start();
-    let dir = script_folder();
-    let mut child = Command::new("/usr/bin/script")
-        .args(["-q", "/dev/null", env!("CARGO_BIN_EXE_localrouter"), "rules", "add", "cap", "--host", "shop.localhost"])
-        .args(["--script", "cap.lua", "--output-dir", "out", "--reveal-secrets"])
-        .current_dir(dir.path())
-        .env("LOCALROUTER_HOME", d.home())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdout = child.stdout.take().unwrap();
-    let mut seen = String::new();
-    let mut buf = [0u8; 256];
-    while !seen.contains("Type yes:") {
-        let n = stdout.read(&mut buf).unwrap();
-        assert!(n > 0, "no prompt: {seen}");
-        seen.push_str(&String::from_utf8_lossy(&buf[..n]));
-    }
-    assert!(seen.contains("API keys and cookies of shop.localhost"), "{seen}");
-    let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(b"yes\n").unwrap();
-    let mut rest = String::new();
-    let _ = stdout.read_to_string(&mut rest);
-    drop(stdin);
-    child.wait().unwrap();
-    let (_, json, _) = cli_in(&d, dir.path(), &["rules", "--json"]);
-    let list: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(list["rules"][0]["reveal_secrets"], true, "{seen}{rest}");
-}
-
-#[test]
 fn rules_disable_enable_and_rm() {
     let d = Daemon::start();
     let dir = script_folder();

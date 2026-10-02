@@ -64,7 +64,7 @@ async fn exactly_nine_tools_are_listed() {
     for field in ["id", "host", "script", "path", "methods", "output_dir", "order", "on_error", "owner_pid", "persistent", "check_only"] {
         assert!(schema["properties"].get(field).is_some(), "set_script_rule has no {field}: {schema}");
     }
-    assert!(schema["properties"].get("reveal_secrets").is_none(), "I9: MCP cannot reveal secrets");
+    assert!(schema["properties"].get("reveal_secrets").is_none(), "reveal_secrets no longer exists");
     let register = tools.iter().find(|t| t.name == "register_route").unwrap();
     let schema = serde_json::to_value(&register.input_schema).unwrap();
     for field in ["host", "path", "strip_path", "protocol", "target", "port", "folder", "listen_port", "note", "owner_pid", "persistent"] {
@@ -270,8 +270,8 @@ async fn get_proxy_reads_the_proxy_settings_and_changes_nothing() {
     client.cancel().await.unwrap();
 }
 
-// ADR 07, T16, I9: reveal_secrets is an unknown argument; check_only stores
-// nothing; removing an unknown id says so.
+// ADR 07, T16: an unknown argument (reveal_secrets, which no longer exists)
+// is refused; check_only stores nothing; removing an unknown id says so.
 #[tokio::test]
 async fn script_rule_tools_check_set_and_remove() {
     let d = Daemon::start();

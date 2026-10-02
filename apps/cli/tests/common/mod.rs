@@ -44,7 +44,7 @@ impl Daemon {
         let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.json"),
-            r#"{"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100}"#,
+            r#"{"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100,"inspect_hosts":[]}"#,
         )
         .unwrap();
         let mut cmd = Command::new(daemon);

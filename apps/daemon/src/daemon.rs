@@ -183,21 +183,16 @@ impl Daemon {
         }
         let log = Arc::new(RequestLog::new(config.value.log_size));
         let scripts = Scripts::new();
-        scripts.set_secret_headers(&config.value.secret_headers);
         load_saved_script_rules(&paths, &scripts);
-        // The same secret list as the scripts (ADR 08, I4). A file a crash
-        // cut is repaired before anything can read it (I16).
-        let har = HarLog::new(
-            HarSettings {
-                folder: paths.proxy_log_dir(),
-                creator: instance.app_name(),
-                version: DAEMON_VERSION.to_string(),
-                enabled: config.value.proxy_log,
-                file_mb: config.value.proxy_log_file_mb,
-                file_requests: config.value.proxy_log_file_requests,
-            },
-            scripts.secrets.clone(),
-        );
+        // A file a crash cut is repaired before anything can read it (I16).
+        let har = HarLog::new(HarSettings {
+            folder: paths.proxy_log_dir(),
+            creator: instance.app_name(),
+            version: DAEMON_VERSION.to_string(),
+            enabled: config.value.proxy_log,
+            file_mb: config.value.proxy_log_file_mb,
+            file_requests: config.value.proxy_log_file_requests,
+        });
         har.set_proxy_on(config.value.proxy_enabled);
         har.repair_at_start();
         let lookup = shared.clone();
@@ -910,20 +905,6 @@ impl Daemon {
         if let Some(list) = &p.inspect_hosts {
             new.inspect_hosts = inspect::normalize(list).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
         }
-        if let Some(list) = &p.secret_headers {
-            let mut names: Vec<String> = vec![];
-            for h in list {
-                let h = h.trim().to_ascii_lowercase();
-                if hyper_header_name_ok(&h) {
-                    if !names.contains(&h) {
-                        names.push(h);
-                    }
-                } else {
-                    return Err(err(ErrorCode::InvalidRequest, format!("secret_headers: {h:?} is not a header name")));
-                }
-            }
-            new.secret_headers = names;
-        }
         if let Some(v) = p.proxy_log {
             new.proxy_log = v;
         }
@@ -967,9 +948,16 @@ impl Daemon {
         }
 
         // The inspection CA is made the first time the inspect set is not
-        // empty (I5), and never replaced here (I4).
+        // empty (I5), and never replaced here (I4). The set is `*` by
+        // default, so turning the proxy on makes it too; a CA that cannot
+        // be made then leaves every CONNECT a tunnel instead of failing.
         if p.inspect_hosts.is_some() && !new.inspect_hosts.is_empty() {
             self.ensure_inspect_ca().map_err(|why| err(ErrorCode::CaUnavailable, why))?;
+        } else if p.proxy_enabled == Some(true)
+            && !new.inspect_hosts.is_empty()
+            && let Err(why) = self.ensure_inspect_ca()
+        {
+            tracing::warn!("{why}; CONNECTs stay tunnels");
         }
 
         // A failed write drops the new listeners unused (I4).
@@ -978,7 +966,6 @@ impl Daemon {
         *self.shared.config.write().unwrap() = new.clone();
         // New CONNECTs use the new set; open tunnels stay tunnels.
         self.refresh_inspect();
-        self.scripts.set_secret_headers(&new.secret_headers);
         self.log.set_capacity(new.log_size);
         self.har.set_limits(new.proxy_log_file_mb, new.proxy_log_file_requests);
         self.har.set_enabled(new.proxy_log);
@@ -1571,11 +1558,6 @@ fn api_version() -> String {
 
 fn reserved(config: &Config) -> Reserved {
     Reserved { http_port: config.http_port, https_port: config.https_port }
-}
-
-/// A header name scripts may be told to treat as secret.
-fn hyper_header_name_ok(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 /// Persistent rules from `script-rules.json`. A rule whose script does not

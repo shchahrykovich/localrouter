@@ -32,7 +32,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::api::ScriptRuleView;
 use crate::proxy::{Body, escape, page};
-use crate::secrets::SecretHeaders;
 use bodies::{Budget, BodyClass, Decoder, Encoding, LimitedVec, Reservation};
 use engine::{ActiveRule, Call, Loaded, Output, Pool, ScriptKind};
 use events::{Event, Format, Splitter};
@@ -116,8 +115,6 @@ pub struct Scripts {
     rules: RwLock<Arc<Vec<Arc<Entry>>>>,
     pub budget: Arc<Budget>,
     pub limits: Limits,
-    /// Shared with the HAR writer (ADR 08): one list for both.
-    pub secrets: Arc<SecretHeaders>,
     on_disable: Mutex<Option<OnDisable>>,
     pub stats: Stats,
     this: Weak<Scripts>,
@@ -197,7 +194,6 @@ impl Scripts {
             rules: RwLock::new(Arc::new(vec![])),
             budget: Budget::new(limits.budget),
             limits,
-            secrets: SecretHeaders::new(),
             on_disable: Mutex::new(None),
             stats: Stats::default(),
             this: this.clone(),
@@ -207,11 +203,6 @@ impl Scripts {
     /// Called with the rule id when a rule is turned off after 20 failures.
     pub fn set_on_disable(&self, f: OnDisable) {
         *self.on_disable.lock().unwrap() = Some(f);
-    }
-
-    /// The secret headers: the defaults plus `secret_headers` of the config.
-    pub fn set_secret_headers(&self, extra: &[String]) {
-        self.secrets.set(extra);
     }
 
     fn snapshot(&self) -> Arc<Vec<Arc<Entry>>> {
@@ -350,8 +341,7 @@ impl Scripts {
         let out = match tokio::time::timeout(limit, active.permits.acquire()).await {
             Ok(Ok(permit)) => {
                 let a = active.clone();
-                let secrets = self.secrets.get();
-                let rx = pool(active.info().map(|i| i.kind)).run(move || a.execute(call, deadline, &secrets));
+                let rx = pool(active.info().map(|i| i.kind)).run(move || a.execute(call, deadline));
                 let out = rx.await.unwrap_or_else(|_| Err("the script thread stopped".into()));
                 drop(permit);
                 out

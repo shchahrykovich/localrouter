@@ -15,7 +15,6 @@ pub mod paths;
 pub mod proxy;
 pub mod routes;
 pub mod scripts;
-pub mod secrets;
 pub mod tcp;
 pub mod tls;
 pub mod upstream;

@@ -2,8 +2,7 @@
 //! and their write-back, and the modules `json`, `sse`, `base64`, `url`,
 //! `multipart`, `log` and, for log rules, `capture`.
 //!
-//! Secret headers are shown as `[redacted]`. Redaction is a view: a value the
-//! script leaves as `[redacted]` keeps its original bytes (I8).
+//! A script sees every header as it is, cookies and API keys too.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,10 +17,6 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_perc
 
 use crate::scripts::bodies::{self, BodyClass};
 use crate::scripts::events::{self, Event, Format};
-
-/// The value a script sees for a secret header, and the default list; both
-/// live in `secrets.rs`, shared with the HAR writer (ADR 08).
-pub use crate::secrets::{DEFAULT_SECRET_HEADERS, REDACTED};
 
 /// Lines a rule may write to the daemon log per minute.
 pub const LOG_LINES_PER_MINUTE: u32 = 200;
@@ -645,12 +640,11 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 // ---- the req, res and ex tables
 
 /// The script's view of headers: lower-case names; a repeated header is a
-/// list; a secret header's value is `[redacted]` unless `reveal`.
-fn headers_table(lua: &Lua, headers: &[(String, Bytes)], secret: &dyn Fn(&str) -> bool, reveal: bool) -> mlua::Result<Table> {
+/// list.
+fn headers_table(lua: &Lua, headers: &[(String, Bytes)]) -> mlua::Result<Table> {
     let t = lua.create_table()?;
     for (name, value) in headers {
-        let shown: &[u8] = if !reveal && secret(name) { REDACTED.as_bytes() } else { value };
-        let v = lua.create_string(shown)?;
+        let v = lua.create_string(value)?;
         match t.raw_get::<Value>(name.as_str())? {
             Value::Nil => t.raw_set(name.as_str(), v)?,
             Value::Table(list) => list.raw_set(list.raw_len() + 1, v)?,
@@ -665,8 +659,8 @@ fn headers_table(lua: &Lua, headers: &[(String, Bytes)], secret: &dyn Fn(&str) -
     Ok(t)
 }
 
-/// Read headers back. An untouched `[redacted]` keeps the original value.
-fn read_headers(t: &Table, original: &[(String, Bytes)], secret: &dyn Fn(&str) -> bool) -> Result<Vec<(String, Bytes)>, String> {
+/// Read headers back, in the original order of names that are still there.
+fn read_headers(t: &Table, original: &[(String, Bytes)]) -> Result<Vec<(String, Bytes)>, String> {
     let mut out = vec![];
     for pair in t.pairs::<Value, Value>() {
         let (k, v) = pair.map_err(|e| e.to_string())?;
@@ -693,23 +687,13 @@ fn read_headers(t: &Table, original: &[(String, Bytes)], secret: &dyn Fn(&str) -
             }
             other => return Err(format!("header {name}: a value must be a string or a list, not a {}", other.type_name())),
         };
-        let originals: Vec<&Bytes> = original.iter().filter(|(n, _)| *n == name).map(|(_, v)| v).collect();
-        for (i, value) in values.into_iter().enumerate() {
-            let value = if secret(&name) && value == REDACTED.as_bytes() {
-                match originals.get(i) {
-                    Some(orig) => (*orig).clone(),
-                    None => continue,
-                }
-            } else {
-                value
-            };
+        for value in values {
             if hyper::header::HeaderValue::from_maybe_shared(value.clone()).is_err() {
                 return Err(format!("header {name}: the value has a line end or another character headers cannot hold"));
             }
             out.push((name.clone(), value));
         }
     }
-    // Keep the original order of names that are still there.
     let rank = |n: &str| original.iter().position(|(o, _)| o == n).unwrap_or(usize::MAX);
     out.sort_by_key(|(n, _)| rank(n));
     Ok(out)
@@ -736,7 +720,7 @@ fn set_body_fields(lua: &Lua, t: &Table, m: &Message) -> mlua::Result<()> {
 }
 
 /// The `req` table (intercept) or `ex.request` (log).
-pub fn request_table(lua: &Lua, r: &RequestInfo, secret: &dyn Fn(&str) -> bool, reveal: bool) -> mlua::Result<Table> {
+pub fn request_table(lua: &Lua, r: &RequestInfo) -> mlua::Result<Table> {
     let t = lua.create_table()?;
     t.set("id", r.id.as_str())?;
     t.set("source", r.source)?;
@@ -747,25 +731,25 @@ pub fn request_table(lua: &Lua, r: &RequestInfo, secret: &dyn Fn(&str) -> bool, 
     t.set("port", r.port)?;
     t.set("path", r.path.as_str())?;
     t.set("query", r.query.as_str())?;
-    t.set("headers", headers_table(lua, &r.msg.headers, secret, reveal)?)?;
+    t.set("headers", headers_table(lua, &r.msg.headers)?)?;
     set_body_fields(lua, &t, &r.msg)?;
     Ok(t)
 }
 
 /// The `res` table (intercept) or `ex.response` (log).
-pub fn response_table(lua: &Lua, r: &ResponseInfo, secret: &dyn Fn(&str) -> bool, reveal: bool) -> mlua::Result<Table> {
+pub fn response_table(lua: &Lua, r: &ResponseInfo) -> mlua::Result<Table> {
     let t = lua.create_table()?;
     t.set("status", r.status)?;
-    t.set("headers", headers_table(lua, &r.msg.headers, secret, reveal)?)?;
+    t.set("headers", headers_table(lua, &r.msg.headers)?)?;
     set_body_fields(lua, &t, &r.msg)?;
     Ok(t)
 }
 
 /// The `ex` table of a log script.
-pub fn exchange_table(lua: &Lua, ex: &Exchange, secret: &dyn Fn(&str) -> bool, reveal: bool) -> mlua::Result<Table> {
+pub fn exchange_table(lua: &Lua, ex: &Exchange) -> mlua::Result<Table> {
     let t = lua.create_table()?;
-    t.set("request", request_table(lua, &ex.request, secret, reveal)?)?;
-    t.set("response", response_table(lua, &ex.response, secret, reveal)?)?;
+    t.set("request", request_table(lua, &ex.request)?)?;
+    t.set("response", response_table(lua, &ex.response)?)?;
     t.set("time_ms", ex.time_ms)?;
     t.set("duration_ms", ex.duration_ms)?;
     t.set("error", ex.error.clone())?;
@@ -830,7 +814,7 @@ fn read_body(t: &Table, m: &Message, rule: BodyRule, what: &str) -> Result<Optio
 }
 
 /// What an intercept `on_request` changed. The request info is updated.
-pub fn read_request(t: &Table, r: &mut RequestInfo, secret: &dyn Fn(&str) -> bool, rule: BodyRule) -> Result<Option<Bytes>, String> {
+pub fn read_request(t: &Table, r: &mut RequestInfo, rule: BodyRule) -> Result<Option<Bytes>, String> {
     let get_str = |key: &str| -> Result<String, String> {
         match t.raw_get::<Value>(key).map_err(|e| e.to_string())? {
             Value::String(s) => Ok(String::from_utf8_lossy(&s.as_bytes()).into_owned()),
@@ -857,7 +841,7 @@ pub fn read_request(t: &Table, r: &mut RequestInfo, secret: &dyn Fn(&str) -> boo
         }
     }
     let headers = match t.raw_get::<Value>("headers").map_err(|e| e.to_string())? {
-        Value::Table(h) => read_headers(&h, &r.msg.headers, secret)?,
+        Value::Table(h) => read_headers(&h, &r.msg.headers)?,
         Value::Nil => vec![],
         other => return Err(format!("req.headers must be a table, not a {}", other.type_name())),
     };
@@ -873,14 +857,14 @@ pub fn read_request(t: &Table, r: &mut RequestInfo, secret: &dyn Fn(&str) -> boo
 }
 
 /// What an intercept `on_response` changed.
-pub fn read_response(t: &Table, r: &mut ResponseInfo, secret: &dyn Fn(&str) -> bool, rule: BodyRule) -> Result<Option<Bytes>, String> {
+pub fn read_response(t: &Table, r: &mut ResponseInfo, rule: BodyRule) -> Result<Option<Bytes>, String> {
     let status = match t.raw_get::<Value>("status").map_err(|e| e.to_string())? {
         Value::Integer(i) if (100..=999).contains(&i) => i as u16,
         Value::Number(n) if (100.0..=999.0).contains(&n) && n.fract() == 0.0 => n as u16,
         other => return Err(format!("res.status must be a number from 100 to 999, not {other:?}")),
     };
     let headers = match t.raw_get::<Value>("headers").map_err(|e| e.to_string())? {
-        Value::Table(h) => read_headers(&h, &r.msg.headers, secret)?,
+        Value::Table(h) => read_headers(&h, &r.msg.headers)?,
         Value::Nil => vec![],
         other => return Err(format!("res.headers must be a table, not a {}", other.type_name())),
     };
@@ -902,7 +886,7 @@ pub fn read_script_response(t: &Table) -> Result<ScriptResponse, String> {
         other => return Err(format!("the returned status must be a number from 200 to 999, not {other:?}")),
     };
     let headers = match t.raw_get::<Value>("headers").map_err(|e| e.to_string())? {
-        Value::Table(h) => read_headers(&h, &[], &|_| false)?,
+        Value::Table(h) => read_headers(&h, &[])?,
         Value::Nil => vec![],
         other => return Err(format!("the returned headers must be a table, not a {}", other.type_name())),
     };
@@ -977,29 +961,27 @@ Content-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\nContent-Typ
         assert_eq!(n, 2);
     }
 
-    // T10 (unit part), I8: redaction is a view.
+    // T10 (unit part): a script sees every header as it is, and its changes
+    // come back.
     #[test]
-    fn redacted_headers_keep_their_value_unless_changed() {
+    fn headers_are_shown_as_they_are_and_changes_come_back() {
         let lua = lua();
-        let secret = |n: &str| DEFAULT_SECRET_HEADERS.contains(&n);
         let original = vec![
             ("authorization".to_string(), Bytes::from_static(b"Bearer real")),
             ("cookie".to_string(), Bytes::from_static(b"a=1")),
             ("x-app".to_string(), Bytes::from_static(b"1")),
         ];
-        let t = headers_table(&lua, &original, &secret, false).unwrap();
-        assert_eq!(t.get::<String>("authorization").unwrap(), REDACTED);
+        let t = headers_table(&lua, &original).unwrap();
+        assert_eq!(t.get::<String>("authorization").unwrap(), "Bearer real");
         t.set("cookie", "b=2").unwrap();
         t.set("x-app", Value::Nil).unwrap();
         t.set("X-New", "yes").unwrap();
-        let back = read_headers(&t, &original, &secret).unwrap();
+        let back = read_headers(&t, &original).unwrap();
         let get = |n: &str| back.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
         assert_eq!(get("authorization").unwrap(), "Bearer real");
         assert_eq!(get("cookie").unwrap(), "b=2");
         assert!(get("x-app").is_none());
         assert_eq!(get("x-new").unwrap(), "yes");
-        let shown = headers_table(&lua, &original, &secret, true).unwrap();
-        assert_eq!(shown.get::<String>("authorization").unwrap(), "Bearer real");
     }
 
     // T9
@@ -1032,18 +1014,17 @@ Content-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\nContent-Typ
     #[test]
     fn a_request_change_cannot_move_the_request_or_change_a_partial_body() {
         let lua = lua();
-        let secret = |_: &str| false;
         let mut r = RequestInfo { method: "GET".into(), scheme: "https", host: "a.example".into(), path: "/".into(), ..Default::default() };
-        let t = request_table(&lua, &r, &secret, false).unwrap();
+        let t = request_table(&lua, &r).unwrap();
         t.set("host", "evil.example").unwrap();
-        assert!(read_request(&t, &mut r.clone(), &secret, BodyRule::Free).unwrap_err().contains("cannot be changed"));
-        let t = request_table(&lua, &r, &secret, false).unwrap();
+        assert!(read_request(&t, &mut r.clone(), BodyRule::Free).unwrap_err().contains("cannot be changed"));
+        let t = request_table(&lua, &r).unwrap();
         t.set("body", "x").unwrap();
-        assert!(read_request(&t, &mut r.clone(), &secret, BodyRule::Partial).unwrap_err().contains("partial body"));
-        assert!(read_request(&t, &mut r.clone(), &secret, BodyRule::TooLarge).unwrap_err().contains("too large"));
+        assert!(read_request(&t, &mut r.clone(), BodyRule::Partial).unwrap_err().contains("partial body"));
+        assert!(read_request(&t, &mut r.clone(), BodyRule::TooLarge).unwrap_err().contains("too large"));
         t.set("path", "/new").unwrap();
         t.set("method", "post").unwrap();
-        let body = read_request(&t, &mut r, &secret, BodyRule::Free).unwrap();
+        let body = read_request(&t, &mut r, BodyRule::Free).unwrap();
         assert_eq!((r.method.as_str(), r.path.as_str(), body.unwrap()), ("POST", "/new", Bytes::from_static(b"x")));
     }
 }

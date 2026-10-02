@@ -677,7 +677,7 @@ async fn script_rules_journey() {
     assert_eq!(resp.text().await.unwrap(), "data: token 1\n\ndata: token 2\n\ndata: token 3\n\n");
 
     // 6. The capture file: the request body, the decoded events, and the
-    //    authorization header redacted.
+    //    authorization header as it was sent.
     let file = out.join("calls.jsonl");
     let mut line = String::new();
     for _ in 0..150 {
@@ -690,8 +690,7 @@ async fn script_rules_journey() {
     let call: Value = serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{e}: {line:?}"));
     assert_eq!(call["request"], r#"{"prompt":"hello"}"#);
     assert_eq!(call["response"], "data: token 1\n\ndata: token 2\n\ndata: token 3\n\n");
-    assert_eq!(call["auth"], "[redacted]");
-    assert!(!line.contains("sk-test-123"));
+    assert_eq!(call["auth"], "Bearer sk-test-123");
     let rules: Value = serde_json::from_str(&d.cli(&["rules", "--json"]).1).unwrap();
     assert_eq!(rules["rules"][0]["matched"], 1);
 
@@ -731,7 +730,7 @@ fn viewer_get(http: u16, path: &str) -> (u16, String) {
 }
 
 /// E1 (ADR 08): a request through the proxy shows up in a HAR file and in
-/// the viewer, with its query and with Authorization redacted.
+/// the viewer, with its query and with Authorization as it was sent.
 ///
 /// Replaced: the internet server is a local echo server reached through the
 /// daemon's debug-only resolver. M1 and M2 use real sites and real Chrome.
@@ -751,7 +750,7 @@ async fn proxy_log_journey() {
     let proxy = format!("http://127.0.0.1:{}", status["proxy"]["port"]);
     let http = status["http"]["port"].as_u64().unwrap() as u16;
 
-    // 2. A request with a secret header and a query. Check: 200.
+    // 2. A request with an Authorization header and a query. Check: 200.
     let client = reqwest::Client::builder().proxy(reqwest::Proxy::all(&proxy).unwrap()).build().unwrap();
     let resp = client.get("http://example.test/a?x=1").header("authorization", "Bearer t").send().await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -769,7 +768,7 @@ async fn proxy_log_journey() {
     assert_eq!(files["files"][0]["current"], true);
     let name = files["files"][0]["name"].as_str().unwrap().to_string();
 
-    // 4. The file from the viewer. Check: HAR 1.2, the query, [redacted].
+    // 4. The file from the viewer. Check: HAR 1.2, the query, the header.
     let (status, body) = viewer_get(http, &format!("/files/{name}"));
     assert_eq!(status, 200);
     let har: Value = serde_json::from_str(&body).unwrap();
@@ -777,8 +776,7 @@ async fn proxy_log_journey() {
     let entry = &har["log"]["entries"][0];
     assert_eq!(entry["request"]["url"], "http://example.test/a?x=1");
     let auth = entry["request"]["headers"].as_array().unwrap().iter().find(|h| h["name"] == "authorization").unwrap();
-    assert_eq!(auth["value"], "[redacted]");
-    assert!(!body.contains("Bearer t"));
+    assert_eq!(auth["value"], "Bearer t");
 
     // 5. The same bytes on disk.
     assert_eq!(std::fs::read_to_string(folder.join(&name)).unwrap(), body);

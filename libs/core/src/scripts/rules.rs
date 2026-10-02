@@ -54,9 +54,6 @@ pub struct ScriptRule {
     /// Intercept rules only. `None` means `fail`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<OnError>,
-    /// Show secret headers to the script. Never settable through MCP.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub reveal_secrets: bool,
     /// Log rules only: bytes the rule may write. `None` means 1 GiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_capture_bytes: Option<u64>,
@@ -284,7 +281,7 @@ mod tests {
         let r = rule("cap", "api.example.com");
         assert_eq!((r.order, r.enabled, r.on_error(), r.max_capture_bytes()), (100, true, OnError::Fail, 1 << 30));
         let json = serde_json::to_value(&r).unwrap();
-        for absent in ["path", "methods", "output_dir", "on_error", "reveal_secrets", "owner_pid", "persistent", "note"] {
+        for absent in ["path", "methods", "output_dir", "on_error", "owner_pid", "persistent", "note"] {
             assert!(json.get(absent).is_none(), "{absent}");
         }
     }

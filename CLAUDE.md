@@ -145,9 +145,12 @@ list, so a new tool needs that test changed on purpose.
   with `allow_lan`, and never the HTTP or HTTPS port. A `.localhost` name that
   reaches it goes to the route table, never to DNS. Upstream TLS always uses a
   verifying `ClientConfig` (`upstream::platform_tls`); never add an
-  accept-any switch there. The inspection CA (`inspect-ca/`) is made only when
-  `inspect_hosts` first becomes non-empty, and its `CertStore` never signs a
-  `.localhost` name. Tests set `proxy_port` 0 before turning the proxy on.
+  accept-any switch there. `inspect_hosts` is `["*"]` by default. The
+  inspection CA (`inspect-ca/`) is never made at start: it is made when
+  `inspect_hosts` is set non-empty or the proxy is turned on with a non-empty
+  list; until it exists every `CONNECT` is a tunnel. Its `CertStore` never
+  signs a `.localhost` name. Tests set `proxy_port` 0 before turning the proxy
+  on, and their `config.json` has `"inspect_hosts":[]`.
 - **Script rules (ADR 07)** live in `libs/core/src/scripts/`: `rules.rs`
   (fields, matching), `engine.rs` (Lua 5.4 through `mlua`, sandbox, limits,
   script threads, reload), `lua_api.rs` (`req`/`res`/`ex` and the modules),
@@ -157,7 +160,7 @@ list, so a new tool needs that test changed on purpose.
   any allocation (I1); keep it that way. Network tasks never run Lua: they
   send a job to the script threads. A log rule must never delay or change
   traffic: each part goes to the client first, and its queue drops instead of
-  waiting. `reveal_secrets` is never an MCP argument. The reference text is
+  waiting. Scripts see every header as it is. The reference text is
   `libs/core/src/scripts.md`, served at `router.localhost/scripts`; keep it in
   step with `lua_api.rs` (a test reads the field names from the tables).
 - **The proxy log (ADR 08)** lives in `libs/core/src/har/`: `entry.rs` (a
@@ -170,8 +173,9 @@ list, so a new tool needs that test changed on purpose.
   `proxy.localhost` and `router.localhost/proxy-log/` is **loopback only and
   read only** (`GET`/`HEAD`, no CORS, CSP), serves only `proxy-*.har` names that
   are regular files, and is never logged. `proxy` is reserved for new routes,
-  but a saved route `proxy` still loads and wins (`validate_saved`). The secret
-  header list is `secrets.rs`, shared with the scripts.
+  but a saved route `proxy` still loads and wins (`validate_saved`). Headers
+  are written as they are, cookies and API keys too; only
+  `Proxy-Authorization` is left out.
 - **LAN access per network (ADR 08)**: `allow_lan` lets another machine in
   only when its network id (the router's MAC address, `apps/daemon/src/network.rs`)
   is in `lan_networks`. The id comes from the System Configuration store, not

@@ -322,15 +322,6 @@ the data folder. A **capture file** is a file a log script writes there with
 The daemon never removes them. They hold prompts and API replies: keep them
 out of git.
 
-### Secret header
-
-A header that scripts see as `[redacted]`: `authorization`,
-`proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `api-key`,
-`x-auth-token`, and the names in `secret_headers` of the config. Only the
-user, at a terminal, can let a rule see the values (`reveal_secrets`). The
-proxy log writes the same headers as `[redacted]`, whatever a rule may see
-(one list, `libs/core/src/secrets.rs`).
-
 ### Proxy log, HAR file
 
 The **proxy log** ([ADR 08](adr/08-proxy-har-log-2026-10-02/README.md)) is every
@@ -338,7 +329,7 @@ request the forward proxy carries, written to **HAR files**: HAR 1.2 (HTTP
 Archive), the JSON format Chrome DevTools saves and imports. The files are
 `proxy-YYYYMMDD-HHMMSS.har` in `<logs folder>/proxy/`; a new file starts at
 `proxy_log_file_mb` or `proxy_log_file_requests`, and the 5 newest are kept.
-One entry holds the URL with its query, the headers (secrets redacted), the
+One entry holds the URL with its query, the headers as they are, the
 status and the time to the response headers; never a body. The in-memory
 request log does not change: it still has no headers and no query.
 

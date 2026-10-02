@@ -192,7 +192,7 @@ fn examples_cover_script_rules() {
     assert!(read("set_script_rule.reply.json")["result"]["inspect"]["ca_created"].is_boolean());
     let entry = read("log.event.json")["entry"].clone();
     assert!(entry["rules"].is_array() && entry["script_error"].is_string());
-    assert!(read("get_config.reply.json")["result"]["secret_headers"].is_array());
+    assert!(read("get_config.reply.json")["result"].get("secret_headers").is_none());
 }
 
 /// `get_proxy` as API 1.3 knew it, before ADR 07.

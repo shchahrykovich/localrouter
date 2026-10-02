@@ -413,8 +413,6 @@ public struct Config: Codable, Equatable, Sendable {
     public var proxyEnabled: Bool?
     public var proxyPort: UInt16?
     public var inspectHosts: [String]?
-    /// Header names scripts see as `[redacted]` (ADR 07). Nil when empty.
-    public var secretHeaders: [String]?
     /// The proxy log (ADR 08). Optional: a daemon before API 1.5 has none.
     public var proxyLog: Bool?
     public var proxyLogFileMb: UInt64?
@@ -433,7 +431,6 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     public var proxyPort: UInt16?
     /// Replaces the whole list.
     public var inspectHosts: [String]?
-    public var secretHeaders: [String]?
     /// The proxy log (ADR 08). The daemon refuses limits out of range.
     public var proxyLog: Bool?
     public var proxyLogFileMb: UInt64?
@@ -441,14 +438,13 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     /// Replaces the whole list (ADR 08).
     public var lanNetworks: [LanNetwork]?
     public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
-                inspectHosts: [String]? = nil, secretHeaders: [String]? = nil, proxyLog: Bool? = nil,
+                inspectHosts: [String]? = nil, proxyLog: Bool? = nil,
                 proxyLogFileMb: UInt64? = nil, proxyLogFileRequests: UInt64? = nil, lanNetworks: [LanNetwork]? = nil) {
         self.fallback = fallback
         self.allowLan = allowLan
         self.proxyEnabled = proxyEnabled
         self.proxyPort = proxyPort
         self.inspectHosts = inspectHosts
-        self.secretHeaders = secretHeaders
         self.proxyLog = proxyLog
         self.proxyLogFileMb = proxyLogFileMb
         self.proxyLogFileRequests = proxyLogFileRequests
@@ -539,7 +535,6 @@ public struct ScriptRule: Codable, Equatable, Sendable, Identifiable {
     public var order: Int64
     /// `fail` or `pass`; nil means `fail`.
     public var onError: String?
-    public var revealSecrets: Bool
     public var maxCaptureBytes: UInt64?
     public var enabled: Bool
     public var note: String
@@ -547,7 +542,7 @@ public struct ScriptRule: Codable, Equatable, Sendable, Identifiable {
     public var persistent: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, host, path, methods, script, outputDir, order, onError, revealSecrets, maxCaptureBytes, enabled, note, ownerPid,
+        case id, host, path, methods, script, outputDir, order, onError, maxCaptureBytes, enabled, note, ownerPid,
              persistent
     }
 
@@ -561,7 +556,6 @@ public struct ScriptRule: Codable, Equatable, Sendable, Identifiable {
         outputDir = try c.decodeIfPresent(String.self, forKey: .outputDir)
         order = try c.decodeIfPresent(Int64.self, forKey: .order) ?? 100
         onError = try c.decodeIfPresent(String.self, forKey: .onError)
-        revealSecrets = try c.decodeIfPresent(Bool.self, forKey: .revealSecrets) ?? false
         maxCaptureBytes = try c.decodeIfPresent(UInt64.self, forKey: .maxCaptureBytes)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
@@ -580,7 +574,6 @@ public struct ScriptRule: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(outputDir, forKey: .outputDir)
         try c.encode(order, forKey: .order)
         try c.encodeIfPresent(onError, forKey: .onError)
-        if revealSecrets { try c.encode(true, forKey: .revealSecrets) }
         try c.encodeIfPresent(maxCaptureBytes, forKey: .maxCaptureBytes)
         try c.encode(enabled, forKey: .enabled)
         if !note.isEmpty { try c.encode(note, forKey: .note) }

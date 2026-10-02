@@ -205,14 +205,16 @@ localrouter proxy on                          # bind 127.0.0.1:8877 and [::1]:88
 eval "$(localrouter proxy env)" && npm test   # one command through the proxy
 localrouter proxy chrome                      # a separate Chrome window that uses it
 localrouter logs                              # requests marked "via proxy"
-localrouter proxy inspect add api.example.com # read this host's HTTPS requests
 localrouter proxy trust                       # trust the inspection CA (password)
+localrouter proxy inspect rm '*'              # stop reading every host's HTTPS requests
+localrouter proxy inspect add api.example.com # read only this host's HTTPS requests
 localrouter proxy off
 ```
 
-HTTPS is a tunnel by default: LocalRouter sees only the host name. A host in
-the inspect list is read with a second CA, the inspection CA, which you trust
-separately. The real server's certificate is always checked with the macOS
+The inspect list is `*` by default: LocalRouter reads the HTTPS requests of
+every host outside `.localhost`, with a second CA, the inspection CA, which you
+trust separately. A host that is not in the list is a tunnel: LocalRouter sees
+only its name. The real server's certificate is always checked with the macOS
 trust store. The menu bar icon's right-click menu has **Open Chrome via
 Proxy** when Google Chrome is installed.
 
@@ -232,8 +234,8 @@ ls -t "$(localrouter proxy log path)"          # ~/Library/Logs/LocalRouter/prox
 
 - A new file starts at 20 MB or 5000 requests, whichever comes first; the 5
   newest files are kept.
-- Secret headers are written as `[redacted]`. URLs are written as they are,
-  query included. Bodies are not written.
+- Headers are written as they are, cookies and API keys too. URLs are written
+  as they are, query included. Bodies are not written.
 - The viewer at `http://proxy.localhost` (also `router.localhost/proxy-log/`)
   lists the files, shows the requests live, and downloads a file for
   DevTools → Network → Import HAR file. It answers this Mac only and is read
@@ -261,8 +263,8 @@ localrouter rules disable claude                # or enable, rm
 
 Scripts run in a sandbox (no files, no network, no `os.execute`) with 50 ms
 per intercept call, 2 s per log call and 64 MB per Lua state. A rule that
-fails 20 times in a row is turned off. Secret headers reach scripts as
-`[redacted]` unless you allow a rule at a terminal (`--reveal-secrets`). The
+fails 20 times in a row is turned off. Scripts see every header as it is,
+cookies and API keys too. The
 reference is also at `http://router.localhost/scripts`. Keep `output_dir` out
 of git: captures hold prompts and API replies.
 

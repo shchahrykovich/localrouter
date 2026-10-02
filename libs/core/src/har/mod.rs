@@ -23,7 +23,6 @@ use tokio::sync::broadcast;
 pub use entry::HarRecord;
 pub use writer::{CLOSING, file_key};
 
-use crate::secrets::SecretHeaders;
 
 /// Files kept; older ones are deleted at each new file (I5).
 pub const KEEP_FILES: usize = 5;
@@ -87,7 +86,6 @@ pub struct HarLog {
     folder: PathBuf,
     creator: String,
     version: String,
-    secrets: Arc<SecretHeaders>,
     on: AtomicBool,
     /// A write failed: nothing more is written until off and on (I15).
     failed: AtomicBool,
@@ -111,13 +109,12 @@ pub struct HarLog {
 }
 
 impl HarLog {
-    pub fn new(settings: HarSettings, secrets: Arc<SecretHeaders>) -> Arc<Self> {
+    pub fn new(settings: HarSettings) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
             state: Mutex::new(writer::State::new(settings.folder.clone())),
             folder: settings.folder,
             creator: settings.creator,
             version: settings.version,
-            secrets,
             on: AtomicBool::new(settings.enabled),
             failed: AtomicBool::new(false),
             proxy_on: AtomicBool::new(false),
@@ -222,7 +219,7 @@ impl HarLog {
         if self.failed.load(Ordering::Relaxed) {
             return;
         }
-        let entry = record.to_entry(&self.secrets);
+        let entry = record.to_entry();
         let line = match serde_json::to_string(&entry) {
             Ok(line) => line,
             Err(_) => return,
@@ -412,17 +409,14 @@ mod tests {
     use crate::logs::ProxyMode;
 
     fn log(dir: &Path) -> Arc<HarLog> {
-        HarLog::new(
-            HarSettings {
-                folder: dir.join("proxy"),
-                creator: "LocalRouter-dev".into(),
-                version: "9.9.9".into(),
-                enabled: true,
-                file_mb: 20,
-                file_requests: 5000,
-            },
-            SecretHeaders::new(),
-        )
+        HarLog::new(HarSettings {
+            folder: dir.join("proxy"),
+            creator: "LocalRouter-dev".into(),
+            version: "9.9.9".into(),
+            enabled: true,
+            file_mb: 20,
+            file_requests: 5000,
+        })
     }
 
     fn rec(i: usize) -> HarRecord {

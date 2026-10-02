@@ -320,7 +320,7 @@ pub fn describe_log(p: &GetProxyResult, instance: &Instance) -> String {
     if let Some(e) = &log.error {
         out.push_str(&format!("Error      {e}. Nothing is written until: {cli} proxy log off && {cli} proxy log on\n"));
     }
-    out.push_str("\nSecret headers are written as [redacted]; URLs are written as they are. Bodies are not written.\n");
+    out.push_str("\nHeaders and URLs are written as they are, cookies and API keys too. Bodies are not written.\n");
     out
 }
 
@@ -440,7 +440,7 @@ mod tests {
         assert!(text.contains("Log        on, writes every proxied request to /Users/me/Library/Logs/LocalRouter/proxy"), "{text}");
         assert!(text.contains("Viewer     http://proxy.localhost"), "{text}");
         assert!(text.contains("20 MB or 5000 requests per file; the 5 newest files are kept"), "{text}");
-        assert!(text.contains("[redacted]"), "{text}");
+        assert!(text.contains("cookies and API keys too"), "{text}");
         let line = log_line(&p, &Instance::release()).unwrap();
         assert!(line.starts_with("Log: on, writes every request to /Users/me/Library/Logs/LocalRouter/proxy"), "{line}");
     }

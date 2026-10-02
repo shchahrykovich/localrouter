@@ -636,7 +636,6 @@ mod proxy_log {
     use localrouter_core::har::viewer::{self, ViewerContext};
     use localrouter_core::har::{HarLog, HarRecord, HarSettings};
     use localrouter_core::logs::ProxyMode;
-    use localrouter_core::secrets::SecretHeaders;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
@@ -656,17 +655,14 @@ mod proxy_log {
             table.insert(r);
         }
         let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
-        let har = HarLog::new(
-            HarSettings {
-                folder: dir.path().join("logs/proxy"),
-                creator: "LocalRouter".into(),
-                version: "test".into(),
-                enabled: true,
-                file_mb: 20,
-                file_requests: 5000,
-            },
-            SecretHeaders::new(),
-        );
+        let har = HarLog::new(HarSettings {
+            folder: dir.path().join("logs/proxy"),
+            creator: "LocalRouter".into(),
+            version: "test".into(),
+            enabled: true,
+            file_mb: 20,
+            file_requests: 5000,
+        });
         let log = Arc::new(RequestLog::new(100));
         let proxy = Arc::new(Proxy {
             instance: Instance::release(),
@@ -758,7 +754,7 @@ mod proxy_log {
         assert!(headers.get("content-disposition").is_none());
         let har = json(&body);
         assert_eq!(har["log"]["entries"][0]["request"]["url"], "http://api.example.com/0?k=v");
-        assert_eq!(har["log"]["entries"][0]["request"]["headers"][0]["value"], "[redacted]");
+        assert_eq!(har["log"]["entries"][0]["request"]["headers"][0]["value"], "Bearer secret");
         let on_disk = std::fs::read_to_string(v.har.folder().join(&name)).unwrap();
         assert_eq!(body, on_disk, "the same bytes as the file");
         let (_, headers, _) = get(v.http, "proxy.localhost", &format!("/files/{name}?download=1")).await;

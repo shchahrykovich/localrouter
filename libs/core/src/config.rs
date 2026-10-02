@@ -26,13 +26,8 @@ pub struct Config {
     pub proxy_port: u16,
     /// Host patterns whose `CONNECT`s are inspected instead of tunnelled:
     /// `api.example.com`, `*.example.com`, or `*` for every host outside
-    /// `.localhost`.
+    /// `.localhost`. `*` by default: the proxy reads every request.
     pub inspect_hosts: Vec<String>,
-    /// Header names scripts see as `[redacted]`, besides the defaults
-    /// (`authorization`, `cookie`, ...; ADR 07, change 4). Not written while
-    /// empty, so the file stays as an older daemon wrote it.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub secret_headers: Vec<String>,
     /// Write every request the forward proxy carries to rolling HAR files
     /// in `<logs>/proxy/` (ADR 08).
     pub proxy_log: bool,
@@ -108,8 +103,7 @@ impl Default for Config {
             log_size: 1000,
             proxy_enabled: false,
             proxy_port: Instance::release().default_proxy_port(),
-            inspect_hosts: vec![],
-            secret_headers: vec![],
+            inspect_hosts: vec!["*".into()],
             proxy_log: true,
             proxy_log_file_mb: crate::har::DEFAULT_FILE_MB,
             proxy_log_file_requests: crate::har::DEFAULT_FILE_REQUESTS,
@@ -136,17 +130,21 @@ mod tests {
         assert_eq!(d.log_size, r.log_size);
     }
 
-    // ADR 06, T8: the proxy is off by default, on the instance's own port.
+    // ADR 06, T8: the proxy is off by default, on the instance's own port,
+    // and inspects every host.
     #[test]
     fn proxy_fields_default_per_instance() {
         let r = Config::defaults_for(&Instance::release());
-        assert_eq!((r.proxy_enabled, r.proxy_port, r.inspect_hosts.len()), (false, 8877, 0));
+        assert_eq!((r.proxy_enabled, r.proxy_port, r.inspect_hosts.clone()), (false, 8877, vec!["*".to_string()]));
         let d = Config::defaults_for(&dev());
         assert_eq!((d.proxy_enabled, d.proxy_port), (false, 7877));
         // A file written before ADR 06 has none of the fields.
         let old = Config::parse(r#"{"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":5}"#, &dev())
             .unwrap();
-        assert_eq!((old.proxy_enabled, old.proxy_port, old.inspect_hosts.len()), (false, 7877, 0));
+        assert_eq!((old.proxy_enabled, old.proxy_port, old.inspect_hosts.clone()), (false, 7877, vec!["*".to_string()]));
+        // A file that saved an empty list keeps it.
+        let none = Config::parse(r#"{"version":1,"inspect_hosts":[]}"#, &dev()).unwrap();
+        assert!(none.inspect_hosts.is_empty());
     }
 
     #[test]

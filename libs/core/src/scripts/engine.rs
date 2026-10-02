@@ -533,7 +533,7 @@ impl ActiveRule {
 
     /// Run one call on this thread. `deadline` covers the wait for a thread
     /// and the call itself.
-    pub fn execute(&self, call: Call, deadline: Instant, secrets: &[String]) -> Result<Output, String> {
+    pub fn execute(&self, call: Call, deadline: Instant) -> Result<Output, String> {
         if Instant::now() >= deadline {
             return Err("busy: no script thread was free within the time limit".into());
         }
@@ -542,7 +542,7 @@ impl ActiveRule {
         let lua = self.take_state(&loaded)?;
         lua.set_app_data(Deadline(deadline));
         lua.set_app_data(InCall(true));
-        let result = self.call(&lua, &loaded, call, secrets);
+        let result = self.call(&lua, &loaded, call);
         lua.set_app_data(InCall(false));
         self.states.lock().unwrap().push((loaded.version, lua));
         result
@@ -565,17 +565,15 @@ impl ActiveRule {
         new_state(&loaded.source, &loaded.name, &ctx).map(|(lua, _)| lua)
     }
 
-    fn call(&self, lua: &Lua, loaded: &Loaded, call: Call, secrets: &[String]) -> Result<Output, String> {
+    fn call(&self, lua: &Lua, loaded: &Loaded, call: Call) -> Result<Output, String> {
         let script: Table = lua.named_registry_value(SCRIPT_KEY).map_err(|e| e.to_string())?;
-        let secret = |name: &str| secrets.iter().any(|s| s == name);
-        let reveal = self.rule.reveal_secrets;
         let func = |name: &str| -> Result<mlua::Function, String> {
             script.raw_get::<mlua::Function>(name).map_err(|_| format!("{}: {name} is not a function", loaded.name))
         };
         let lua_err = |e: mlua::Error| message(&e);
         match call {
             Call::Request { mut req, body } => {
-                let t = lua_api::request_table(lua, &req, &secret, reveal).map_err(lua_err)?;
+                let t = lua_api::request_table(lua, &req).map_err(lua_err)?;
                 let ret: Value = func("on_request")?.call(&t).map_err(lua_err)?;
                 let response = match ret {
                     Value::Nil => None,
@@ -584,19 +582,19 @@ impl ActiveRule {
                         return Err(format!("on_request must return nil or a response table, not a {}", other.type_name()));
                     }
                 };
-                let changed = if response.is_none() { lua_api::read_request(&t, &mut req, &secret, body)? } else { None };
+                let changed = if response.is_none() { lua_api::read_request(&t, &mut req, body)? } else { None };
                 Ok(Output::Request { req: Box::new(req), body: changed, response })
             }
             Call::Response { req, mut res, body } => {
-                let rt = lua_api::request_table(lua, &req, &secret, reveal).map_err(lua_err)?;
-                let t = lua_api::response_table(lua, &res, &secret, reveal).map_err(lua_err)?;
+                let rt = lua_api::request_table(lua, &req).map_err(lua_err)?;
+                let t = lua_api::response_table(lua, &res).map_err(lua_err)?;
                 let _: Value = func("on_response")?.call((rt, &t)).map_err(lua_err)?;
-                let changed = lua_api::read_response(&t, &mut res, &secret, body)?;
+                let changed = lua_api::read_response(&t, &mut res, body)?;
                 Ok(Output::Response { res, body: changed })
             }
             Call::Event { req, res, event } => {
-                let rt = lua_api::request_table(lua, &req, &secret, reveal).map_err(lua_err)?;
-                let st = lua_api::response_table(lua, &res, &secret, reveal).map_err(lua_err)?;
+                let rt = lua_api::request_table(lua, &req).map_err(lua_err)?;
+                let st = lua_api::response_table(lua, &res).map_err(lua_err)?;
                 let et = lua_api::event_fields(lua, &event, None).map_err(lua_err)?;
                 let ret: Value = func("on_event")?.call((rt, st, &et)).map_err(lua_err)?;
                 if matches!(ret, Value::Boolean(false)) {
@@ -605,12 +603,12 @@ impl ActiveRule {
                 Ok(Output::Event(Some(lua_api::read_event(&et, &event)?)))
             }
             Call::Exchange(ex) => {
-                let t = lua_api::exchange_table(lua, &ex, &secret, reveal).map_err(lua_err)?;
+                let t = lua_api::exchange_table(lua, &ex).map_err(lua_err)?;
                 let _: Value = func("on_exchange")?.call(t).map_err(lua_err)?;
                 Ok(Output::Done)
             }
             Call::LogEvent { ex, event, index } => {
-                let t = lua_api::exchange_table(lua, &ex, &secret, reveal).map_err(lua_err)?;
+                let t = lua_api::exchange_table(lua, &ex).map_err(lua_err)?;
                 let et = lua_api::event_fields(lua, &event, Some(index)).map_err(lua_err)?;
                 let _: Value = func("on_event")?.call((t, et)).map_err(lua_err)?;
                 Ok(Output::Done)
@@ -643,7 +641,7 @@ mod tests {
     }
 
     fn run(rule: &ActiveRule, limit: Duration) -> Result<Output, String> {
-        rule.execute(Call::Request { req: request("/"), body: BodyRule::Free }, Instant::now() + limit, &[])
+        rule.execute(Call::Request { req: request("/"), body: BodyRule::Free }, Instant::now() + limit)
     }
 
     // T3, I4: each removed function is absent; bytecode is refused.
@@ -695,10 +693,10 @@ mod tests {
              end }",
         );
         let started = Instant::now();
-        let err = r.execute(Call::Request { req: request("/loop"), body: BodyRule::Free }, Instant::now() + INTERCEPT_TIME, &[]).err().unwrap();
+        let err = r.execute(Call::Request { req: request("/loop"), body: BodyRule::Free }, Instant::now() + INTERCEPT_TIME).err().unwrap();
         assert!(err.contains("time limit"), "{err}");
         assert!(started.elapsed() < Duration::from_millis(100), "{:?}", started.elapsed());
-        let err = r.execute(Call::Request { req: request("/grow"), body: BodyRule::Free }, Instant::now() + Duration::from_secs(20), &[]).err().unwrap();
+        let err = r.execute(Call::Request { req: request("/grow"), body: BodyRule::Free }, Instant::now() + Duration::from_secs(20)).err().unwrap();
         assert!(err.contains("memory limit"), "{err}");
         assert!(run(&r, INTERCEPT_TIME).is_ok(), "the next call on the same rule works");
         let top = write(dir.path(), "top.lua", "while true do end");

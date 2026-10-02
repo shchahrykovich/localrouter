@@ -173,18 +173,19 @@ fn every_agent_text_describes_the_proxy_and_its_rules() {
 
 /// ADR 07, T17, I14: every agent text describes both kinds of script, the
 /// reference page, check_only, owner_pid, response_body and streaming,
-/// secrets only the user can reveal, and not committing captures.
+/// that scripts see every header as it is, and not committing captures.
 #[test]
 fn every_agent_text_describes_scripts_and_their_rules() {
     for instance in [Instance::release(), dev()] {
         let cli = instance.cli();
         for (name, text) in texts(&instance, 80, 443) {
             let lower = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-            for word in ["intercept", "log script", "check_only", "owner_pid", "response_body", "on_event", "output_dir", "[redacted]"] {
+            for word in ["intercept", "log script", "check_only", "owner_pid", "response_body", "on_event", "output_dir"] {
                 assert!(lower.contains(word), "{name} lacks {word}");
             }
             assert!(lower.contains("stops streaming") || lower.contains("streaming stops"), "{name}: response_body and streaming");
-            assert!(lower.contains("only the user can reveal"), "{name}: secrets");
+            assert!(lower.contains("every header as it is"), "{name}: headers");
+            assert!(!text.contains("[redacted]"), "{name}: nothing is redacted");
             assert!(lower.contains("do not commit captures"), "{name}: captures");
             assert!(text.contains(&format!("{cli} rules api")), "{name} lacks the rules api command");
             assert!(text.contains("/scripts"), "{name} lacks the reference page");
@@ -206,9 +207,8 @@ fn the_script_reference_names_every_field_and_module() {
     let lua = mlua::Lua::new();
     lua_api::install(&lua, &StateCtx { rule_id: "t".into(), log: true, capture: None, lines: Default::default() }).unwrap();
     let ex = Exchange { error: Some("e".into()), answered_by: Some("a".into()), ..Default::default() };
-    let none = |_: &str| false;
     let mut fields: Vec<String> = vec![];
-    let ex_table = lua_api::exchange_table(&lua, &ex, &none, false).unwrap();
+    let ex_table = lua_api::exchange_table(&lua, &ex).unwrap();
     for pair in ex_table.pairs::<String, mlua::Value>() {
         fields.push(pair.unwrap().0);
     }
@@ -240,7 +240,8 @@ fn the_script_reference_names_every_field_and_module() {
 }
 
 /// ADR 08, T12: every agent text names the proxy log: its folder and viewer
-/// for this instance, `[redacted]`, "do not read a whole file", the jq
+/// for this instance, that cookies and API keys are written as they are,
+/// "do not read a whole file", the jq
 /// recipe, and the CA bundle names.
 #[test]
 fn every_agent_text_describes_the_proxy_log() {
@@ -253,7 +254,7 @@ fn every_agent_text_describes_the_proxy_log() {
             let lower = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
             assert!(text.contains(folder), "{name} lacks the folder {folder}");
             assert!(text.contains(url), "{name} lacks the viewer {url}");
-            assert!(text.contains("[redacted]"), "{name}");
+            assert!(lower.contains("cookies and api keys"), "{name}: headers are written as they are");
             assert!(lower.contains("do not read a whole file"), "{name}");
             assert!(text.contains(&format!("{cli} proxy log path")), "{name} lacks the folder command");
             assert!(text.contains("jq"), "{name} lacks jq");

@@ -220,7 +220,7 @@ function showDetails(e) {
   }
   list(body, "Response headers", e.response.headers.map((h) => [h.name, h.value]));
   list(body, "Timings", Object.entries(e.timings).map(([k, v]) => [k, v + " ms"]));
-  body.append(make("p", "note", "Bodies are not written to the log. Secret headers show [redacted]."));
+  body.append(make("p", "note", "Bodies are not written to the log. Headers are written as they are."));
   render(null);
 }
 

@@ -332,9 +332,6 @@ pub struct SetConfigParams {
     /// Replaces the whole list. The first need makes the inspection CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inspect_hosts: Option<Vec<String>>,
-    /// Header names scripts see as `[redacted]`, besides the defaults (ADR 07).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_headers: Option<Vec<String>>,
     /// The proxy log (ADR 08). Out-of-range limits are refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_log: Option<bool>,

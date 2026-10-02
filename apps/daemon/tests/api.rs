@@ -19,12 +19,14 @@ impl Daemon {
         Self::start_with(|_| {})
     }
 
-    /// Start with ports 0; `prepare` may write files into the folder first.
+    /// Start with ports 0 and nothing inspected (the default is `*`); `prepare`
+    /// may write files into the folder first.
     fn start_with(prepare: impl FnOnce(&Path)) -> Self {
         Self::start_program(Path::new(env!("CARGO_BIN_EXE_localrouterd")), |dir| {
             std::fs::write(
                 dir.join("config.json"),
-                json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100}).to_string(),
+                json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100,"inspect_hosts":[]})
+                    .to_string(),
             )
             .unwrap();
             prepare(dir);
@@ -783,6 +785,22 @@ fn a_saved_proxy_is_bound_at_start() {
 // T5, I4, I5: the inspection CA is made on first need, kept when the list
 // empties, replaced only by reset_inspect_ca, and its key never leaves.
 #[test]
+fn the_default_inspect_list_is_every_host_and_turning_the_proxy_on_makes_the_ca() {
+    let d = Daemon::start_program(Path::new(env!("CARGO_BIN_EXE_localrouterd")), |dir| {
+        std::fs::write(dir.join("config.json"), json!({"version":1,"http_port":0,"https_port":0}).to_string()).unwrap();
+    });
+    let mut c = d.client();
+    assert_eq!(c.call("get_config", json!({}))["inspect_hosts"], json!(["*"]));
+    let ca_dir = d.dir.path().join("inspect-ca");
+    assert!(!ca_dir.exists(), "never made at start (I5)");
+    proxy_on(&mut c);
+    assert!(ca_dir.join("ca.pem").exists(), "the proxy turned on with '*' makes the CA");
+    let p = c.call("get_proxy", json!({}));
+    assert_eq!(p["inspect_set"], json!(["*"]));
+    assert!(p["inspect_ca"]["common_name"].as_str().unwrap().starts_with("LocalRouter Inspection "));
+}
+
+#[test]
 fn the_inspection_ca_is_made_on_need_and_kept() {
     let d = Daemon::start();
     let mut c = d.client();
@@ -1109,7 +1127,7 @@ fn proxy_log_off_then_on() {
     let har: Value = serde_json::from_str(&text).unwrap();
     let entry = &har["log"]["entries"][0];
     assert_eq!(entry["request"]["url"], format!("http://127.0.0.1:{http}/a?x=1"));
-    assert!(text.contains("[redacted]") && !text.contains("Bearer t"), "I4: {text}");
+    assert!(text.contains("Bearer t"), "every header as it is: {text}");
     assert_eq!(har["log"]["creator"]["name"], "LocalRouter");
 
     c.call("set_config", json!({"proxy_log": false}));
@@ -1187,7 +1205,7 @@ fn start_on_network(config: Value, network: &str) -> Daemon {
 }
 
 fn base_config(allow_lan: bool) -> Value {
-    json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":allow_lan,"log_size":100})
+    json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":allow_lan,"log_size":100,"inspect_hosts":[]})
 }
 
 // T16: lan_networks is set and read; status.network says whether LAN access

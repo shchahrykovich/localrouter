@@ -83,9 +83,10 @@ default.
   the environment variables and the Chrome flags.
 - Start a command through it: `eval "$({{CLI}} proxy env)" && npm test`.
   Chrome: `{{CLI}} proxy chrome`.
-- To read the HTTPS requests of a host: `{{CLI}} proxy inspect add <host>`.
-  The user must trust the inspection CA (`{{CLI}} proxy trust`; macOS asks for
-  their password).
+- The proxy reads the HTTPS requests of every host by default (inspect list
+  `*`). The user must trust the inspection CA (`{{CLI}} proxy trust`; macOS
+  asks for their password). Only some hosts: `{{CLI}} proxy inspect rm '*'`,
+  then `{{CLI}} proxy inspect add <host>`.
 - You cannot change the proxy of a program that is already running, and that
   includes yourself: a program reads the proxy settings when it starts.
 - Never write proxy settings into project files (`.env`,
@@ -97,7 +98,8 @@ default.
 The proxy writes every request it carries to HAR files in
 `{{PROXY_LOG_FOLDER}}`; the user sees them at {{PROXY_LOG_URL}}.
 
-- Headers that hold secrets are `[redacted]`. Bodies are not written.
+- Headers are written as they are, cookies and API keys too. Bodies are not
+  written.
 - **Do not read a whole file**: it can be 20 MB. Use `jq`:
   `f=$(ls -t "$({{CLI}} proxy log path)"/proxy-*.har | head -1)`, then
   `jq -r '.log.entries[] | select(.response.status >= 400) | "\(.response.status) \(.request.url)"' "$f"`.
@@ -122,6 +124,6 @@ exchange and writes files in its `output_dir`.
 - A log rule copies text and events by default; use `on_event` for streams
   and `save` for images, video, downloads and uploads. An intercept rule with
   `response_body` stops streaming for that body.
-- Secret headers reach scripts as `[redacted]`; only the user can reveal them.
+- Scripts see every header as it is, cookies and API keys too.
 - Do not commit captures: keep `output_dir` out of git. They hold prompts and
   API replies.

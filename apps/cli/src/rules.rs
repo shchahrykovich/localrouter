@@ -2,7 +2,6 @@
 //! change (intercept) or record (log) the HTTP traffic of routes and of the
 //! forward proxy.
 
-use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -47,9 +46,6 @@ pub enum RulesCommand {
         /// Log rules: bytes the rule may write (default 1 GiB).
         #[arg(long)]
         max_capture_bytes: Option<u64>,
-        /// Let the script see API keys and cookies. Asks you to type yes; refused without a terminal.
-        #[arg(long)]
-        reveal_secrets: bool,
         /// Keep the rule after a daemon restart.
         #[arg(long, conflicts_with = "owner_pid")]
         persistent: bool,
@@ -116,7 +112,6 @@ pub async fn run(command: Option<RulesCommand>, json: bool, paths: &Paths, insta
             order,
             on_error,
             max_capture_bytes,
-            reveal_secrets,
             persistent,
             owner_pid,
             disabled,
@@ -124,23 +119,19 @@ pub async fn run(command: Option<RulesCommand>, json: bool, paths: &Paths, insta
         }) => {
             let rule = ScriptRule {
                 id,
-                host: host.clone(),
+                host,
                 path,
                 methods,
                 script: absolute(&script)?,
                 output_dir: output_dir.as_deref().map(absolute).transpose()?,
                 order: order.unwrap_or(localrouter_core::scripts::rules::DEFAULT_ORDER),
                 on_error: on_error.map(|e| if e == "pass" { OnError::Pass } else { OnError::Fail }),
-                reveal_secrets,
                 max_capture_bytes,
                 enabled: !disabled,
                 note,
                 owner_pid,
                 persistent,
             };
-            if reveal_secrets {
-                confirm_reveal(&host)?;
-            }
             let r: SetScriptRuleResult = c.call("set_script_rule", SetScriptRuleParams { rule, check_only: false }).await?;
             print_set(&r);
             Ok(())
@@ -155,7 +146,6 @@ pub async fn run(command: Option<RulesCommand>, json: bool, paths: &Paths, insta
                 output_dir: output_dir.as_deref().map(absolute).transpose()?,
                 order: localrouter_core::scripts::rules::DEFAULT_ORDER,
                 on_error: None,
-                reveal_secrets: false,
                 max_capture_bytes: None,
                 enabled: true,
                 note: String::new(),
@@ -203,24 +193,6 @@ fn absolute(path: &Path) -> anyhow::Result<String> {
     abs.to_str().map(str::to_string).with_context(|| format!("{} is not UTF-8", abs.display()))
 }
 
-/// `--reveal-secrets` needs a person at a terminal who types yes (ADR 07, I9).
-/// This stops an agent that runs the command; it is not a security boundary.
-fn confirm_reveal(host: &str) -> anyhow::Result<()> {
-    if !std::io::stdin().is_terminal() {
-        eprintln!("--reveal-secrets needs a terminal: a person must confirm it. Nothing was set.");
-        std::process::exit(2);
-    }
-    eprint!("This rule will see API keys and cookies of {host}. Type yes: ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    std::io::stdin().lock().read_line(&mut answer)?;
-    if answer.trim() != "yes" {
-        eprintln!("Not confirmed. Nothing was set.");
-        std::process::exit(2);
-    }
-    Ok(())
-}
-
 fn print_set(r: &SetScriptRuleResult) {
     let v = &r.rule;
     let kind = v.kind.map_or("?".to_string(), |k| format!("{k:?}").to_lowercase());
@@ -259,9 +231,6 @@ fn print_rule(v: &ScriptRuleView) {
     println!("      script {}", r.script);
     if let Some(dir) = &r.output_dir {
         println!("      output {dir}");
-    }
-    if r.reveal_secrets {
-        println!("      sees secret headers");
     }
     if let Some(e) = &v.last_error {
         println!("      last error: {}", e.message);

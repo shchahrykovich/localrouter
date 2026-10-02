@@ -305,13 +305,6 @@ final class AppModel {
         await setRule(rule)
     }
 
-    /// Let a rule see secret headers. The view asks first; MCP cannot do this.
-    func revealSecrets(_ view: ScriptRuleView, _ on: Bool) async {
-        var rule = view.rule
-        rule.revealSecrets = on
-        await setRule(rule)
-    }
-
     func removeRule(_ view: ScriptRuleView) async {
         do {
             _ = try await client.removeScriptRule(id: view.id)

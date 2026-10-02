@@ -17,7 +17,6 @@ struct SettingsView: View {
     @State private var confirmUninstall = false
     @State private var openAtLogin = false
     @State private var loginNote: String?
-    @State private var confirmReveal: ScriptRuleView?
     @State private var query = ""
     /// Parents the person closed. Every parent is open while a search runs.
     @State private var collapsed: Set<SettingsPage> = []
@@ -347,18 +346,7 @@ struct SettingsView: View {
                     Text("No script rules. A Lua script can change or record the traffic of a host: \(Instance.current.cli) rules api")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(rules) { view in ScriptRuleRow(view: view, confirmReveal: $confirmReveal) }
-            }
-            .confirmationDialog(
-                "Let \(confirmReveal?.id ?? "this rule") see secrets?",
-                isPresented: Binding(get: { confirmReveal != nil }, set: { if !$0 { confirmReveal = nil } })
-            ) {
-                Button("Show API keys and cookies", role: .destructive) {
-                    if let view = confirmReveal { Task { await model.revealSecrets(view, true) } }
-                    confirmReveal = nil
-                }
-            } message: {
-                Text("The script will see API keys and cookies of \(confirmReveal?.rule.host ?? "its host"), and may write them to its files.")
+                ForEach(rules) { view in ScriptRuleRow(view: view) }
             }
         }
     }
@@ -458,7 +446,6 @@ struct SettingsView: View {
 private struct ScriptRuleRow: View {
     @Environment(AppModel.self) private var model
     let view: ScriptRuleView
-    @Binding var confirmReveal: ScriptRuleView?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -478,13 +465,6 @@ private struct ScriptRuleRow: View {
             Text(counters).font(.caption).foregroundStyle(.secondary)
             if let error = view.lastError {
                 Text(error.message).font(.caption).foregroundStyle(.red).lineLimit(3)
-            }
-            if view.kind != nil {
-                if view.rule.revealSecrets {
-                    Button("Hide Secrets Again") { Task { await model.revealSecrets(view, false) } }.font(.caption)
-                } else {
-                    Button("Let It See Secrets…") { confirmReveal = view }.font(.caption)
-                }
             }
         }
     }

@@ -132,8 +132,6 @@ pub struct LogsArgs {
 #[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
-// There is no reveal_secrets argument: only the user, at a terminal, can let a
-// rule see API keys and cookies, and unknown arguments are refused (ADR 07, I9).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptRuleArgs {
@@ -195,7 +193,6 @@ impl ScriptRuleArgs {
             output_dir: self.output_dir,
             order: self.order.unwrap_or(DEFAULT_ORDER),
             on_error,
-            reveal_secrets: false,
             max_capture_bytes: self.max_capture_bytes,
             enabled: self.enabled.unwrap_or(true),
             note: self.note.unwrap_or_default(),
@@ -295,8 +292,8 @@ holds the files (read them with jq, never whole), log.url is the viewer for the 
 requests while the client waits; a log script gets a copy of each finished exchange and writes files in output_dir. \
 The kind comes from the script. Read the script reference first: the /scripts page of the help site, or the `rules api` \
 command. Test with check_only: true, then set the rule before the job starts, with owner_pid of a process you \
-started, or remove it when done. A host outside .localhost becomes inspected by the proxy. Secret headers reach \
-scripts as [redacted]; only the user can change that.")]
+started, or remove it when done. A host outside .localhost becomes inspected by the proxy. Scripts see every header as \
+it is, API keys and cookies too.")]
     async fn set_script_rule(&self, Parameters(args): Parameters<ScriptRuleArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(match args.into_params() {
             Ok(params) => self.call("set_script_rule", params).await,

@@ -263,12 +263,13 @@ servers it calls. It is off by default and listens on
      own profile. The user's normal Chrome does not change.
 3. `{{CLI}} logs` (MCP `get_logs`) shows each request, marked `via proxy`.
 
-- HTTPS is a tunnel by default: the log shows the host, not the requests. To
-  see each request of a host, inspect it:
-  `{{CLI}} proxy inspect add api.example.com` (or `*.example.com`).
-  `{{CLI}} proxy inspect add '*'` inspects every host outside `.localhost`:
-  then banking sites and apps that pin certificates fail too, so use it
-  only for a short session. Quote the `*` in a shell.
+- HTTPS is inspected by default: the inspect list is `*`, so the proxy reads
+  each request of every host outside `.localhost`. Apps that pin
+  certificates fail. To read only some hosts:
+  `{{CLI}} proxy inspect rm '*'`, then
+  `{{CLI}} proxy inspect add api.example.com` (or `*.example.com`). A host
+  that is not inspected is a tunnel: the log shows the host, not the
+  requests. Quote the `*` in a shell.
 - An inspected host works only in a program that trusts the inspection CA.
   Only the user can trust it, because macOS asks for their password: ask them
   to run `{{CLI}} proxy trust`. Node.js and Claude Code read
@@ -293,8 +294,8 @@ DevTools imports) in `{{PROXY_LOG_FOLDER}}`. The user sees them at
 {{PROXY_LOG_URL}}. The log is on by default and writes only while the proxy
 is on; `{{CLI}} proxy log` shows its state, `{{CLI}} proxy log off` stops it.
 
-- Headers that hold secrets are written as `[redacted]`. URLs are written as
-  they are, query included. Bodies are not written.
+- Headers are written as they are, cookies and API keys too. URLs are
+  written as they are, query included. Bodies are not written.
 - **Do not read a whole file**: one can be 20 MB. Use `jq` and ask for the
   rows you need.
 - The current file can be in the middle of a write. If `jq` fails on it, run
@@ -354,8 +355,7 @@ script.
   copies text and events by default. For streams use `on_event`; to keep
   images, video, downloads or uploads use `save`, which writes files, not
   `copy`.
-- Secret headers (`authorization`, `cookie`, API keys) reach scripts as
-  `[redacted]`. Only the user can reveal them, at a terminal; do not ask for it.
+- Scripts see every header as it is, cookies and API keys too.
 - Scripts may live in the project, but **do not commit captures**: keep
   `output_dir` out of git. Captures hold prompts and API replies.
 - A rule on a host outside `.localhost` makes the proxy inspect that host:

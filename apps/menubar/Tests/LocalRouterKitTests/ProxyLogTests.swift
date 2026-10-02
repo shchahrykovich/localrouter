@@ -48,6 +48,6 @@ final class ProxyLogTests: XCTestCase {
         XCTAssertEqual(p.count, 2)
         XCTAssertTrue(p[0].contains("No space left on device"))
         XCTAssertTrue(p[1].hasPrefix("3 requests were not written"))
-        XCTAssertTrue(ProxyLog.explanation(keepFiles: 5).contains("[redacted]"))
+        XCTAssertTrue(ProxyLog.explanation(keepFiles: 5).contains("cookies and API keys"))
     }
 }

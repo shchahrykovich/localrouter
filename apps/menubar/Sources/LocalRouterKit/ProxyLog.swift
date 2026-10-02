@@ -59,6 +59,6 @@ public enum ProxyLog {
 
     /// The explanation under the switch in Settings.
     public static func explanation(keepFiles: Int) -> String {
-        "Keeps the \(keepFiles) newest files. Secret headers are written as [redacted]; URLs are written as they are."
+        "Keeps the \(keepFiles) newest files. Headers and URLs are written as they are, cookies and API keys too."
     }
 }

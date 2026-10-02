@@ -13,7 +13,6 @@ use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value, json};
 
 use crate::logs::ProxyMode;
-use crate::secrets::{REDACTED, SecretHeaders};
 
 /// What the proxy saw of one request: copied by the network task, boxed, and
 /// freed after one write.
@@ -102,17 +101,17 @@ impl HarRecord {
         r
     }
 
-    /// The HAR `entries[]` object. Secret headers are `[redacted]`;
-    /// `Proxy-Authorization` is left out (I4).
-    pub fn to_entry(&self, secrets: &SecretHeaders) -> Value {
+    /// The HAR `entries[]` object. Every header is written as it is;
+    /// `Proxy-Authorization`, a header for the proxy, is left out (I4).
+    pub fn to_entry(&self) -> Value {
         let request_headers: Vec<Value> = self
             .request_headers
             .iter()
             .filter(|(name, _)| *name != header::PROXY_AUTHORIZATION)
-            .map(|(name, value)| header_json(name.as_str(), value.as_bytes(), secrets))
+            .map(|(name, value)| header_json(name.as_str(), value.as_bytes()))
             .collect();
         let response_headers: Vec<Value> =
-            self.response_headers.iter().map(|(name, value)| header_json(name.as_str(), value.as_bytes(), secrets)).collect();
+            self.response_headers.iter().map(|(name, value)| header_json(name.as_str(), value.as_bytes())).collect();
         let request_size = content_length(&self.request_headers);
         let response_size = content_length(&self.response_headers);
         let mime = self
@@ -179,9 +178,8 @@ impl HarRecord {
     }
 }
 
-fn header_json(name: &str, value: &[u8], secrets: &SecretHeaders) -> Value {
-    let value = if secrets.is_secret(name) { REDACTED.to_string() } else { String::from_utf8_lossy(value).into_owned() };
-    json!({ "name": name, "value": value })
+fn header_json(name: &str, value: &[u8]) -> Value {
+    json!({ "name": name, "value": String::from_utf8_lossy(value) })
 }
 
 fn content_length(headers: &HeaderMap) -> Option<u64> {
@@ -263,7 +261,7 @@ mod tests {
     // status, statusText, times, _mode http.
     #[test]
     fn an_absolute_form_get() {
-        let e = get().to_entry(&SecretHeaders::default());
+        let e = get().to_entry();
         assert_eq!(e["startedDateTime"], "2026-10-02T09:35:12.345Z");
         assert_eq!(e["time"], 12);
         assert_eq!(e["timings"], json!({"send": 0, "wait": 12, "receive": 0}));
@@ -291,7 +289,7 @@ mod tests {
         let mut r = get();
         r.mode = ProxyMode::Inspect;
         r.route = Some("shop/blog".into());
-        let e = r.to_entry(&SecretHeaders::default());
+        let e = r.to_entry();
         assert_eq!(e["_mode"], "inspect");
         assert_eq!(e["_route"], "shop/blog");
     }
@@ -299,7 +297,7 @@ mod tests {
     // T1: a tunnel is one CONNECT with its bytes.
     #[test]
     fn a_tunnel() {
-        let e = HarRecord::tunnel(at(), "example.com", 443, 200, 900, (10, 20)).to_entry(&SecretHeaders::default());
+        let e = HarRecord::tunnel(at(), "example.com", 443, 200, 900, (10, 20)).to_entry();
         assert_eq!(e["request"]["method"], "CONNECT");
         assert_eq!(e["request"]["url"], "https://example.com:443");
         assert_eq!(e["_mode"], "tunnel");
@@ -315,7 +313,7 @@ mod tests {
         r.request_headers.insert("content-length", HeaderValue::from_static("7"));
         r.response_headers.remove("content-length");
         r.response_headers.insert("location", HeaderValue::from_static("/next"));
-        let e = r.to_entry(&SecretHeaders::default());
+        let e = r.to_entry();
         assert_eq!(e["request"]["bodySize"], 7);
         assert_eq!(e["response"]["bodySize"], -1);
         assert_eq!(e["response"]["content"]["size"], 0);
@@ -329,40 +327,35 @@ mod tests {
         let mut r = get();
         r.scripts = vec!["a".into(), "b".into()];
         r.script_error = Some("b".into());
-        let e = r.to_entry(&SecretHeaders::default());
+        let e = r.to_entry();
         assert_eq!(e["_scripts"], json!(["a", "b"]));
         assert_eq!(e["_scriptError"], "b");
     }
 
-    // T3, I4: secret headers are [redacted]; Proxy-Authorization is absent.
+    // T3: every header is written as it is, cookies and keys too;
+    // Proxy-Authorization is a header for the proxy and is absent.
     #[test]
-    fn secret_headers_are_redacted() {
-        let secrets = SecretHeaders::default();
-        secrets.set(&["x-session".into()]);
+    fn headers_are_written_as_they_are() {
         let mut r = get();
         for (name, value) in [
             ("authorization", "Bearer t"),
             ("cookie", "a=1"),
             ("x-api-key", "k"),
             ("proxy-authorization", "Basic p"),
-            ("x-session", "s"),
         ] {
             r.request_headers.insert(name, HeaderValue::from_static(value));
         }
         r.response_headers.insert("set-cookie", HeaderValue::from_static("b=2"));
-        let e = r.to_entry(&secrets);
-        let text = e.to_string();
-        for secret in ["Bearer t", "a=1", "\"k\"", "Basic p", "\"s\"", "b=2"] {
-            assert!(!text.contains(secret), "{secret} reached the entry: {text}");
-        }
+        let e = r.to_entry();
         let names: Vec<&str> = e["request"]["headers"].as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap()).collect();
         assert!(!names.contains(&"proxy-authorization"), "{names:?}");
         let value = |list: &Value, name: &str| {
             list.as_array().unwrap().iter().find(|h| h["name"] == name).map(|h| h["value"].clone()).unwrap()
         };
-        assert_eq!(value(&e["request"]["headers"], "authorization"), REDACTED);
-        assert_eq!(value(&e["request"]["headers"], "x-session"), REDACTED);
+        assert_eq!(value(&e["request"]["headers"], "authorization"), "Bearer t");
+        assert_eq!(value(&e["request"]["headers"], "cookie"), "a=1");
+        assert_eq!(value(&e["request"]["headers"], "x-api-key"), "k");
         assert_eq!(value(&e["request"]["headers"], "accept"), "*/*");
-        assert_eq!(value(&e["response"]["headers"], "set-cookie"), REDACTED);
+        assert_eq!(value(&e["response"]["headers"], "set-cookie"), "b=2");
     }
 }

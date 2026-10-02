@@ -259,18 +259,13 @@ Write what must last to a capture file.
 use. A changed file is loaded again; if it is broken, the old version keeps
 running and `last_error` shows the message.
 
-## Secrets
+## Headers
 
-`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`,
-`api-key` and `x-auth-token` (and `secret_headers` in the config) reach
-scripts as `"[redacted]"`. A value left as `"[redacted]"` is sent as it was; a
-new value replaces it; `nil` removes the header. Only the user can let a rule
-see the real values: `{{CLI}} rules add … --reveal-secrets` asks them to type
-yes at a terminal. MCP cannot.
-
-Query strings and bodies are **not** redacted: a body sent to a model API
-holds the prompt and the code in it.
+Scripts see every header as it is, cookies and API keys too. A new value
+replaces it; `nil` removes the header. Query strings and bodies are not
+changed either: a body sent to a model API holds the prompt and the code in
+it.
 
 **Do not commit captures.** Scripts may live in the project, but keep
 `output_dir` out of git (add it to `.gitignore`): captures hold prompts, API
-replies, cookies inside bodies, and files the user saw.
+replies, cookies, API keys and files the user saw.

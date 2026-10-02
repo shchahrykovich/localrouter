@@ -30,7 +30,6 @@ use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Route, RouteTable};
 use localrouter_core::scripts::Scripts;
-use localrouter_core::secrets::SecretHeaders;
 use localrouter_core::tls::{self, CaKind, CaLoad, CertStore, LocalCa};
 use localrouter_core::upstream::{BoxFuture, Resolve, Upstream};
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -229,18 +228,14 @@ async fn harness() -> Harness {
     let log = Arc::new(RequestLog::new(100));
     let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
     let scripts = Scripts::new();
-    let secrets: Arc<SecretHeaders> = scripts.secrets.clone();
-    let har = HarLog::new(
-        HarSettings {
-            folder: dir.path().join("logs/proxy"),
-            creator: "LocalRouter".into(),
-            version: "test".into(),
-            enabled: true,
-            file_mb: 20,
-            file_requests: 5000,
-        },
-        secrets,
-    );
+    let har = HarLog::new(HarSettings {
+        folder: dir.path().join("logs/proxy"),
+        creator: "LocalRouter".into(),
+        version: "test".into(),
+        enabled: true,
+        file_mb: 20,
+        file_requests: 5000,
+    });
     let router = Arc::new(Proxy {
         instance: Instance::release(),
         routes: routes.clone(),
@@ -573,7 +568,7 @@ async fn har_records_each_mode() {
     let entries = har_entries(&h, 1).await;
     assert_eq!(entries[0]["request"]["url"], url);
     assert_eq!(entries[0]["_mode"], "http");
-    assert_eq!(header(&entries[0]["request"]["headers"], "authorization"), Some("[redacted]"), "I4");
+    assert_eq!(header(&entries[0]["request"]["headers"], "authorization"), Some("Bearer t"), "every header as it is");
 
     let stream = connect(h.proxy, "test.example:443").await.unwrap();
     let tls = tls_over(stream, "test.example", &h.inspection_ca).await.unwrap();

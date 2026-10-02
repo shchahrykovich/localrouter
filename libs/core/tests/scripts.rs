@@ -521,10 +521,10 @@ async fn copies_past_the_budget_are_dropped_and_counted() {
     assert_eq!(h.scripts.budget.used(), 0, "every reserved byte came back");
 }
 
-// ---- T10: secrets
+// ---- T10: headers
 
 #[tokio::test]
-async fn secret_headers_are_hidden_from_scripts_but_reach_the_server() {
+async fn scripts_see_every_header_as_it_is() {
     let h = harness().await;
     h.rule("cap", "shop.localhost", CAPTURE, |_| {});
     h.rule("swap", "shop.localhost", r#"
@@ -533,17 +533,12 @@ async fn secret_headers_are_hidden_from_scripts_but_reach_the_server() {
           req.headers["x-saw"] = req.headers.authorization
         end }"#, |_| {});
     let echo = send(h.http, "GET", "shop.localhost", "/keep", &[("authorization", "Bearer real")], b"").await.json();
-    assert_eq!(echo["headers"]["authorization"], "Bearer real", "an untouched [redacted] keeps the value");
-    assert_eq!(echo["headers"]["x-saw"], "[redacted]");
+    assert_eq!(echo["headers"]["authorization"], "Bearer real");
+    assert_eq!(echo["headers"]["x-saw"], "Bearer real", "the script sees the value");
     let echo = send(h.http, "GET", "shop.localhost", "/swap", &[("authorization", "Bearer real")], b"").await.json();
     assert_eq!(echo["headers"]["authorization"], "Bearer new");
     let lines = h.lines("x.jsonl", 2).await;
-    assert_eq!(lines[0]["auth"], "[redacted]");
-
-    h.rule("cap", "shop.localhost", CAPTURE, |r| r.reveal_secrets = true);
-    send(h.http, "GET", "shop.localhost", "/r", &[("authorization", "Bearer real")], b"").await;
-    let lines = h.lines("x.jsonl", 3).await;
-    assert_eq!(lines[2]["auth"], "Bearer real", "reveal_secrets shows the value");
+    assert_eq!(lines[0]["auth"], "Bearer real", "a log script sees the value");
 }
 
 // ---- T12: errors
