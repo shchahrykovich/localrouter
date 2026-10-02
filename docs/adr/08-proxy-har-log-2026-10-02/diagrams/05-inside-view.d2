@@ -1,0 +1,34 @@
+...@_palette
+grid-columns: 2
+grid-gap: 40
+title: "Inside view: which files to open" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+core: "libs/core" {
+  grid-columns: 2
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  har: "har/\nmod, entry, writer" { class: ins }
+  viewer: "har/viewer.rs\n+ viewer.html, .js, .css" { class: ins }
+  fwd: "forward.rs\nrecord each request" { class: upd }
+  proxy: "proxy.rs\nproxy.localhost first" { class: upd }
+  model: "routes.rs, tls.rs,\nconfig.rs, api.rs" { class: upd }
+  texts: "help.md, note.md,\nmcp.md, help.rs" { class: upd }
+}
+daemon: "apps/daemon" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  d: "daemon.rs\nwriter, set_config,\nget_proxy, update note" { class: upd }
+  n: "network.rs (new),\nlisten.rs\nLAN per network" { class: ins }
+}
+cli: "apps/cli" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  p: "proxy.rs\nproxy log …" { class: upd }
+  l: "lan.rs (new)\nlan …" { class: ins }
+  m: "mcp.rs\nget_proxy text" { class: upd }
+}
+app: "apps/menubar" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  kit: "Api.swift,\nProxyLog.swift" { class: upd }
+  ui: "SettingsView (Proxy, Routing),\nProxyView, StatusItemController" { class: upd }
+}
+
+
+legend: "Green: new files. Blue: files that grow. No arrows: the daemon calls libs/core as a library, and the programs talk only through the socket API, as before." { near: bottom-center; shape: text; style.font-size: 13 }

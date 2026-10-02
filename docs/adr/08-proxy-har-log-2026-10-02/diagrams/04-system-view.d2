@@ -1,0 +1,28 @@
+...@_palette
+direction: right
+title: "System view: a log folder and a viewer name" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+pclient: "Chrome, Claude Code\nwith a proxy set" { class: step }
+browser: "Chrome\nproxy.localhost" { class: ins }
+clients: "App, CLI,\nMCP shim" { class: upd }
+
+daemon: "localrouterd" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  label.near: bottom-right
+  fwd: "Forward proxy" { class: upd }
+  router: "Router\n(+ proxy.localhost)" { class: upd }
+  har: "HAR writer\n(thread)" { class: ins }
+}
+logs: "Logs folder\nproxy/*.har" { class: write }
+net: "Servers on the\ninternet" { class: ext }
+
+pclient -> daemon.fwd: "HTTP proxy"
+daemon.fwd -> net: "HTTP, HTTPS"
+daemon.fwd -> daemon.har: "records"
+daemon.router -> daemon.har: ".localhost via proxy" { style.stroke-dash: 4 }
+daemon.har -> logs: "write, roll"
+browser -> daemon.router: "HTTP :80 or :443"
+daemon.router -> logs: "read" { style.stroke-dash: 4 }
+clients -> daemon: "socket API 1.5"
+
+legend: "Green: new. Blue: grows. Grey: unchanged. config.json gains three log fields (not drawn).\nTCP routes, folder routes, the CAs and script rules are left out: they do not change." { near: bottom-center; shape: text; style.font-size: 13 }

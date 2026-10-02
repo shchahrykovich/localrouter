@@ -1,0 +1,23 @@
+...@_palette
+direction: right
+title: "Data flow: open the proxy log in Chrome" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+click: "1. Open Proxy Log\n(menu, Proxy tab,\nSettings, CLI)" { class: term }
+open: "2. Chrome if installed,\nelse the default browser,\nopens proxy.localhost" { class: ins }
+list: "3. The page lists files\nand loads the newest" { class: ins }
+live: "4. New entries arrive\nlive; filter, details" { class: ins }
+dl: "5. Download HAR,\nthen DevTools:\nNetwork, Import" { class: ins }
+
+proxy: "get_proxy\nlog.url" { class: tbl }
+har: "logs/proxy/*.har" { class: tbl }
+feed: "writer live feed" { class: q }
+
+click -> open
+open -> list
+list -> live
+live -> dl
+proxy -> open { style.stroke-dash: 4 }
+har -> list { style.stroke-dash: 4 }
+feed -> live { style.stroke-dash: 4 }
+
+legend: "Navy: read. Green: new steps. Nothing on this path writes: the viewer is read only.\nChrome cannot open a .har file as a page; the DevTools import at step 5 is how Chrome reads it." { near: bottom-center; shape: text; style.font-size: 13 }

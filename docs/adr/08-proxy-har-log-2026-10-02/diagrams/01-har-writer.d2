@@ -1,0 +1,21 @@
+...@_palette
+title: "The HAR writer: traffic first, the file later" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+flow: "" { grid-columns: 3; grid-gap: 70; style: { fill: transparent; stroke: transparent }
+  on: "Proxy request done.\nLog on? (atomic load)" { class: dec }
+  copy: "Copy method, URL,\nheaders, status, times" { class: ins }
+  drop: "Queue full:\ndrop, count +1" { class: del }
+  q: "Bounded queue\n4,096 records" { class: q }
+  writer: "Writer thread\nredact, serialize,\nnew file at MB or requests,\nkeep the last 5 files" { class: ins }
+  file: "proxy-…har\n(valid JSON after\nevery entry)" { class: write }
+}
+live: "Live feed for the viewer" { class: q }
+
+flow.on -> flow.copy: yes
+flow.copy -> flow.q: try_send
+flow.copy -> flow.drop: full
+flow.q -> flow.writer
+flow.writer -> flow.file
+flow.writer -> live
+
+legend: "Green: new steps. The client already has its response headers: the network task never waits\nfor the queue or the disk. With the log off, it does nothing more than today." { near: bottom-center; shape: text; style.font-size: 13 }

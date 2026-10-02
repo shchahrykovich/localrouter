@@ -1,0 +1,17 @@
+...@_palette
+direction: right
+title: "Data flow: one proxied request becomes a HAR entry" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+start: "1. A program sends a\nrequest through the proxy" { class: term }
+entry: "2. One record: request line,\nheaders, status, times.\nTunnel: CONNECT host only" { class: ins }
+writer: "3. Writer: redact, append.\nFull file: start a new one,\ndelete files past the 5th" { class: ins }
+
+cfg: "config.json\nlog fields,\nsecret_headers" { class: tbl }
+har: "logs/proxy/\nproxy-….har" { class: write }
+
+start -> entry: "response\nheaders"
+entry -> writer: queue
+writer -> har: "append,\ndelete old"
+cfg -> writer { style.stroke-dash: 4 }
+
+legend: "Navy: read. Purple: written. Green: new steps. The in-memory request log is unchanged.\nRequests to router.localhost and proxy.localhost are never recorded." { near: bottom-center; shape: text; style.font-size: 13 }

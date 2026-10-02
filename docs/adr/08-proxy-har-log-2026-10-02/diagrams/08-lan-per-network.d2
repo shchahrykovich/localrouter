@@ -1,0 +1,22 @@
+...@_palette
+direction: right
+title: "LAN access per network: one check per connection" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+conn: "A connection to\nport 80 or 443" { class: term }
+loop: "Peer is\nthis Mac?" { class: dec }
+check: "LAN access on, and the\nnetwork it came in on\n(router MAC) is allowed?" { class: dec }
+ok: "Accept" { class: ins }
+no: "Close,\nnothing read" { class: del }
+
+cfg: "config.json\nallow_lan, lan_networks" { class: tbl }
+arp: "Routing and ARP\ntables (macOS)" { class: tbl }
+
+conn -> loop
+loop -> ok: yes
+loop -> check: no
+check -> ok: yes
+check -> no: "no, or unknown"
+cfg -> check { style.stroke-dash: 4 }
+arp -> check { style.stroke-dash: 4 }
+
+legend: "Green: new. Red: refused. Unknown: no router MAC (a VPN interface, a cable without a router, IPv6 only).\nThe proxy port, TCP routes and the viewer stay this Mac only, whatever the list says." { near: bottom-center; shape: text; style.font-size: 13 }

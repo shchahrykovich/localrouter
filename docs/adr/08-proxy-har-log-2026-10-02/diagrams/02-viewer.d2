@@ -1,0 +1,20 @@
+...@_palette
+direction: right
+title: "The viewer: one more built-in name, like router.localhost" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+browser: "Chrome\nproxy.localhost" { class: term }
+peer: "Peer is this Mac?\nGET or HEAD?" { class: dec }
+deny: "403 or 405,\nnothing logged" { class: del }
+pages: "Viewer files\n(inside the daemon)" { class: ins }
+api: "/api/files\n/files/<name>\n/api/live" { class: ins }
+folder: "logs/proxy/\n*.har" { class: tbl }
+writer: "Writer:\nfile lock,\nlive feed" { class: tbl }
+
+browser -> peer
+peer -> deny: no
+peer -> pages: "/, /viewer.js,\n/viewer.css"
+peer -> api: "/api, /files"
+api -> folder: "list, read"
+api -> writer: "current file,\nnew entries"
+
+legend: "Green: new. Navy: read only. The viewer changes nothing, sends no CORS headers, and loads nothing from the internet." { near: bottom-center; shape: text; style.font-size: 13 }

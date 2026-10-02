@@ -1,0 +1,26 @@
+...@_palette
+direction: right
+title: "Clients: who reads the log, who changes it" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+app: "Menu bar app\nSettings, Proxy tab,\nright-click menu" { class: upd }
+cli: "CLI\nproxy log on, off,\nlimits, open" { class: upd }
+agent: "Coding agent\n(MCP, 9 tools)" { class: upd }
+
+daemon: "localrouterd" {
+  style: { fill: "#ffffff"; stroke: "#9aa7b8"; font-size: 16 }
+  get: "get_proxy\n+ log block" { class: upd }
+  set: "set_config\n+ 3 log fields" { class: upd }
+  viewer: "proxy.localhost\n(viewer, JSON)" { class: ins }
+}
+files: "logs/proxy/*.har" { class: tbl }
+
+app -> daemon.get
+app -> daemon.set
+cli -> daemon.set
+cli -> daemon.get
+agent -> daemon.get: "MCP get_proxy\n(read only)"
+agent -> files: "read, jq" { style.stroke-dash: 4 }
+app -> daemon.viewer: "Open Proxy Log" { style.stroke-dash: 4 }
+daemon.viewer -> files
+
+legend: "Green: new. Blue: grows. Only the app and the CLI change log settings; MCP stays read only (ADR 06).\nDashed: a client that reads the files or the viewer directly, not through the socket API." { near: bottom-center; shape: text; style.font-size: 13 }
