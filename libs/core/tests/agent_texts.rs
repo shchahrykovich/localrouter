@@ -238,3 +238,31 @@ fn the_script_reference_names_every_field_and_module() {
     let dev = localrouter_core::help::render_scripts(&dev(), Some(7080), Some(7443));
     assert!(dev.contains("localrouter-dev rules api") && dev.contains("router.localhost:7080/scripts"));
 }
+
+/// ADR 08, T12: every agent text names the proxy log: its folder and viewer
+/// for this instance, `[redacted]`, "do not read a whole file", the jq
+/// recipe, and the CA bundle names.
+#[test]
+fn every_agent_text_describes_the_proxy_log() {
+    for (instance, http, url, folder) in [
+        (Instance::release(), 80, "http://proxy.localhost", "~/Library/Logs/LocalRouter/proxy"),
+        (dev(), 7080, "http://proxy.localhost:7080", "~/Library/Logs/LocalRouter-dev/proxy"),
+    ] {
+        let cli = instance.cli();
+        for (name, text) in texts(&instance, http, http + 363) {
+            let lower = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            assert!(text.contains(folder), "{name} lacks the folder {folder}");
+            assert!(text.contains(url), "{name} lacks the viewer {url}");
+            assert!(text.contains("[redacted]"), "{name}");
+            assert!(lower.contains("do not read a whole file"), "{name}");
+            assert!(text.contains(&format!("{cli} proxy log path")), "{name} lacks the folder command");
+            assert!(text.contains("jq"), "{name} lacks jq");
+            assert!(text.contains("SSL_CERT_FILE") && text.contains("CURL_CA_BUNDLE"), "{name} lacks the CA bundle");
+            assert!(!text.contains("{{"), "{name}: a placeholder is left");
+        }
+    }
+    // The note is made when the bundle is built: it names the default ports.
+    assert!(render_note(&dev()).contains("http://proxy.localhost:7080"));
+    assert!(!render_note(&Instance::release()).contains("http://proxy.localhost:"), "release viewer without a port");
+}
+

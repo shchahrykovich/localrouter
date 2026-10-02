@@ -7,7 +7,7 @@ import Foundation
 import XCTest
 
 final class NoFixedNamesTests: XCTestCase {
-    private let words = ["localrouter ", "localrouterd", "router.localhost", "LocalRouter.md", "LocalRouter.app"]
+    private let words = ["localrouter ", "localrouterd", "router.localhost", "proxy.localhost", "LocalRouter.md", "LocalRouter.app"]
 
     /// Lines that may name these on purpose, with the reason.
     private let allowed: [(file: String, contains: String)] = [

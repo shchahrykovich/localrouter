@@ -66,4 +66,14 @@ final class SettingsTreeTests: XCTestCase {
         XCTAssertNil(SettingsTree.parent(of: .proxy))
         XCTAssertNil(SettingsTree.parent(of: .general))
     }
+
+    /// ADR 08, T13: the proxy log settings are on the Proxy page; the
+    /// networks of LAN access on the Routing page.
+    func testTheProxyLogAndLanNetworksAreFound() {
+        XCTAssertEqual(SettingsTree.firstPage(in: SettingsTree.filter("har"), query: "har"), .proxy)
+        XCTAssertEqual(SettingsTree.firstPage(in: SettingsTree.filter("requests per file"), query: "requests per file"), .proxy)
+        XCTAssertEqual(SettingsTree.firstPage(in: SettingsTree.filter("proxy log"), query: "proxy log"), .proxy)
+        XCTAssertEqual(pages(SettingsTree.filter("lan networks")), [.routing])
+        XCTAssertEqual(pages(SettingsTree.filter("forget")), [.routing])
+    }
 }

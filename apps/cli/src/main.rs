@@ -1,6 +1,7 @@
 //! `localrouter`: command-line tool and MCP server for LocalRouter.
 
 mod client;
+mod lan;
 mod mcp;
 mod proxy;
 mod rules;
@@ -117,6 +118,11 @@ enum Command {
         #[command(subcommand)]
         command: Option<proxy::ProxyCommand>,
     },
+    /// LAN access per network: which networks may reach ports 80 and 443. Without a subcommand: the state.
+    Lan {
+        #[command(subcommand)]
+        command: Option<lan::LanCommand>,
+    },
     /// Script rules: Lua scripts that change (intercept) or record (log) HTTP traffic. Without a subcommand: the list.
     Rules {
         /// The list as JSON.
@@ -178,6 +184,7 @@ async fn run(command: Command, instance: Instance) -> anyhow::Result<()> {
         Command::Mcp => mcp::run(paths.socket(), instance).await,
         Command::Proxy { command } => proxy::run(command, &paths, &instance).await,
         Command::Rules { json, command } => rules::run(command, json, &paths, &instance).await,
+        Command::Lan { command } => lan::run(command, &paths, &instance).await,
         Command::Note => {
             print!("{}", help::render_note(&instance));
             Ok(())
@@ -394,6 +401,9 @@ fn print_status(instance: &Instance, s: &StatusResult) {
     }
     for h in &s.listen_failed {
         println!("       TCP route {h}: listen port is taken");
+    }
+    for note in &s.notes {
+        println!("Note   {note}");
     }
 }
 

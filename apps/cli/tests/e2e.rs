@@ -1,6 +1,8 @@
 //! E1: the main journey through the real binaries, with checks along the way.
 //! E1b (ADR 03): the path-route journey, the same way.
 //! E1c (ADR 04): a dev instance next to the release, the same way.
+//! ADR 08: E1 `proxy_log_journey` (a request in a HAR file and in the
+//! viewer) and E2 `agent_loop` (operate, run, inspect, as an agent would).
 //!
 //! Replaced in CI (covered by manual tests M1, M3, M6): ports 80/443 (random
 //! ports), the macOS `*.localhost` resolver (reqwest `resolve`), keychain trust
@@ -713,3 +715,217 @@ async fn script_rules_journey() {
     assert!(file.exists(), "captures are never removed");
     mcp.cancel().await.unwrap();
 }
+
+// ---- ADR 08
+
+/// GET a path of the viewer on the daemon's HTTP port, from this Mac.
+fn viewer_get(http: u16, path: &str) -> (u16, String) {
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", http)).unwrap();
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: proxy.localhost\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+    let mut raw = vec![];
+    s.read_to_end(&mut raw).unwrap();
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, body.to_string())
+}
+
+/// E1 (ADR 08): a request through the proxy shows up in a HAR file and in
+/// the viewer, with its query and with Authorization redacted.
+///
+/// Replaced: the internet server is a local echo server reached through the
+/// daemon's debug-only resolver. M1 and M2 use real sites and real Chrome.
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_log_journey() {
+    let echo = echo_upstream().await;
+    let resolve = format!("example.test=127.0.0.1:{echo}");
+    let d = Daemon::start_env(&[("LOCALROUTER_TEST_RESOLVE", &resolve)]);
+    let folder = d.home().join("logs/proxy");
+
+    // 1. Proxy on. Check: the Log: line names the temp folder.
+    assert!(d.cli(&["proxy", "port", "0"]).0);
+    let (ok, out, err) = d.cli(&["proxy", "on"]);
+    assert!(ok, "{err}");
+    assert!(out.contains(&format!("Log: on, writes every request to {}", folder.display())), "{out}");
+    let status = d.status();
+    let proxy = format!("http://127.0.0.1:{}", status["proxy"]["port"]);
+    let http = status["http"]["port"].as_u64().unwrap() as u16;
+
+    // 2. A request with a secret header and a query. Check: 200.
+    let client = reqwest::Client::builder().proxy(reqwest::Proxy::all(&proxy).unwrap()).build().unwrap();
+    let resp = client.get("http://example.test/a?x=1").header("authorization", "Bearer t").send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 3. The viewer's file list. Check: one current file with one entry.
+    let mut files = Value::Null;
+    for _ in 0..100 {
+        files = serde_json::from_str(&viewer_get(http, "/api/files").1).unwrap();
+        if files["files"][0]["entries"] == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(files["files"].as_array().unwrap().len(), 1, "{files}");
+    assert_eq!(files["files"][0]["current"], true);
+    let name = files["files"][0]["name"].as_str().unwrap().to_string();
+
+    // 4. The file from the viewer. Check: HAR 1.2, the query, [redacted].
+    let (status, body) = viewer_get(http, &format!("/files/{name}"));
+    assert_eq!(status, 200);
+    let har: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(har["log"]["version"], "1.2");
+    let entry = &har["log"]["entries"][0];
+    assert_eq!(entry["request"]["url"], "http://example.test/a?x=1");
+    let auth = entry["request"]["headers"].as_array().unwrap().iter().find(|h| h["name"] == "authorization").unwrap();
+    assert_eq!(auth["value"], "[redacted]");
+    assert!(!body.contains("Bearer t"));
+
+    // 5. The same bytes on disk.
+    assert_eq!(std::fs::read_to_string(folder.join(&name)).unwrap(), body);
+
+    // 6. Log off, one more request. Check: still one entry, still valid.
+    assert!(d.cli(&["proxy", "log", "off"]).0);
+    client.get("http://example.test/b").send().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let har: Value = serde_json::from_str(&std::fs::read_to_string(folder.join(&name)).unwrap()).unwrap();
+    assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+
+    // 7. MCP get_proxy. Check: log.enabled false, the temp folder.
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_localrouter"));
+    cmd.arg("mcp").env("LOCALROUTER_HOME", d.home());
+    let mcp = ().serve(TokioChildProcess::new(cmd).unwrap()).await.unwrap();
+    let (ok, text) = mcp_call(&mcp, "get_proxy", json!({})).await;
+    assert!(ok, "{text}");
+    let p: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(p["log"]["enabled"], false);
+    assert_eq!(p["log"]["folder"], folder.display().to_string());
+    mcp.cancel().await.unwrap();
+}
+
+/// HTTPS echo server for `names`, signed by a fresh test CA. Returns its
+/// port and the CA as PEM.
+async fn tls_server_for(names: &[&str], ca_name: &str) -> (u16, String) {
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params.distinguished_name.push(rcgen::DnType::CommonName, ca_name);
+    let ca_pem = ca_params.self_signed(&ca_key).unwrap().pem();
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    let cert = rcgen::CertificateParams::new(names).unwrap().signed_by(&key, &issuer).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (s, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut s) = acceptor.accept(s).await else { return };
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = json!({"path": path}).to_string();
+                let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let _ = s.write_all(resp.as_bytes()).await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    (port, ca_pem)
+}
+
+fn has(program: &str) -> bool {
+    std::process::Command::new("/bin/sh").args(["-c", &format!("command -v {program}")]).output().is_ok_and(|o| o.status.success())
+}
+
+/// E2 (ADR 08): the agent loop through the CLI, as the agent texts give it:
+/// operate (`proxy on`, `inspect add`), run (`curl` and `python3` after
+/// `eval "$(… proxy env)"`), inspect (`jq` on the newest file).
+///
+/// Replaced: the internet servers are local HTTPS servers with a test CA,
+/// which the daemon's debug-only settings trust and add to the bundle's roots.
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_loop() {
+    for program in ["curl", "python3", "jq"] {
+        if !has(program) {
+            eprintln!("agent_loop skipped: {program} is not installed");
+            return;
+        }
+    }
+    let (inspected, ca_pem) = tls_server_for(&["example.test"], "E2 Internet CA").await;
+    let (tunnelled, ca2_pem) = tls_server_for(&["plain.test"], "E2 Second CA").await;
+    let roots = tempfile::Builder::new().prefix("lrca").suffix(".pem").tempfile().unwrap();
+    std::fs::write(roots.path(), format!("{ca_pem}{ca2_pem}")).unwrap();
+    let resolve = format!("example.test=127.0.0.1:{inspected},plain.test=127.0.0.1:{tunnelled}");
+    let roots_path = roots.path().to_str().unwrap();
+    let d = Daemon::start_env(&[
+        ("LOCALROUTER_TEST_RESOLVE", &resolve),
+        ("LOCALROUTER_TEST_UPSTREAM_CA", roots_path),
+        ("LOCALROUTER_TEST_EXTRA_ROOTS", roots_path),
+    ]);
+    let cli = env!("CARGO_BIN_EXE_localrouter");
+    let sh = |script: &str| {
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .env("LOCALROUTER_HOME", d.home())
+            .env("CLI", cli)
+            .env_remove("HTTPS_PROXY")
+            .env_remove("HTTP_PROXY")
+            .env_remove("https_proxy")
+            .env_remove("http_proxy")
+            .output()
+            .unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+
+    // 1. Operate. Check: both exit 0.
+    let (ok, _, err) = sh(r#""$CLI" proxy port 0 && "$CLI" proxy on && "$CLI" proxy inspect add example.test"#);
+    assert!(ok, "{err}");
+
+    // 2. curl to the inspected host: it trusts the inspection CA through
+    //    CURL_CA_BUNDLE. Check: 200 from the server.
+    let (ok, out, err) = sh(r#"eval "$("$CLI" proxy env)" && curl -sS https://example.test/curl?k=1"#);
+    assert!(ok, "curl failed: {err}");
+    assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["path"], "/curl?k=1", "{out}");
+
+    // 3. Python through SSL_CERT_FILE. Check: 200.
+    let (ok, out, err) = sh(
+        r#"eval "$("$CLI" proxy env)" && python3 -c 'import urllib.request; r = urllib.request.urlopen("https://example.test/py"); print(r.status)'"#,
+    );
+    assert!(ok, "python3 failed: {err}");
+    assert_eq!(out.trim(), "200");
+
+    // 4. curl to a host that is not inspected: a tunnel to the real server,
+    //    whose CA is in the bundle's root part. Check: 200.
+    let (ok, out, err) = sh(r#"eval "$("$CLI" proxy env)" && curl -sS https://plain.test/tunnel"#);
+    assert!(ok, "curl through the tunnel failed: {err}");
+    assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["path"], "/tunnel");
+
+    // 5. Inspect with jq, as the texts say. Check: the two inspected
+    //    requests with their paths, and the tunnel as one CONNECT.
+    let mut lines = String::new();
+    for _ in 0..100 {
+        let (ok, out, err) = sh(
+            r#"f=$(ls -t "$("$CLI" proxy log path)"/proxy-*.har | head -1) && jq -r '.log.entries[] | "\(._mode) \(.request.method) \(.request.url)"' "$f""#,
+        );
+        assert!(ok || err.contains("parse error"), "{err}");
+        lines = out;
+        if lines.lines().count() >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(lines.contains("inspect GET https://example.test/curl?k=1"), "{lines}");
+    assert!(lines.contains("inspect GET https://example.test/py"), "{lines}");
+    assert!(lines.contains("tunnel CONNECT https://plain.test:443"), "{lines}");
+}
+

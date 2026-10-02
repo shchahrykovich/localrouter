@@ -44,6 +44,32 @@ pub enum ProxyCommand {
         #[command(subcommand)]
         command: ProxyCaCommand,
     },
+    /// The proxy log: every proxied request in HAR files. Without a subcommand: its state.
+    Log {
+        #[command(subcommand)]
+        command: Option<LogCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LogCommand {
+    /// Write every proxied request to a HAR file.
+    On,
+    /// Stop writing. The files stay.
+    Off,
+    /// When a file is full: MB, requests, or both. The first reached starts a new file.
+    Limits {
+        /// 1 to 200.
+        #[arg(long)]
+        mb: Option<u64>,
+        /// 100 to 1000000.
+        #[arg(long)]
+        requests: Option<u64>,
+    },
+    /// Open the log viewer in the browser.
+    Open,
+    /// Print the folder of the HAR files, for scripts.
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -67,13 +93,30 @@ pub enum ProxyCaCommand {
 }
 
 /// The order `proxy env` prints; other variables follow.
-const ENV_ORDER: [&str; 5] = ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "NODE_EXTRA_CA_CERTS"];
+const ENV_ORDER: [&str; 11] = [
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "NODE_USE_ENV_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+];
 
 pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instance) -> anyhow::Result<()> {
     let cli = instance.cli();
     // `ca-path` works without a daemon, like the local CA's.
     if let Some(ProxyCommand::CaPath) = command {
         println!("{}", paths.inspect_ca_pem().display());
+        return Ok(());
+    }
+    // `log path` too: `ls -t "$(… proxy log path)"` works with no daemon.
+    if let Some(ProxyCommand::Log { command: Some(LogCommand::Path) }) = command {
+        println!("{}", paths.proxy_log_dir().display());
         return Ok(());
     }
     let mut c = Client::connect(&paths.socket(), "cli").await?;
@@ -87,6 +130,10 @@ pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instan
             let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
             println!("The proxy is on: {}", p.url);
             println!("Use it: eval \"$({cli} proxy env)\" && claude, or {cli} proxy chrome");
+            // Headers reach the disk from now on: say where (gap G2).
+            if let Some(line) = log_line(&p, instance) {
+                println!("{line}");
+            }
         }
         Some(ProxyCommand::Off) => {
             let before: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
@@ -185,6 +232,7 @@ pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instan
             println!("Removed the {} inspection CA from the login keychain.", instance.app_name());
         }
         Some(ProxyCommand::CaPath) => unreachable!("answered above"),
+        Some(ProxyCommand::Log { command }) => log(&mut c, command, instance).await?,
         Some(ProxyCommand::Ca { command: ProxyCaCommand::Reset { yes } }) => {
             if !yes {
                 eprintln!("This makes a new inspection CA. Programs stop trusting the old one. Run again with --yes to continue.");
@@ -198,6 +246,82 @@ pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instan
         }
     }
     Ok(())
+}
+
+/// `proxy log …` (ADR 08, change 3).
+async fn log(c: &mut Client, command: Option<LogCommand>, instance: &Instance) -> anyhow::Result<()> {
+    let params = match command {
+        None => None,
+        Some(LogCommand::On) => Some(SetConfigParams { proxy_log: Some(true), ..Default::default() }),
+        Some(LogCommand::Off) => Some(SetConfigParams { proxy_log: Some(false), ..Default::default() }),
+        Some(LogCommand::Limits { mb, requests }) => {
+            if mb.is_none() && requests.is_none() {
+                bail!("give --mb, --requests or both");
+            }
+            Some(SetConfigParams { proxy_log_file_mb: mb, proxy_log_file_requests: requests, ..Default::default() })
+        }
+        Some(LogCommand::Open) => {
+            let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
+            let Some(log) = p.log else { bail!("this daemon has no proxy log; update it") };
+            let out = std::process::Command::new("open").arg(&log.url).output().context("cannot run open")?;
+            if !out.status.success() {
+                bail!("could not open {}: {}", log.url, String::from_utf8_lossy(&out.stderr).trim());
+            }
+            println!("Opened {}", log.url);
+            return Ok(());
+        }
+        Some(LogCommand::Path) => unreachable!("answered above"),
+    };
+    if let Some(params) = params {
+        set(c, params).await?;
+    }
+    let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
+    print!("{}", describe_log(&p, instance));
+    Ok(())
+}
+
+/// The `Log:` line of `proxy` and `proxy on`.
+fn log_line(p: &GetProxyResult, instance: &Instance) -> Option<String> {
+    let log = p.log.as_ref()?;
+    let cli = instance.cli();
+    Some(if log.enabled {
+        format!("Log: on, writes every request to {} ({cli} proxy log off to stop)", log.folder)
+    } else {
+        format!("Log: off ({cli} proxy log on to write every request to {})", log.folder)
+    })
+}
+
+/// The state of the proxy log as text.
+pub fn describe_log(p: &GetProxyResult, instance: &Instance) -> String {
+    let Some(log) = &p.log else { return "This daemon has no proxy log; update it.\n".to_string() };
+    let cli = instance.cli();
+    let mut out = String::new();
+    if log.enabled {
+        out.push_str(&format!("Log        on, writes every proxied request to {}\n", log.folder));
+    } else {
+        out.push_str(&format!("Log        off: {cli} proxy log on. The files in {} stay.\n", log.folder));
+    }
+    if !p.enabled {
+        out.push_str(&format!("           The proxy is off, so nothing is written: {cli} proxy on\n"));
+    }
+    out.push_str(&format!("Viewer     {}\n", log.url));
+    out.push_str(&format!(
+        "Limits     {} MB or {} requests per file; the {} newest files are kept\n",
+        log.file_mb, log.file_requests, log.keep_files
+    ));
+    match &log.current {
+        Some(name) => out.push_str(&format!("Current    {name}\n")),
+        None => out.push_str("Current    none yet: the next proxied request starts a file\n"),
+    }
+    out.push_str(&format!("Written    {} since the daemon started, {} files in the folder\n", log.written, log.files));
+    if log.dropped > 0 {
+        out.push_str(&format!("Dropped    {}: the writer was behind\n", log.dropped));
+    }
+    if let Some(e) = &log.error {
+        out.push_str(&format!("Error      {e}. Nothing is written until: {cli} proxy log off && {cli} proxy log on\n"));
+    }
+    out.push_str("\nSecret headers are written as [redacted]; URLs are written as they are. Bodies are not written.\n");
+    out
 }
 
 async fn set(c: &mut Client, params: SetConfigParams) -> anyhow::Result<SetConfigResult> {
@@ -262,7 +386,14 @@ pub fn describe(p: &GetProxyResult, instance: &Instance) -> String {
             out.push_str(&format!("Inspection CA  {} ({trusted})\n", ca.common_name.as_deref().unwrap_or("?")));
         }
     }
+    if let Some(log) = &p.log {
+        out.push_str(&format!("Log            {} ({})\n", if log.enabled { "on" } else { "off" }, log.url));
+    }
     out.push_str(&format!("\nA shell:   eval \"$({cli} proxy env)\" && claude\nChrome:    {cli} proxy chrome\n"));
+    if let Some(line) = log_line(p, instance) {
+        out.push_str(&line);
+        out.push('\n');
+    }
     if !p.notes.is_empty() {
         out.push('\n');
         for note in &p.notes {
@@ -291,6 +422,27 @@ mod tests {
         assert!(lines[3].starts_with("export NODE_USE_ENV_PROXY=1"));
         // The path has spaces (Application Support).
         assert!(lines[4].starts_with("export NODE_EXTRA_CA_CERTS='/Users/"), "{lines:?}");
+        // ADR 08: the CA bundle for Python and curl, then the lowercase names.
+        assert!(lines[5].starts_with("export SSL_CERT_FILE='/Users/") && lines[5].ends_with("bundle.pem'"), "{lines:?}");
+        assert!(lines[6].starts_with("export REQUESTS_CA_BUNDLE="));
+        assert!(lines[7].starts_with("export CURL_CA_BUNDLE="));
+        assert_eq!(lines[8], "export https_proxy=http://127.0.0.1:8877");
+        assert_eq!(lines[9], "export http_proxy=http://127.0.0.1:8877");
+        assert!(lines[10].starts_with("export no_proxy="));
+        assert_eq!(lines.len(), 11);
+    }
+
+    // ADR 08, T10: the log state names the folder, the viewer and the limits.
+    #[test]
+    fn the_log_state_names_the_folder_and_the_viewer() {
+        let p = example();
+        let text = describe_log(&p, &Instance::release());
+        assert!(text.contains("Log        on, writes every proxied request to /Users/me/Library/Logs/LocalRouter/proxy"), "{text}");
+        assert!(text.contains("Viewer     http://proxy.localhost"), "{text}");
+        assert!(text.contains("20 MB or 5000 requests per file; the 5 newest files are kept"), "{text}");
+        assert!(text.contains("[redacted]"), "{text}");
+        let line = log_line(&p, &Instance::release()).unwrap();
+        assert!(line.starts_with("Log: on, writes every request to /Users/me/Library/Logs/LocalRouter/proxy"), "{line}");
     }
 
     // I18: the command is `open` plus exactly the daemon's chrome_args.

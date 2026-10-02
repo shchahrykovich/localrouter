@@ -12,17 +12,18 @@ use std::time::{Duration, Instant};
 use localrouter_core::api::{
     self, ApiError, CaState, CaStatus, ErrorCode, FindFreePortParams, FindFreePortResult, GetLogsParams, GetLogsResult,
     GetProxyResult, HelloParams, HelloResult, HostParams, IdParams, InspectChange, ListRoutesResult, ListScriptRulesResult,
-    PortStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams,
+    NetworkStatus, PortStatus, ProxyLogStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams,
     SetConfigResult, SetScriptRuleParams, SetScriptRuleResult, StatusResult, UnregisterRouteResult,
 };
-use localrouter_core::config::Config;
+use localrouter_core::config::{Config, LanNetwork};
 use localrouter_core::forward::ForwardProxy;
+use localrouter_core::har::{self, HarLog, HarSettings};
 use localrouter_core::inspect::{self, InspectSet};
 use localrouter_core::logs::RequestLog;
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
-use localrouter_core::routes::{Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
+use localrouter_core::routes::{PROXY_LOG_HOST, Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
 use localrouter_core::scripts::engine::{ScriptKind, load_file};
 use localrouter_core::scripts::rules::{self as script_rules, RuleHost};
 use localrouter_core::scripts::{Scripts, bodies};
@@ -33,6 +34,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::listen::{self, RefusalLog};
+use crate::network::{self, Network};
 use crate::pidwatch::{self, PidWatch};
 use crate::{store, tcp_listen};
 
@@ -93,6 +95,8 @@ struct Problems {
     inspect_ca: Option<String>,
     /// Why the proxy port is not bound while it should be.
     proxy: Vec<String>,
+    /// The one-time update of `allow_lan` to a list of networks (ADR 08).
+    lan_note: Option<String>,
 }
 
 pub struct Daemon {
@@ -110,6 +114,8 @@ pub struct Daemon {
     pub forward: Arc<ForwardProxy>,
     /// Script rules (ADR 07); the router and the forward proxy share them.
     pub scripts: Arc<Scripts>,
+    /// The proxy log (ADR 08); the router and the forward proxy share it.
+    pub har: Arc<HarLog>,
     pub shutdown: CancellationToken,
     pids: PidWatch,
     tcp: Mutex<HashMap<String, TcpHandle>>,
@@ -138,7 +144,29 @@ fn rule_err(message: impl Into<String>) -> ApiError {
 impl Daemon {
     /// Load config, CA and routes. Does not bind anything yet.
     pub fn load(paths: Paths, instance: Instance, pids: PidWatch, ca: Option<LocalCa>, ca_problem: Option<String>) -> Arc<Self> {
-        let config = store::load_config(&paths.config(), &instance);
+        let mut config = store::load_config(&paths.config(), &instance);
+        // ADR 08, I18: an old `allow_lan: true` meant every network. It
+        // becomes the network the Mac is on now, never "every network".
+        let mut lan_note = None;
+        if config.value.allow_lan && !store::config_has_field(&paths.config(), "lan_networks") {
+            lan_note = Some(match current_network() {
+                Some(n) => {
+                    let note = format!(
+                        "LAN access now works per network. Allowed on: {} (router {}). Name it or add other networks in Settings > Routing.",
+                        n.router,
+                        n.id.trim_start_matches("mac:")
+                    );
+                    config.value.lan_networks = vec![LanNetwork { id: n.id, name: String::new(), router: n.router.to_string() }];
+                    note
+                }
+                None => "LAN access now works per network. This network could not be recognised, so no network is allowed yet: \
+                         allow one in Settings > Routing."
+                    .to_string(),
+            });
+            if let Err(e) = store::save_config(&paths.config(), &config.value) {
+                tracing::warn!("could not write config.json: {e}; the allowed network is kept in memory");
+            }
+        }
         let start_ports = (config.value.http_port, config.value.https_port);
         let shared = Arc::new(Shared {
             routes: RwLock::new(RouteTable::new()),
@@ -157,6 +185,21 @@ impl Daemon {
         let scripts = Scripts::new();
         scripts.set_secret_headers(&config.value.secret_headers);
         load_saved_script_rules(&paths, &scripts);
+        // The same secret list as the scripts (ADR 08, I4). A file a crash
+        // cut is repaired before anything can read it (I16).
+        let har = HarLog::new(
+            HarSettings {
+                folder: paths.proxy_log_dir(),
+                creator: instance.app_name(),
+                version: DAEMON_VERSION.to_string(),
+                enabled: config.value.proxy_log,
+                file_mb: config.value.proxy_log_file_mb,
+                file_requests: config.value.proxy_log_file_requests,
+            },
+            scripts.secrets.clone(),
+        );
+        har.set_proxy_on(config.value.proxy_enabled);
+        har.repair_at_start();
         let lookup = shared.clone();
         // A name gets a certificate when any HTTP route serves it, with or
         // without a path: TLS comes before the path is known (I27).
@@ -183,7 +226,7 @@ impl Daemon {
 
         let loaded = store::load_routes(&paths.routes());
         let mut problems =
-            Problems { ca: ca_problem, routes_file: loaded.problem, inspect_ca: inspect_problem, ..Default::default() };
+            Problems { ca: ca_problem, routes_file: loaded.problem, inspect_ca: inspect_problem, lan_note, ..Default::default() };
         if let Some(p) = &config.problem {
             tracing::warn!("{p}");
         }
@@ -194,7 +237,8 @@ impl Daemon {
                 // Saved routes are persistent by definition and never owned (I3).
                 route.persistent = true;
                 route.owner_pid = None;
-                match table.validate(&mut route, reserved) {
+                // A route `proxy` saved before ADR 08 is kept (I11).
+                match table.validate_saved(&mut route, reserved) {
                     Ok(()) => {
                         table.insert(route);
                     }
@@ -220,6 +264,7 @@ impl Daemon {
                     Box::pin(async move { Some(this.upgrade()?.status().await) })
                 })),
                 scripts: scripts.clone(),
+                har: Some(har.clone()),
             });
             let forward = Arc::new(ForwardProxy {
                 instance: instance.clone(),
@@ -246,6 +291,7 @@ impl Daemon {
                 proxy,
                 forward,
                 scripts,
+                har,
                 shutdown: CancellationToken::new(),
                 pids,
                 tcp: Mutex::new(HashMap::new()),
@@ -312,31 +358,61 @@ impl Daemon {
                 },
                 _ = self.shutdown.cancelled() => return,
             };
-            // I2: decide before reading any byte.
-            let allow_lan = self.shared.config.read().unwrap().allow_lan;
-            if !listen::peer_allowed(peer.ip(), allow_lan) {
-                self.refusals.refused(peer);
-                drop(stream);
+            // I2: decide before reading any byte. Loopback at once; another
+            // machine after a network lookup off the accept loop (ADR 08).
+            if listen::is_loopback_peer(peer.ip()) {
+                self.serve_accepted(stream, peer, scheme, &acceptor);
                 continue;
             }
-            let _ = stream.set_nodelay(true);
-            let proxy = self.proxy.clone();
-            match scheme {
-                ClientScheme::Http => {
-                    tokio::spawn(proxy.serve(stream, scheme, peer));
+            let this = self.clone();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let local = stream.local_addr().ok();
+                let check = this.clone();
+                let allowed =
+                    tokio::task::spawn_blocking(move || check.lan_peer_allowed(peer.ip(), local)).await.unwrap_or(false);
+                if allowed {
+                    this.serve_accepted(stream, peer, scheme, &acceptor);
+                } else {
+                    this.refusals.refused(peer);
                 }
-                ClientScheme::Https => {
-                    let acceptor = acceptor.clone();
-                    tokio::spawn(async move {
-                        match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await {
-                            Ok(Ok(tls)) => proxy.serve(tls, scheme, peer).await,
-                            Ok(Err(e)) => tracing::debug!("TLS handshake with {peer} failed: {e}"),
-                            Err(_) => tracing::debug!("TLS handshake with {peer} timed out"),
-                        }
-                    });
-                }
+            });
+        }
+    }
+
+    /// Serve a connection the peer check accepted.
+    fn serve_accepted(&self, stream: tokio::net::TcpStream, peer: SocketAddr, scheme: ClientScheme, acceptor: &tokio_rustls::TlsAcceptor) {
+        let _ = stream.set_nodelay(true);
+        let proxy = self.proxy.clone();
+        match scheme {
+            ClientScheme::Http => {
+                tokio::spawn(proxy.serve(stream, scheme, peer));
+            }
+            ClientScheme::Https => {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await {
+                        Ok(Ok(tls)) => proxy.serve(tls, scheme, peer).await,
+                        Ok(Err(e)) => tracing::debug!("TLS handshake with {peer} failed: {e}"),
+                        Err(_) => tracing::debug!("TLS handshake with {peer} timed out"),
+                    }
+                });
             }
         }
+    }
+
+    /// Ports 80 and 443: loopback always; another machine only with
+    /// `allow_lan` on an allowed network (ADR 08, I17). The network is
+    /// looked up only for such a peer, and never cached (I20).
+    fn lan_peer_allowed(&self, peer: std::net::IpAddr, local: Option<SocketAddr>) -> bool {
+        if listen::is_loopback_peer(peer) {
+            return true;
+        }
+        let (allow_lan, networks) = {
+            let c = self.shared.config.read().unwrap();
+            (c.allow_lan, if c.allow_lan { c.lan_networks.clone() } else { vec![] })
+        };
+        listen::peer_allowed(peer, allow_lan, &networks, || network_of(local?.ip()).map(|n| n.id))
     }
 
     /// Bind listeners for the persistent TCP routes loaded at start. A port
@@ -438,6 +514,7 @@ impl Daemon {
             });
         }
         self.shared.proxy_port.store(port, Ordering::Relaxed);
+        self.har.set_proxy_on(true);
         self.problems.lock().unwrap().proxy.clear();
         if let Some(old) = self.proxy_listener.lock().unwrap().replace(ProxyHandle { configured, port, cancel }) {
             old.cancel.cancel();
@@ -452,6 +529,7 @@ impl Daemon {
             tracing::info!("forward proxy off");
         }
         self.shared.proxy_port.store(0, Ordering::Relaxed);
+        self.har.set_proxy_on(false);
         self.problems.lock().unwrap().proxy.clear();
     }
 
@@ -501,6 +579,7 @@ impl Daemon {
     pub async fn status(&self) -> StatusResult {
         let trusted = if self.certs.has_ca() { self.ca_trusted().await } else { None };
         let proxy = self.proxy_status().await;
+        let network = self.network_status().await;
         let problems = self.problems.lock().unwrap();
         let empty = |configured| PortStatus { configured, port: None, bound: vec![], errors: vec![] };
         let config = self.config();
@@ -512,7 +591,14 @@ impl Daemon {
         let https = problems.https.clone().unwrap_or_else(|| empty(config.https_port));
         let routes_file_problem = problems.routes_file.clone();
         let listen_failed = problems.listen_failed.clone();
+        let mut notes: Vec<String> = problems.lan_note.iter().cloned().collect();
         drop(problems);
+        // A route `proxy` saved before ADR 08 wins over the viewer (I11).
+        if self.shared.routes.read().unwrap().routes_of(PROXY_LOG_HOST).next().is_some() {
+            let help = localrouter_core::instance::help_url(self.routes_http_port(), self.routes_https_port());
+            notes.push(format!("The route {PROXY_LOG_HOST} hides the proxy log viewer. It is also at {help}/proxy-log/."));
+        }
+
         StatusResult {
             daemon_version: DAEMON_VERSION.into(),
             api_version: api_version(),
@@ -531,7 +617,31 @@ impl Daemon {
             routes_file_problem,
             listen_failed,
             proxy: Some(proxy),
+            network,
+            notes,
         }
+    }
+
+    /// The network of the default route, read now (ADR 08, change 4).
+    async fn network_status(&self) -> Option<NetworkStatus> {
+        let n = tokio::task::spawn_blocking(current_network).await.ok().flatten()?;
+        let config = self.config();
+        let name = config.lan_networks.iter().find(|l| l.id == n.id).map(|l| l.name.clone());
+        Some(NetworkStatus {
+            lan_allowed: config.allow_lan && name.is_some(),
+            name: name.unwrap_or_default(),
+            id: n.id,
+            router: n.router.to_string(),
+            interface: n.interface,
+        })
+    }
+
+    fn routes_http_port(&self) -> Option<u16> {
+        Some(self.shared.http_port.load(Ordering::Relaxed)).filter(|&p| p != 0)
+    }
+
+    fn routes_https_port(&self) -> Option<u16> {
+        Some(self.shared.https_port.load(Ordering::Relaxed)).filter(|&p| p != 0)
     }
 
     async fn proxy_status(&self) -> ProxyStatus {
@@ -814,6 +924,25 @@ impl Daemon {
             }
             new.secret_headers = names;
         }
+        if let Some(v) = p.proxy_log {
+            new.proxy_log = v;
+        }
+        if let Some(v) = p.proxy_log_file_mb {
+            new.proxy_log_file_mb = v;
+        }
+        if let Some(v) = p.proxy_log_file_requests {
+            new.proxy_log_file_requests = v;
+        }
+        if p.proxy_log_file_mb.is_some() || p.proxy_log_file_requests.is_some() {
+            Config::check_proxy_log_limits(new.proxy_log_file_mb, new.proxy_log_file_requests)
+                .map_err(|why| err(ErrorCode::InvalidRequest, why))?;
+        }
+        // The list changes only here, so memory is right even when the
+        // one-time update could not be written (I18).
+        new.lan_networks = match &p.lan_networks {
+            Some(list) => normalize_networks(list).map_err(|why| err(ErrorCode::InvalidRequest, why))?,
+            None => self.config().lan_networks,
+        };
         if new.http_port != 0 && new.http_port == new.https_port {
             return Err(err(ErrorCode::InvalidRequest, "http_port and https_port must differ"));
         }
@@ -851,6 +980,8 @@ impl Daemon {
         self.refresh_inspect();
         self.scripts.set_secret_headers(&new.secret_headers);
         self.log.set_capacity(new.log_size);
+        self.har.set_limits(new.proxy_log_file_mb, new.proxy_log_file_requests);
+        self.har.set_enabled(new.proxy_log);
         if let Some((listeners, port)) = new_listener {
             self.start_proxy(listeners, new.proxy_port, port);
         } else if stop_listener {
@@ -885,9 +1016,21 @@ impl Daemon {
         env.insert("NO_PROXY".to_string(), "localhost,127.0.0.1,::1,.localhost".to_string());
         // The built-in fetch of recent Node.js reads HTTPS_PROXY only with this.
         env.insert("NODE_USE_ENV_PROXY".to_string(), "1".to_string());
+        // curl reads a plain-http proxy only from the lowercase name.
+        env.insert("http_proxy".to_string(), url.clone());
+        env.insert("https_proxy".to_string(), url.clone());
+        env.insert("no_proxy".to_string(), "localhost,127.0.0.1,::1,.localhost".to_string());
         let ca_ready = status.inspect_ca.as_ref().is_some_and(|ca| ca.state == CaState::Ok);
         if ca_ready {
             env.insert("NODE_EXTRA_CA_CERTS".to_string(), self.paths.inspect_ca_pem().display().to_string());
+            // Python and curl read one CA file that replaces the default
+            // roots: the bundle holds the system roots too (ADR 08, I23).
+            let bundle = self.paths.inspect_ca_bundle();
+            if bundle.is_file() {
+                for name in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] {
+                    env.insert(name.to_string(), bundle.display().to_string());
+                }
+            }
         }
         let chrome_args = vec![
             format!("--user-data-dir={}", self.paths.chrome_profile().display()),
@@ -933,6 +1076,25 @@ impl Daemon {
             chrome_args,
             notes,
             script_rules: self.scripts.views(),
+            log: Some(self.proxy_log_status()),
+        }
+    }
+
+    /// The `log` block of `get_proxy` (ADR 08, change 3).
+    fn proxy_log_status(&self) -> ProxyLogStatus {
+        let (file_mb, file_requests) = self.har.limits();
+        ProxyLogStatus {
+            enabled: self.har.is_on(),
+            folder: self.har.folder().display().to_string(),
+            url: localrouter_core::instance::proxy_log_url(self.routes_http_port(), self.routes_https_port()),
+            file_mb,
+            file_requests,
+            keep_files: har::KEEP_FILES,
+            current: self.har.current(),
+            files: self.har.files().len(),
+            written: self.har.written(),
+            dropped: self.har.dropped(),
+            error: self.har.error(),
         }
     }
 
@@ -964,6 +1126,9 @@ impl Daemon {
                 tracing::info!("made the inspection CA {}", ca.common_name());
                 self.inspect_certs.set_ca(Some(*ca));
                 self.forget_trust_cache();
+                if let Err(e) = write_ca_bundle(&self.paths) {
+                    tracing::warn!("could not write the CA bundle: {e}");
+                }
                 Ok(true)
             }
             CaLoad::Broken(why) => Err(why),
@@ -1170,9 +1335,118 @@ impl Daemon {
         self.inspect_certs.set_ca(Some(ca));
         self.problems.lock().unwrap().inspect_ca = None;
         self.forget_trust_cache();
+        if let Err(e) = write_ca_bundle(&self.paths) {
+            tracing::warn!("could not write the CA bundle: {e}");
+        }
         tracing::warn!("inspection CA reset: new CA {common_name}");
         Ok(ResetCaResult { pem_path: self.paths.inspect_ca_pem().display().to_string(), common_name })
     }
+}
+
+/// How old `bundle.pem` may get: the system roots change with macOS updates.
+const BUNDLE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+
+impl Daemon {
+    /// At start: write `bundle.pem` when the inspection CA exists and the
+    /// bundle is missing or older than 30 days. Runs off the network tasks.
+    pub fn refresh_ca_bundle_if_old(self: &Arc<Self>) {
+        if !self.inspect_certs.has_ca() {
+            return;
+        }
+        let old = std::fs::metadata(self.paths.inspect_ca_bundle())
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().unwrap_or_default() > BUNDLE_MAX_AGE)
+            .unwrap_or(true);
+        if old {
+            let paths = self.paths.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = write_ca_bundle(&paths) {
+                    tracing::warn!("could not write the CA bundle: {e}");
+                }
+            });
+        }
+    }
+}
+
+/// `inspect-ca/bundle.pem`: the macOS system root certificates followed by
+/// the inspection CA. Public certificates only, never a key (I23).
+fn write_ca_bundle(paths: &Paths) -> Result<(), String> {
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(["find-certificate", "-a", "-p", "/System/Library/Keychains/SystemRootCertificates.keychain"])
+        .output()
+        .map_err(|e| format!("cannot run security: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("security find-certificate failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let mut pem = out.stdout;
+    // Debug builds: the end-to-end test adds its test internet CA as a root.
+    #[cfg(debug_assertions)]
+    if let Ok(extra) = std::env::var("LOCALROUTER_TEST_EXTRA_ROOTS") {
+        pem.extend(std::fs::read(&extra).map_err(|e| format!("cannot read {extra}: {e}"))?);
+    }
+    if !pem.ends_with(b"\n") {
+        pem.push(b'\n');
+    }
+    let ca = std::fs::read(paths.inspect_ca_pem()).map_err(|e| format!("cannot read the inspection CA: {e}"))?;
+    if !ca.starts_with(b"-----BEGIN CERTIFICATE-----") {
+        return Err("the inspection CA file is not one PEM certificate".into());
+    }
+    pem.extend(ca);
+    store::replace(&paths.inspect_ca_bundle(), &pem).map_err(|e| format!("cannot write the bundle: {e}"))
+}
+
+/// The network a local address belongs to. Debug builds accept
+/// `LOCALROUTER_TEST_NETWORK=mac:…,192.168.0.1,en0` (or `none`), so tests
+/// need no real network.
+fn network_of(local: std::net::IpAddr) -> Option<Network> {
+    #[cfg(debug_assertions)]
+    if let Some(test) = test_network() {
+        return test;
+    }
+    network::of_local_ip(local)
+}
+
+/// The network of the default route.
+fn current_network() -> Option<Network> {
+    #[cfg(debug_assertions)]
+    if let Some(test) = test_network() {
+        return test;
+    }
+    network::current()
+}
+
+#[cfg(debug_assertions)]
+fn test_network() -> Option<Option<Network>> {
+    let value = std::env::var("LOCALROUTER_TEST_NETWORK").ok()?;
+    let mut parts = value.split(',');
+    let id = parts.next()?.to_string();
+    if id == "none" {
+        return Some(None);
+    }
+    let router = parts.next()?.parse().ok()?;
+    let interface = parts.next().unwrap_or("en0").to_string();
+    Some(Some(Network { id, router, interface }))
+}
+
+/// `lan_networks` from a client: ids are `mac:` plus six lower-case hex
+/// pairs; names are trimmed; one entry per id.
+fn normalize_networks(list: &[LanNetwork]) -> Result<Vec<LanNetwork>, String> {
+    let mut out: Vec<LanNetwork> = vec![];
+    for n in list {
+        let id = n.id.trim().to_ascii_lowercase();
+        let mac = id.strip_prefix("mac:").unwrap_or("");
+        let ok = mac.split(':').count() == 6 && mac.split(':').all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !ok {
+            return Err(format!("lan_networks: {:?} is not a network id; use mac: and the router's MAC address", n.id));
+        }
+        if n.name.chars().count() > 100 {
+            return Err("lan_networks: a name has at most 100 characters".into());
+        }
+        if !out.iter().any(|o| o.id == id) {
+            out.push(LanNetwork { id, name: n.name.trim().to_string(), router: n.router.trim().to_string() });
+        }
+    }
+    Ok(out)
 }
 
 /// Ask macOS whether a CA file is trusted for TLS. Cached for 10 seconds.

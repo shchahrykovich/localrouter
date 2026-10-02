@@ -27,7 +27,7 @@ use time::OffsetDateTime;
 
 use crate::instance::Instance;
 use crate::paths::Paths;
-use crate::routes::{HELP_HOST, host_key};
+use crate::routes::{HELP_HOST, PROXY_LOG_HOST, host_key};
 
 pub const CA_VALIDITY_DAYS: i64 = 3650;
 pub const LEAF_VALIDITY_DAYS: i64 = 90;
@@ -270,7 +270,8 @@ fn remove_leftover_tmp_dirs(data: &Path, kind: CaKind) {
 }
 
 /// Decides whether a TLS name may get a certificate (it must have a route).
-/// `router.localhost` (the help page) always gets one.
+/// `router.localhost` (the help page) and `proxy.localhost` (the proxy log
+/// viewer, ADR 08) always get one.
 pub type AllowName = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Holds the current CA and the leaf cache; answers SNI lookups.
@@ -289,7 +290,7 @@ impl std::fmt::Debug for CertStore {
 
 impl CertStore {
     /// The store of the local CA: `.localhost` names only, and only those
-    /// `allow` accepts (a route serves them), plus `router.localhost`.
+    /// `allow` accepts (a route serves them), plus the two built-in names.
     pub fn new(ca: Option<LocalCa>, allow: AllowName) -> Self {
         Self::with_kind(ca, allow, CaKind::Local)
     }
@@ -322,7 +323,8 @@ impl CertStore {
     pub fn cert_for(&self, name: &str) -> Option<Arc<CertifiedKey>> {
         match self.kind {
             CaKind::Local => {
-                if host_key(name)? != HELP_HOST && !(self.allow)(name) {
+                let key = host_key(name)?;
+                if key != HELP_HOST && key != PROXY_LOG_HOST && !(self.allow)(name) {
                     return None;
                 }
             }
@@ -629,6 +631,17 @@ mod tests {
         assert!(store.cert_for("shop.localhost").is_none());
         assert!(store.cert_for("router.localhost").is_none());
         assert!(store.cert_for("localhost").is_none());
+    }
+
+    // ADR 08, T7: the built-in names get a leaf with no route.
+    #[test]
+    fn the_built_in_names_always_get_a_leaf() {
+        let (_d, p) = paths();
+        let local = ready(LocalCa::load_or_create(&p, &Instance::release()));
+        let store = CertStore::new(Some(local), Arc::new(|_: &str| false));
+        assert!(store.cert_for("router.localhost").is_some());
+        assert!(store.cert_for("proxy.localhost").is_some());
+        assert!(store.cert_for("shop.localhost").is_none());
     }
 
     #[test]

@@ -2,7 +2,7 @@
   "id": 2,
   "result": {
     "daemon_version": "0.1.0",
-    "api_version": "1.3",
+    "api_version": "1.5",
     "pid": 812,
     "data_dir": "/Users/me/Library/Application Support/LocalRouter",
     "http": {
@@ -45,6 +45,16 @@
         "common_name": "LocalRouter Inspection 5e6f7a8b",
         "trusted": false
       }
-    }
+    },
+    "network": {
+      "id": "mac:18:35:d1:15:d1:a8",
+      "name": "Home",
+      "router": "192.168.0.1",
+      "interface": "en0",
+      "lan_allowed": false
+    },
+    "notes": [
+      "The route proxy hides the proxy log viewer. It is also at router.localhost/proxy-log/."
+    ]
   }
 }

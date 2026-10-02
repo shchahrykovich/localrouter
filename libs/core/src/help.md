@@ -286,6 +286,41 @@ servers it calls. It is off by default and listens on
 - `{{CLI}} proxy off` closes the port. Programs started with the proxy
   settings then fail to connect until they are started again without them.
 
+## Proxy log: what a program sent, in HAR files
+
+The proxy writes every request it carries to HAR files (the format Chrome
+DevTools imports) in `{{PROXY_LOG_FOLDER}}`. The user sees them at
+{{PROXY_LOG_URL}}. The log is on by default and writes only while the proxy
+is on; `{{CLI}} proxy log` shows its state, `{{CLI}} proxy log off` stops it.
+
+- Headers that hold secrets are written as `[redacted]`. URLs are written as
+  they are, query included. Bodies are not written.
+- **Do not read a whole file**: one can be 20 MB. Use `jq` and ask for the
+  rows you need.
+- The current file can be in the middle of a write. If `jq` fails on it, run
+  it again.
+- `jq` is part of macOS 15 and later. On macOS 14 use any JSON tool, or
+  `brew install jq`.
+
+```sh
+f=$(ls -t "$({{CLI}} proxy log path)"/proxy-*.har | head -1)
+jq -r '.log.entries[] | select(.response.status >= 400 or .response.status == 0) | "\(.response.status) \(.request.method) \(.request.url)"' "$f"
+jq '.log.entries[] | select(.request.url | contains("api.example.com")) | {url: .request.url, status: .response.status, headers: .response.headers}' "$f" | head -c 20000
+```
+
+The whole loop, on your own:
+
+1. Operate: `{{CLI}} proxy on`, `{{CLI}} proxy inspect add api.example.com`.
+   The user sees each command.
+2. Check: MCP `get_proxy` (port, env, inspected hosts, CA trust, `log`).
+3. Run: `eval "$({{CLI}} proxy env)" && npm test`. `proxy env` also points
+   Python and `curl` at a CA bundle (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+   `CURL_CA_BUNDLE`): the macOS roots plus the inspection CA.
+4. Inspect: `jq` on the newest file, as above.
+
+Ask the user to run `{{CLI}} proxy trust` only when Chrome or Safari must
+read an inspected host.
+
 ## Scripts: change or record traffic
 
 A script rule runs a Lua file on the HTTP traffic of a route

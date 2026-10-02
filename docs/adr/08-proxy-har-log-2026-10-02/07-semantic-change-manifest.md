@@ -3,10 +3,12 @@
 ## 1. Manifest status
 
 ```text
-Manifest status: PLANNED
+Manifest status: BUILT, NOT RELEASED (2026-10-02)
 ```
 
-Everything below is intended behaviour. Nothing is built.
+Built as below, with the differences in
+[plan versus actual](10-plan-vs-actual.md): the network id comes from the
+System Configuration store (D1), and `status` has a `notes` list (D5).
 
 ## 2. Semantic change summary
 

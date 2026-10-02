@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::inspect::{HostPattern, bare_host};
-use crate::routes::{HELP_HOST, MAX_LABEL_LEN, MAX_NOTE_CHARS, host_key, normalize_path, path_matches};
+use crate::routes::{HELP_HOST, MAX_LABEL_LEN, MAX_NOTE_CHARS, PROXY_LOG_HOST, host_key, normalize_path, path_matches};
 
 /// At most this many rules (ADR 07, change 2).
 pub const MAX_RULES: usize = 64;
@@ -134,6 +134,9 @@ impl RuleHost {
             }
             if key == HELP_HOST {
                 return Err(format!("{text:?} is the built-in help page; scripts never run on it"));
+            }
+            if key == PROXY_LOG_HOST {
+                return Err(format!("{text:?} is the built-in proxy log viewer; scripts never run on it"));
             }
             return Ok(RuleHost::Local { name: key, wildcard });
         }
@@ -310,6 +313,9 @@ mod tests {
             assert!(check(&mut rule("a", bad)).is_err(), "{bad:?}");
         }
         assert!(RuleHost::parse("router.localhost").unwrap_err().contains("help page"));
+        // ADR 08, T6: scripts never run on the proxy log viewer.
+        assert!(RuleHost::parse("proxy.localhost").unwrap_err().contains("proxy log viewer"));
+        assert!(RuleHost::parse("*.proxy.localhost").is_err());
     }
 
     // T1

@@ -10,7 +10,11 @@
       "log_size": 1000,
       "proxy_enabled": false,
       "proxy_port": 8877,
-      "inspect_hosts": []
+      "inspect_hosts": [],
+      "proxy_log": false,
+      "proxy_log_file_mb": 5,
+      "proxy_log_file_requests": 200,
+      "lan_networks": []
     },
     "restart_needed": false
   }

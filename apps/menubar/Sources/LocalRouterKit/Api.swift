@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.4"
+public let apiVersion = "1.5"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -183,6 +183,32 @@ public struct StatusResult: Codable, Equatable, Sendable {
     public var listenFailed: [String]
     /// The forward proxy (ADR 06). Nil from daemons before API 1.3.
     public var proxy: ProxyStatus?
+    /// The network LAN access sees (ADR 08). Nil when it cannot be
+    /// recognised, and from daemons before API 1.5.
+    public var network: NetworkStatus?
+    /// Plain sentences for the user (ADR 08). Nil when there are none.
+    public var notes: [String]?
+}
+
+/// The network the Mac is on, known by its router's MAC address (ADR 08).
+public struct NetworkStatus: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var router: String
+    public var interface: String
+    public var lanAllowed: Bool
+}
+
+/// One network where LAN access is allowed (ADR 08).
+public struct LanNetwork: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var router: String
+    public init(id: String, name: String, router: String) {
+        self.id = id
+        self.name = name
+        self.router = router
+    }
 }
 
 /// The forward proxy port and the inspection CA (ADR 06).
@@ -389,6 +415,12 @@ public struct Config: Codable, Equatable, Sendable {
     public var inspectHosts: [String]?
     /// Header names scripts see as `[redacted]` (ADR 07). Nil when empty.
     public var secretHeaders: [String]?
+    /// The proxy log (ADR 08). Optional: a daemon before API 1.5 has none.
+    public var proxyLog: Bool?
+    public var proxyLogFileMb: UInt64?
+    public var proxyLogFileRequests: UInt64?
+    /// The networks where LAN access applies (ADR 08).
+    public var lanNetworks: [LanNetwork]?
 }
 
 public struct SetConfigParams: Codable, Equatable, Sendable {
@@ -402,14 +434,25 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     /// Replaces the whole list.
     public var inspectHosts: [String]?
     public var secretHeaders: [String]?
+    /// The proxy log (ADR 08). The daemon refuses limits out of range.
+    public var proxyLog: Bool?
+    public var proxyLogFileMb: UInt64?
+    public var proxyLogFileRequests: UInt64?
+    /// Replaces the whole list (ADR 08).
+    public var lanNetworks: [LanNetwork]?
     public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
-                inspectHosts: [String]? = nil, secretHeaders: [String]? = nil) {
+                inspectHosts: [String]? = nil, secretHeaders: [String]? = nil, proxyLog: Bool? = nil,
+                proxyLogFileMb: UInt64? = nil, proxyLogFileRequests: UInt64? = nil, lanNetworks: [LanNetwork]? = nil) {
         self.fallback = fallback
         self.allowLan = allowLan
         self.proxyEnabled = proxyEnabled
         self.proxyPort = proxyPort
         self.inspectHosts = inspectHosts
         self.secretHeaders = secretHeaders
+        self.proxyLog = proxyLog
+        self.proxyLogFileMb = proxyLogFileMb
+        self.proxyLogFileRequests = proxyLogFileRequests
+        self.lanNetworks = lanNetworks
     }
 }
 
@@ -441,9 +484,12 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
     public var notes: [String]
     /// Every script rule with its state (ADR 07). Empty from older daemons.
     public var scriptRules: [ScriptRuleView]
+    /// The HAR log of proxy traffic (ADR 08). Nil from a 1.4 daemon: the app
+    /// then hides the log controls.
+    public var log: ProxyLogStatus?
 
     enum CodingKeys: String, CodingKey {
-        case enabled, url, port, bound, errors, inspectHosts, inspectSet, inspectCa, env, chromeArgs, notes, scriptRules
+        case enabled, url, port, bound, errors, inspectHosts, inspectSet, inspectCa, env, chromeArgs, notes, scriptRules, log
     }
 
     public init(from decoder: Decoder) throws {
@@ -460,7 +506,23 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
         chromeArgs = try c.decode([String].self, forKey: .chromeArgs)
         notes = try c.decode([String].self, forKey: .notes)
         scriptRules = try c.decodeIfPresent([ScriptRuleView].self, forKey: .scriptRules) ?? []
+        log = try c.decodeIfPresent(ProxyLogStatus.self, forKey: .log)
     }
+}
+
+/// The proxy log (ADR 08): where the HAR files are, the viewer, the limits.
+public struct ProxyLogStatus: Codable, Equatable, Sendable {
+    public var enabled: Bool
+    public var folder: String
+    public var url: String
+    public var fileMb: UInt64
+    public var fileRequests: UInt64
+    public var keepFiles: Int
+    public var current: String?
+    public var files: Int
+    public var written: UInt64
+    public var dropped: UInt64
+    public var error: String?
 }
 
 // MARK: - Script rules (ADR 07)

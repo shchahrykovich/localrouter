@@ -92,6 +92,20 @@ default.
   `.claude/settings.json`, test configs): other people on the project may not
   have {{APP}}.
 
+## Proxy log
+
+The proxy writes every request it carries to HAR files in
+`{{PROXY_LOG_FOLDER}}`; the user sees them at {{PROXY_LOG_URL}}.
+
+- Headers that hold secrets are `[redacted]`. Bodies are not written.
+- **Do not read a whole file**: it can be 20 MB. Use `jq`:
+  `f=$(ls -t "$({{CLI}} proxy log path)"/proxy-*.har | head -1)`, then
+  `jq -r '.log.entries[] | select(.response.status >= 400) | "\(.response.status) \(.request.url)"' "$f"`.
+- The current file can be in the middle of a write. If `jq` fails on it,
+  run it again. On macOS 14 install `jq` (`brew install jq`).
+- `{{CLI}} proxy env` also sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and
+  `CURL_CA_BUNDLE`, so Python and `curl` trust inspected hosts too.
+
 ## Scripts
 
 A script rule runs a Lua file on the HTTP traffic of a route or of a host

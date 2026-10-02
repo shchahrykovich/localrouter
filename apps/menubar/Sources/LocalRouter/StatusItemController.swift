@@ -110,6 +110,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if model.chromeInstalled {
             menu.addItem(menuItem("Open Chrome via Proxy", #selector(openChromeViaProxy)))
         }
+        // Only when the daemon reports a proxy log (ADR 08).
+        if model.proxy?.log != nil {
+            menu.addItem(menuItem("Open Proxy Log", #selector(openProxyLog)))
+            menu.addItem(menuItem("Show Proxy Log Folder", #selector(showProxyLogFolder)))
+        }
         menu.addItem(.separator())
         let helpHost = model.agentHelpURL.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: "")
         menu.addItem(menuItem("Open Agent Instructions (\(helpHost))", #selector(openAgentHelp)))
@@ -168,6 +173,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             showWindow()
         }
     }
+
+    @objc private func openProxyLog() { Task { @MainActor in await model.openProxyLog() } }
+    @objc private func showProxyLogFolder() { model.showProxyLogFolder() }
 
     @objc private func openAgentHelp() { model.open(model.agentHelpURL) }
     @objc private func copyAgentPrompt() { model.copy(model.agentPrompt) }

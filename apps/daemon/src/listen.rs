@@ -6,6 +6,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use localrouter_core::api::PortStatus;
+use localrouter_core::config::LanNetwork;
 use socket2::{Domain, Socket, Type};
 
 /// Loopback peers: `127.0.0.0/8`, `::1` and `::ffff:127.x.x.x`.
@@ -16,9 +17,25 @@ pub fn is_loopback_peer(ip: IpAddr) -> bool {
     }
 }
 
-/// Accept the connection? Always yes for loopback; otherwise only with `allow_lan`.
-pub fn peer_allowed(ip: IpAddr, allow_lan: bool) -> bool {
-    allow_lan || is_loopback_peer(ip)
+/// Accept a connection to ports 80 and 443? Always yes for loopback, with
+/// no lookup. Another machine only with `allow_lan` on and the network it
+/// came in on in `lan_networks` (ADR 08, I17); an unknown network is refused.
+/// `network_of` gives the network id and runs only for such a peer. The
+/// proxy port, TCP routes and the viewer never use this (I19).
+pub fn peer_allowed(
+    ip: IpAddr,
+    allow_lan: bool,
+    networks: &[LanNetwork],
+    network_of: impl FnOnce() -> Option<String>,
+) -> bool {
+    if is_loopback_peer(ip) {
+        return true;
+    }
+    if !allow_lan || networks.is_empty() {
+        return false;
+    }
+    let Some(id) = network_of() else { return false };
+    networks.iter().any(|n| n.id == id)
 }
 
 /// Bind one listening socket. IPv6 sockets are IPv6-only, so the two families never overlap.
@@ -114,7 +131,7 @@ impl RefusalLog {
         if now.saturating_sub(last) >= 1000
             && self.last_ms.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
         {
-            tracing::warn!("refused a connection from {peer}: not a loopback address (LAN access is off)");
+            tracing::warn!("refused a connection from {peer}: LAN access is off, or not allowed on this network");
         }
     }
 }
@@ -127,20 +144,34 @@ mod tests {
         s.parse().unwrap()
     }
 
-    // T4, I2
+    fn home() -> Vec<LanNetwork> {
+        vec![LanNetwork { id: "mac:18:35:d1:15:d1:a8".into(), name: "Home".into(), router: "192.168.0.1".into() }]
+    }
+
+    fn no_lookup() -> Option<String> {
+        panic!("the network must not be looked up")
+    }
+
+    // T4, I2; ADR 08, T14: loopback is accepted with no lookup.
     #[test]
     fn loopback_peers_are_accepted() {
         for s in ["127.0.0.1", "127.8.8.8", "::1", "::ffff:127.0.0.1"] {
-            assert!(peer_allowed(ip(s), false), "{s}");
+            assert!(peer_allowed(ip(s), false, &[], no_lookup), "{s}");
+            assert!(peer_allowed(ip(s), true, &home(), no_lookup), "{s}");
         }
     }
 
-    // T4, I2
+    // T4, I2; ADR 08, T14, I17: another machine only on an allowed network.
     #[test]
-    fn other_peers_are_refused_unless_lan_is_allowed() {
+    fn other_peers_are_refused_unless_lan_is_allowed_on_this_network() {
+        let home_id = || Some("mac:18:35:d1:15:d1:a8".to_string());
+        let cafe_id = || Some("mac:aa:bb:cc:dd:ee:ff".to_string());
         for s in ["192.168.1.5", "10.0.0.1", "::ffff:10.0.0.1", "fe80::1", "2001:db8::1", "0.0.0.0"] {
-            assert!(!peer_allowed(ip(s), false), "{s}");
-            assert!(peer_allowed(ip(s), true), "{s}");
+            assert!(!peer_allowed(ip(s), false, &home(), no_lookup), "{s}: allow_lan off");
+            assert!(!peer_allowed(ip(s), true, &[], no_lookup), "{s}: no allowed network");
+            assert!(peer_allowed(ip(s), true, &home(), home_id), "{s}: home");
+            assert!(!peer_allowed(ip(s), true, &home(), cafe_id), "{s}: another network");
+            assert!(!peer_allowed(ip(s), true, &home(), || None), "{s}: unknown network");
         }
     }
 

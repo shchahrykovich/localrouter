@@ -9,8 +9,10 @@ decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
 `docs/adr/02-distribution-and-self-update-2026-09-26/` (release and updater),
 `docs/adr/03-path-routes-2026-09-26/` (several dev servers on one name, by path),
 `docs/adr/05-folder-routes-2026-09-30/` (a folder served with no dev server),
-`docs/adr/06-forward-proxy-2026-10-01/` (a forward proxy for Chrome and Claude Code) and
-`docs/adr/07-proxy-scripts-lua-2026-10-01/` (Lua scripts that change or record traffic).
+`docs/adr/06-forward-proxy-2026-10-01/` (a forward proxy for Chrome and Claude Code),
+`docs/adr/07-proxy-scripts-lua-2026-10-01/` (Lua scripts that change or record traffic) and
+`docs/adr/08-proxy-har-log-2026-10-02/` (the proxy log in HAR files, its viewer at
+`proxy.localhost`, LAN access per network).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 
@@ -158,6 +160,26 @@ list, so a new tool needs that test changed on purpose.
   waiting. `reveal_secrets` is never an MCP argument. The reference text is
   `libs/core/src/scripts.md`, served at `router.localhost/scripts`; keep it in
   step with `lua_api.rs` (a test reads the field names from the tables).
+- **The proxy log (ADR 08)** lives in `libs/core/src/har/`: `entry.rs` (a
+  record becomes one HAR entry), `writer.rs` (the file, roll, prune, repair),
+  `mod.rs` (`HarLog`: the on flag, the queue, the `har-writer` thread),
+  `viewer.rs` and its `viewer.html/.js/.css`. The network task checks
+  `enabled()` before it copies anything and only calls `try_send`; the writer
+  thread exists only while there are records. A file is valid HAR after every
+  entry: only the closing `\n]}}\n` is ever rewritten. The viewer at
+  `proxy.localhost` and `router.localhost/proxy-log/` is **loopback only and
+  read only** (`GET`/`HEAD`, no CORS, CSP), serves only `proxy-*.har` names that
+  are regular files, and is never logged. `proxy` is reserved for new routes,
+  but a saved route `proxy` still loads and wins (`validate_saved`). The secret
+  header list is `secrets.rs`, shared with the scripts.
+- **LAN access per network (ADR 08)**: `allow_lan` lets another machine in
+  only when its network id (the router's MAC address, `apps/daemon/src/network.rs`)
+  is in `lan_networks`. The id comes from the System Configuration store, not
+  the ARP table: macOS 26 hides the ARP table from programs without Local
+  Network access. The lookup runs off the accept loop, only for a non-loopback
+  peer; the proxy port, TCP routes and the viewer never use it. Debug builds
+  read `LOCALROUTER_TEST_NETWORK` (`mac:…,192.168.0.1,en0` or `none`) and
+  `LOCALROUTER_TEST_EXTRA_ROOTS` (roots added to `bundle.pem`).
 
 ## Bundle and release
 

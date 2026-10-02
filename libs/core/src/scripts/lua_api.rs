@@ -19,12 +19,9 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_perc
 use crate::scripts::bodies::{self, BodyClass};
 use crate::scripts::events::{self, Event, Format};
 
-/// The value a script sees for a secret header.
-pub const REDACTED: &str = "[redacted]";
-
-/// Secret by default (ADR 07, change 4); `secret_headers` in the config adds names.
-pub const DEFAULT_SECRET_HEADERS: [&str; 7] =
-    ["authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key", "x-auth-token"];
+/// The value a script sees for a secret header, and the default list; both
+/// live in `secrets.rs`, shared with the HAR writer (ADR 08).
+pub use crate::secrets::{DEFAULT_SECRET_HEADERS, REDACTED};
 
 /// Lines a rule may write to the daemon log per minute.
 pub const LOG_LINES_PER_MINUTE: u32 = 200;

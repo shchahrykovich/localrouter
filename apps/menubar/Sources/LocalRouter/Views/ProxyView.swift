@@ -37,6 +37,16 @@ struct ProxyView: View {
                 }
             }
             ForEach(p?.errors ?? [], id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
+            // ADR 08: where every proxied request goes.
+            if let line = ProxyLog.stateLine(p?.log) {
+                HStack {
+                    Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Open Proxy Log") { Task { await model.openProxyLog() } }
+                    Button("Show Log Folder") { model.showProxyLogFolder() }
+                }
+                ForEach(ProxyLog.problems(p?.log), id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
+            }
             Text("Start a program through the proxy:").font(.caption).foregroundStyle(.secondary)
             CopyLine(text: "eval \"$(\(Instance.current.cli) proxy env)\" && npm test")
             HStack {

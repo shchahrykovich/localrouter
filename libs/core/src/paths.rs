@@ -81,6 +81,15 @@ impl Paths {
     pub fn inspect_ca_key(&self) -> PathBuf {
         self.inspect_ca_dir().join("ca.key")
     }
+    /// The macOS system roots plus the inspection CA, for programs whose CA
+    /// setting replaces the default roots (ADR 08, change 3). Public only.
+    pub fn inspect_ca_bundle(&self) -> PathBuf {
+        self.inspect_ca_dir().join("bundle.pem")
+    }
+    /// The HAR files of the proxy log (ADR 08).
+    pub fn proxy_log_dir(&self) -> PathBuf {
+        self.logs.join("proxy")
+    }
     /// The separate Chrome profile that uses the proxy (ADR 06).
     pub fn chrome_profile(&self) -> PathBuf {
         self.caches.join("chrome-proxy")

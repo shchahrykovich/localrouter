@@ -22,6 +22,11 @@ pub const MAX_PATH_LEN: usize = 200;
 /// Host key of the help page the daemon serves itself (`router.localhost`).
 /// No route can take it.
 pub const HELP_HOST: &str = "router";
+/// Host key of the proxy log viewer (ADR 08). New routes cannot take it; a
+/// route saved before it was reserved still loads and wins (I11).
+pub const PROXY_LOG_HOST: &str = "proxy";
+/// The viewer's second address, always served: `router.localhost/proxy-log/`.
+pub const PROXY_LOG_PATH: &str = "/proxy-log";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -213,6 +218,8 @@ pub enum RouteError {
     HasTld(String),
     #[error("\"{0}\" is reserved: {0}.{TLD} is LocalRouter's help page. Use another name")]
     ReservedHost(String),
+    #[error("\"{0}\" is reserved: {0}.{TLD} is LocalRouter's proxy log viewer. Use another name")]
+    ReservedForProxyLog(String),
     #[error("target \"{0}\" is not valid: use http://, https:// or tcp:// plus 127.0.0.1, localhost or [::1] and a port, or file:// plus the absolute path of a folder")]
     BadTarget(String),
     #[error("folder \"{folder}\" is not valid: {reason}")]
@@ -452,6 +459,16 @@ impl RouteTable {
     /// Check and normalize a route before it is inserted. A route with the same
     /// host is ignored in the uniqueness checks, because it will be replaced.
     pub fn validate(&self, route: &mut Route, reserved: Reserved) -> Result<(), RouteError> {
+        if normalize_host(&route.host)? == PROXY_LOG_HOST {
+            return Err(RouteError::ReservedForProxyLog(PROXY_LOG_HOST.into()));
+        }
+        self.validate_saved(route, reserved)
+    }
+
+    /// [`RouteTable::validate`] for a route loaded from `routes.json`: a
+    /// saved route `proxy` from before ADR 08 is kept, so an update never
+    /// makes a working route vanish (I11).
+    pub fn validate_saved(&self, route: &mut Route, reserved: Reserved) -> Result<(), RouteError> {
         route.host = normalize_host(&route.host)?;
         if route.host == HELP_HOST {
             return Err(RouteError::ReservedHost(route.host.clone()));
@@ -703,6 +720,24 @@ mod tests {
             assert_eq!(RouteTable::new().validate(&mut r, RES).unwrap_err(), RouteError::ReservedHost("router".into()));
         }
         let mut sub = http("feat.router", 5173);
+        RouteTable::new().validate(&mut sub, RES).unwrap();
+    }
+
+    // ADR 08, T7, I11: `proxy` is refused for a new route, kept for a saved one.
+    #[test]
+    fn proxy_host_is_reserved_for_new_routes_only() {
+        for host in ["proxy", "Proxy"] {
+            let mut r = http(host, 5173);
+            assert_eq!(
+                RouteTable::new().validate(&mut r, RES).unwrap_err(),
+                RouteError::ReservedForProxyLog("proxy".into())
+            );
+        }
+        let mut saved = http("proxy", 5173);
+        RouteTable::new().validate_saved(&mut saved, RES).unwrap();
+        let mut saved = http("router", 5173);
+        assert!(RouteTable::new().validate_saved(&mut saved, RES).is_err(), "router stays refused");
+        let mut sub = http("feat.proxy", 5173);
         RouteTable::new().validate(&mut sub, RES).unwrap();
     }
 

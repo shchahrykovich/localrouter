@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proxy log</title>
+<link rel="stylesheet" href="viewer.css">
+<script src="viewer.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>Proxy log</h1>
+  <p id="state" class="state">Loading…</p>
+  <p id="error" class="error" hidden></p>
+  <p id="hint" class="hint" hidden></p>
+</header>
+<main>
+  <aside>
+    <h2>Files</h2>
+    <ul id="files" class="files"></ul>
+    <p class="note">In Chrome: DevTools → Network → Import HAR file, or drag the file onto the Network panel.</p>
+  </aside>
+  <section class="requests">
+    <div class="tools">
+      <input id="filter" type="search" placeholder="Filter: URL, method, status, mode" autocomplete="off">
+      <label><input id="errors" type="checkbox"> Errors only</label>
+      <span id="count" class="count"></span>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Method</th><th>Status</th><th>Host</th><th>Path</th><th>Mode</th><th class="num">ms</th><th class="num">Size</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="note" hidden></p>
+    <button id="more" type="button" hidden>Show more</button>
+  </section>
+  <section id="details" class="details" hidden>
+    <div class="details-head">
+      <h2 id="details-title"></h2>
+      <button id="close" type="button">Close</button>
+    </div>
+    <div id="details-body"></div>
+  </section>
+</main>
+</body>
+</html>

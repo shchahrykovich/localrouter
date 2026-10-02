@@ -158,4 +158,27 @@ final class ApiContractTests: XCTestCase {
         let old = try Api.decoder.decode(GetProxyResult.self, from: JSONSerialization.data(withJSONObject: result))
         XCTAssertEqual(old.scriptRules, [])
     }
+
+    /// ADR 08: the log block and the network decode; a 1.4 reply without
+    /// them decodes too, and the app then hides the log controls.
+    func testProxyLogAndNetworkDecode() throws {
+        let read = { (file: String) throws -> Data in try Data(contentsOf: self.examples.appendingPathComponent(file)) }
+        let reply = try JSONSerialization.jsonObject(with: read("get_proxy.reply.json")) as? [String: Any]
+        var result = reply?["result"] as? [String: Any] ?? [:]
+        let p = try Api.decoder.decode(GetProxyResult.self, from: JSONSerialization.data(withJSONObject: result))
+        XCTAssertEqual(p.log?.url, "http://proxy.localhost")
+        XCTAssertEqual(p.log?.fileRequests, 5000)
+        XCTAssertEqual(p.env["SSL_CERT_FILE"]?.hasSuffix("inspect-ca/bundle.pem"), true)
+        XCTAssertEqual(p.env["http_proxy"], p.env["HTTP_PROXY"], "lower and upper case keys stay apart")
+        result.removeValue(forKey: "log")
+        XCTAssertNil(try Api.decoder.decode(GetProxyResult.self, from: JSONSerialization.data(withJSONObject: result)).log)
+        let status = try JSONSerialization.jsonObject(with: read("status.reply.json")) as? [String: Any]
+        let s = try Api.decoder.decode(StatusResult.self, from: JSONSerialization.data(withJSONObject: status?["result"] ?? [:]))
+        XCTAssertEqual(s.network?.id, "mac:18:35:d1:15:d1:a8")
+        XCTAssertEqual(s.network?.lanAllowed, false)
+        let config = try JSONSerialization.jsonObject(with: read("get_config.reply.json")) as? [String: Any]
+        let c = try Api.decoder.decode(Config.self, from: JSONSerialization.data(withJSONObject: config?["result"] ?? [:]))
+        XCTAssertEqual(c.lanNetworks?.first?.name, "Home")
+        XCTAssertEqual(c.proxyLogFileMb, 20)
+    }
 }

@@ -4,7 +4,7 @@
 //! help URL and its ports (ADR 04, I4).
 
 use crate::api::{CaState, PortStatus, StatusResult};
-use crate::instance::{Instance, help_url, port_part};
+use crate::instance::{Instance, help_url, port_part, proxy_log_url};
 use crate::routes::{Protocol, Route};
 
 const TEMPLATE: &str = include_str!("help.md");
@@ -103,6 +103,8 @@ fn fill(template: &str, instance: &Instance, http_port: Option<u16>, https_port:
         .replace("{{CLI}}", &instance.cli())
         .replace("{{DAEMON_LABEL}}", &instance.daemon_label())
         .replace("{{HELP_URL}}", &help_url(Some(http), Some(https)))
+        .replace("{{PROXY_LOG_URL}}", &proxy_log_url(Some(http), Some(https)))
+        .replace("{{PROXY_LOG_FOLDER}}", &format!("~/{}/proxy", instance.logs_folder()))
         .replace("{{DEFAULT_HELP_URL}}", &instance.default_help_url())
         .replace("{{HTTP_PORT}}", &http.to_string())
         .replace("{{HTTPS_PORT}}", &https.to_string())
@@ -228,6 +230,8 @@ mod tests {
             routes_file_problem: None,
             listen_failed: vec![],
             proxy: None,
+            network: None,
+            notes: vec![],
         }
     }
 

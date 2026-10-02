@@ -1,6 +1,7 @@
 # ADR 08. Proxy log, a viewer at proxy.localhost, LAN access per network
 
-**Status:** Proposed, 2026-10-02. Not built. Builds on
+**Status:** Built, 2026-10-02, not released. What differs from the plan and
+the test results: [Plan versus actual](10-plan-vs-actual.md). Builds on
 [ADR 06](../06-forward-proxy-2026-10-01/README.md) (the forward proxy) and
 [ADR 07](../07-proxy-scripts-lua-2026-10-01/README.md) (script rules, the
 secret header list).
@@ -77,6 +78,7 @@ networks, memory and an agent session.
 | 7 | Semantic Change Manifest | manifest | [07-semantic-change-manifest.md](07-semantic-change-manifest.md) |
 | 8 | Test plan | test plan | [08-test-plan.md](08-test-plan.md) |
 | 9 | Tasks | build plan | [09-tasks.md](09-tasks.md) |
+| 10 | Plan versus actual | as built | [10-plan-vs-actual.md](10-plan-vs-actual.md) |
 
 ## The two questions of the design session
 

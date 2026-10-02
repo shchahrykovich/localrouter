@@ -33,14 +33,19 @@ impl Daemon {
 
     /// Start `program` with a fresh LOCALROUTER_HOME that `prepare` fills.
     fn start_program(program: &Path, prepare: impl FnOnce(&Path)) -> Self {
+        Self::start_program_env(program, prepare, &[])
+    }
+
+    /// [`Daemon::start_program`] with extra environment variables.
+    fn start_program_env(program: &Path, prepare: impl FnOnce(&Path), env: &[(&str, &str)]) -> Self {
         let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
         prepare(dir.path());
-        let child = Command::new(program)
-            .env("LOCALROUTER_HOME", dir.path())
-            .env("LOCALROUTER_LOG", "warn")
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut cmd = Command::new(program);
+        cmd.env("LOCALROUTER_HOME", dir.path()).env("LOCALROUTER_LOG", "warn").stderr(Stdio::null());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().unwrap();
         let d = Daemon { child, dir };
         let deadline = Instant::now() + Duration::from_secs(10);
         while UnixStream::connect(d.socket()).is_err() {
@@ -1023,3 +1028,217 @@ fn a_rule_moved_to_a_route_leaves_the_inspect_set() {
     c.call("set_script_rule", json!({"id": "x", "host": "shop.localhost", "script": script}));
     assert_eq!(c.call("get_proxy", json!({}))["inspect_set"], json!([]));
 }
+
+// ---- ADR 08: the proxy log, the reserved name, the CA bundle, LAN per network
+
+/// One absolute-form GET through the proxy to the daemon's own HTTP port:
+/// an upstream request the proxy records.
+fn get_through(proxy: u16, http: u16, path: &str) -> String {
+    let mut s = TcpStream::connect(("127.0.0.1", proxy)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(format!("GET http://127.0.0.1:{http}{path} HTTP/1.1\r\nHost: 127.0.0.1:{http}\r\nAuthorization: Bearer t\r\nConnection: close\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    out
+}
+
+fn wait_written(c: &mut Client, n: u64) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let log = c.call("get_proxy", json!({}))["log"].clone();
+        if log["written"].as_u64() >= Some(n) {
+            return log;
+        }
+        assert!(Instant::now() < deadline, "the log did not get {n} entries: {log}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+// T8: a fresh home gets the log on, 20 MB, 5000 requests; get_proxy has the
+// log block with the folder under the temp home.
+#[test]
+fn proxy_log_defaults() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let config = c.call("get_config", json!({}));
+    assert_eq!((config["proxy_log"].clone(), config["proxy_log_file_mb"].clone(), config["proxy_log_file_requests"].clone()), (json!(true), json!(20), json!(5000)));
+    assert_eq!(config["lan_networks"], json!([]));
+    let log = c.call("get_proxy", json!({}))["log"].clone();
+    assert_eq!(log["folder"], d.dir.path().join("logs/proxy").display().to_string());
+    assert_eq!(log["enabled"], true);
+    assert_eq!(log["keep_files"], 5);
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
+    assert_eq!(log["url"], format!("http://proxy.localhost:{http}"));
+}
+
+// T8: each field changes; an out-of-range value is refused with the range.
+#[test]
+fn proxy_log_set_config() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("set_config", json!({"proxy_log": false, "proxy_log_file_mb": 5, "proxy_log_file_requests": 200}));
+    assert_eq!((r["config"]["proxy_log"].clone(), r["config"]["proxy_log_file_mb"].clone(), r["config"]["proxy_log_file_requests"].clone()), (json!(false), json!(5), json!(200)));
+    let log = c.call("get_proxy", json!({}))["log"].clone();
+    assert_eq!((log["enabled"].clone(), log["file_mb"].clone(), log["file_requests"].clone()), (json!(false), json!(5), json!(200)));
+    for (params, range) in [
+        (json!({"proxy_log_file_mb": 0}), "1 to 200"),
+        (json!({"proxy_log_file_mb": 201}), "1 to 200"),
+        (json!({"proxy_log_file_requests": 99}), "100 to 1000000"),
+    ] {
+        let v = c.raw("set_config", params.clone());
+        assert_eq!(v["error"]["code"], "invalid_request", "{params}");
+        assert!(v["error"]["message"].as_str().unwrap().contains(range), "{v}");
+    }
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(d.dir.path().join("config.json")).unwrap()).unwrap();
+    assert_eq!(saved["proxy_log_file_mb"], 5, "a refused value is not written");
+}
+
+// T8, the mock-versus-real check: the daemon makes the log from config.json
+// and records proxy traffic; off stops records at once; on starts a new file.
+#[test]
+fn proxy_log_off_then_on() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let proxy = proxy_on(&mut c);
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap() as u16;
+    get_through(proxy, http, "/a?x=1");
+    let log = wait_written(&mut c, 1);
+    let first = log["current"].as_str().unwrap().to_string();
+    let text = std::fs::read_to_string(d.dir.path().join("logs/proxy").join(&first)).unwrap();
+    let har: Value = serde_json::from_str(&text).unwrap();
+    let entry = &har["log"]["entries"][0];
+    assert_eq!(entry["request"]["url"], format!("http://127.0.0.1:{http}/a?x=1"));
+    assert!(text.contains("[redacted]") && !text.contains("Bearer t"), "I4: {text}");
+    assert_eq!(har["log"]["creator"]["name"], "LocalRouter");
+
+    c.call("set_config", json!({"proxy_log": false}));
+    get_through(proxy, http, "/b");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(c.call("get_proxy", json!({}))["log"]["written"], 1, "off: no record");
+
+    c.call("set_config", json!({"proxy_log": true}));
+    get_through(proxy, http, "/c");
+    let log = wait_written(&mut c, 2);
+    assert_ne!(log["current"].as_str().unwrap(), first, "on after off: a new file");
+}
+
+// T7, I11: a saved route `proxy` loads and answers proxy.localhost; a new one
+// is refused; status names the second address.
+#[test]
+fn proxy_route_saved_before_is_kept() {
+    let d = Daemon::start_with(|dir| {
+        std::fs::write(
+            dir.join("routes.json"),
+            json!({"version":1,"routes":[{"host":"proxy","target":"http://127.0.0.1:9","persistent":true}]}).to_string(),
+        )
+        .unwrap();
+    });
+    let mut c = d.client();
+    let status = c.call("status", json!({}));
+    assert_eq!(status["routes"], 1, "{status}");
+    let notes = status["notes"].to_string();
+    assert!(notes.contains("The route proxy hides the proxy log viewer") && notes.contains("/proxy-log/"), "{notes}");
+    let http = status["http"]["port"].as_u64().unwrap() as u16;
+    let mut s = TcpStream::connect(("127.0.0.1", http)).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: proxy.localhost\r\nConnection: close\r\n\r\n").unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 502"), "the route answered, not the viewer: {out}");
+
+    assert_eq!(c.error_code("register_route", http_route("proxy", 5173)), "invalid_route");
+    assert_eq!(c.error_code("register_route", http_route("router", 5173)), "invalid_route");
+}
+
+// T8, I23: the bundle holds the system roots then the inspection CA, never a
+// key; env points the three CA names at it; the lowercase names are set.
+#[test]
+fn proxy_env_bundle() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let p = c.call("get_proxy", json!({}));
+    assert!(p["env"].get("SSL_CERT_FILE").is_none(), "no CA, no bundle");
+    assert_eq!(p["env"]["no_proxy"], "localhost,127.0.0.1,::1,.localhost");
+    assert_eq!(p["env"]["http_proxy"], p["env"]["HTTP_PROXY"]);
+    assert_eq!(p["env"]["https_proxy"], p["env"]["HTTPS_PROXY"]);
+
+    c.call("set_config", json!({"inspect_hosts": ["api.example.com"]}));
+    let p = c.call("get_proxy", json!({}));
+    let bundle = d.dir.path().join("inspect-ca/bundle.pem");
+    for name in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] {
+        assert_eq!(p["env"][name], bundle.display().to_string(), "{name}");
+    }
+    let text = std::fs::read_to_string(&bundle).unwrap();
+    let certs = text.matches("-----BEGIN CERTIFICATE-----").count();
+    assert!(certs > 100, "the system roots: {certs} certificates");
+    let ca = std::fs::read_to_string(d.dir.path().join("inspect-ca/ca.pem")).unwrap();
+    assert!(text.trim_end().ends_with(ca.trim_end()), "the inspection CA comes last");
+    assert!(!text.contains("PRIVATE KEY"), "no key in the bundle");
+}
+
+const HOME_NET: &str = "mac:18:35:d1:15:d1:a8,192.168.0.1,en0";
+
+fn start_on_network(config: Value, network: &str) -> Daemon {
+    Daemon::start_program_env(
+        Path::new(env!("CARGO_BIN_EXE_localrouterd")),
+        |dir| std::fs::write(dir.join("config.json"), config.to_string()).unwrap(),
+        &[("LOCALROUTER_TEST_NETWORK", network)],
+    )
+}
+
+fn base_config(allow_lan: bool) -> Value {
+    json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":allow_lan,"log_size":100})
+}
+
+// T16: lan_networks is set and read; status.network says whether LAN access
+// applies here.
+#[test]
+fn lan_networks_and_status_network() {
+    let d = start_on_network(base_config(false), HOME_NET);
+    let mut c = d.client();
+    let net = c.call("status", json!({}))["network"].clone();
+    assert_eq!(net, json!({"id": "mac:18:35:d1:15:d1:a8", "name": "", "router": "192.168.0.1", "interface": "en0", "lan_allowed": false}));
+    let r = c.call(
+        "set_config",
+        json!({"allow_lan": true, "lan_networks": [{"id": "MAC:18:35:D1:15:D1:A8", "name": " Home ", "router": "192.168.0.1"}]}),
+    );
+    assert_eq!(r["config"]["lan_networks"], json!([{"id": "mac:18:35:d1:15:d1:a8", "name": "Home", "router": "192.168.0.1"}]));
+    let net = c.call("status", json!({}))["network"].clone();
+    assert_eq!((net["name"].clone(), net["lan_allowed"].clone()), (json!("Home"), json!(true)));
+    let v = c.raw("set_config", json!({"lan_networks": [{"id": "192.168.0.1"}]}));
+    assert_eq!(v["error"]["code"], "invalid_request", "{v}");
+    // Another switch keeps the list.
+    let r = c.call("set_config", json!({"fallback": false}));
+    assert_eq!(r["config"]["lan_networks"][0]["name"], "Home");
+}
+
+// T16, I18: an old allow_lan true becomes the current network, never every network.
+#[test]
+fn lan_update_from_allow_lan_true() {
+    let d = start_on_network(base_config(true), HOME_NET);
+    let mut c = d.client();
+    let config = c.call("get_config", json!({}));
+    assert_eq!(config["lan_networks"], json!([{"id": "mac:18:35:d1:15:d1:a8", "name": "", "router": "192.168.0.1"}]));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(d.dir.path().join("config.json")).unwrap()).unwrap();
+    assert_eq!(saved["lan_networks"], config["lan_networks"], "written once");
+    let status = c.call("status", json!({}));
+    assert!(status["notes"].to_string().contains("LAN access now works per network. Allowed on: 192.168.0.1"), "{status}");
+    assert_eq!(status["network"]["lan_allowed"], true);
+
+    // An unknown network: the list stays empty, the note says so.
+    let d = start_on_network(base_config(true), "none");
+    let mut c = d.client();
+    assert_eq!(c.call("get_config", json!({}))["lan_networks"], json!([]));
+    let status = c.call("status", json!({}));
+    assert!(status["notes"].to_string().contains("could not be recognised"), "{status}");
+    assert!(status["network"].is_null());
+
+    // A file that already has the field is left as it is.
+    let mut config = base_config(true);
+    config["lan_networks"] = json!([]);
+    let d = start_on_network(config, HOME_NET);
+    let mut c = d.client();
+    assert_eq!(c.call("get_config", json!({}))["lan_networks"], json!([]));
+    assert!(c.call("status", json!({})).get("notes").is_none());
+}
+

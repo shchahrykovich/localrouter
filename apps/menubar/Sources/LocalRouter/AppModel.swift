@@ -225,6 +225,69 @@ final class AppModel {
     /// Asked each time the right-click menu opens (I17).
     var chromeInstalled: Bool { ChromeLauncher(daemon: client).chromeInstalled }
 
+    // MARK: Proxy log (ADR 08)
+
+    func setProxyLog(_ on: Bool) async { await setConfig(SetConfigParams(proxyLog: on)) }
+
+    /// The daemon refuses values out of range; the message says the range.
+    func setProxyLogLimits(mb: UInt64?, requests: UInt64?) async {
+        await setConfig(SetConfigParams(proxyLogFileMb: mb, proxyLogFileRequests: requests))
+    }
+
+    /// The viewer, in the user's normal Chrome when it is installed, else in
+    /// the default browser.
+    func openProxyLog() async {
+        guard let log = proxy?.log else {
+            message = "This daemon has no proxy log. Restart it after an update."
+            return
+        }
+        let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: ChromeLauncher.chromeBundleID)
+        let feedback = await ProxyLog.open(log, chrome: chrome)
+        if feedback.title != "Opened the proxy log" { message = feedback.summary }
+    }
+
+    /// The folder in Finder. The writer makes it with its first file.
+    func showProxyLogFolder() {
+        guard let log = proxy?.log else { return }
+        let folder = URL(fileURLWithPath: log.folder)
+        if FileManager.default.fileExists(atPath: folder.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([folder])
+        } else {
+            message = "No request was logged yet, so there is no folder. It is made with the first file: \(log.folder)"
+        }
+    }
+
+    // MARK: LAN access per network (ADR 08)
+
+    var lanNetworks: [LanNetwork] = []
+
+    /// Read when the Routing page opens and on "Check Again": nothing
+    /// watches the network in the background.
+    func loadLanNetworks() async {
+        await refresh()
+        lanNetworks = (await config)?.lanNetworks ?? []
+    }
+
+    func allowThisNetwork(name: String) async {
+        guard let here = status?.network else { return }
+        var list = lanNetworks.filter { $0.id != here.id }
+        list.append(LanNetwork(id: here.id, name: name, router: here.router))
+        await setLanNetworks(list)
+    }
+
+    func forgetNetwork(_ id: String) async {
+        await setLanNetworks(lanNetworks.filter { $0.id != id })
+    }
+
+    func renameNetwork(_ id: String, to name: String) async {
+        await setLanNetworks(lanNetworks.map { $0.id == id ? LanNetwork(id: $0.id, name: name, router: $0.router) : $0 })
+    }
+
+    private func setLanNetworks(_ list: [LanNetwork]) async {
+        await setConfig(SetConfigParams(lanNetworks: list))
+        lanNetworks = (await config)?.lanNetworks ?? list
+    }
+
     /// Starts a separate Chrome that uses the proxy, turning the proxy on
     /// first if needed. The result goes to the window footer.
     func openChromeViaProxy() async {

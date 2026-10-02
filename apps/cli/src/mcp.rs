@@ -285,7 +285,8 @@ the route without a path.")]
     #[tool(description = "How to send traffic through the LocalRouter proxy: proxy URL, environment variables for \
 Claude Code and Node.js, Chrome flags, which hosts are inspected, and whether the inspection CA is trusted. A program \
 reads the proxy settings when it starts: pass env to a program you start, never write them into project files. Also \
-lists every script rule with its counters and last error (script_rules).")]
+lists every script rule with its counters and last error (script_rules), and the HAR log of proxy traffic: log.folder \
+holds the files (read them with jq, never whole), log.url is the viewer for the user.")]
     async fn get_proxy(&self, Parameters(_): Parameters<NoArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self.call("get_proxy", api::Empty {}).await)
     }

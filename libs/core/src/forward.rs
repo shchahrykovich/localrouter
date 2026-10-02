@@ -14,7 +14,7 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -29,6 +29,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::har::HarRecord;
 use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
@@ -88,19 +89,22 @@ impl ForwardProxy {
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let Some(authority) = req.uri().authority().cloned() else {
             let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let seen = self.seen(&req, || if host.is_empty() { path.clone() } else { format!("http://{host}{path}") }, ProxyMode::Http);
             let resp = self.not_a_proxy_request();
-            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default());
+            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default(), seen);
             return resp;
         };
         if req.uri().scheme_str() != Some("http") {
+            let seen = self.seen(&req, || req.uri().to_string(), ProxyMode::Http);
             let resp = https_needs_connect(authority.as_str());
-            self.log_http(&method, authority.as_str(), &path, &resp, start, ProxyMode::Http, Default::default());
+            self.log_http(&method, authority.as_str(), &path, &resp, start, ProxyMode::Http, Default::default(), seen);
             return resp;
         }
         let host = bare_host(authority.as_str());
         let port = authority.port_u16().unwrap_or(80);
 
-        // A .localhost name goes to the route table, never to DNS (I8).
+        // A .localhost name goes to the route table, never to DNS (I8). The
+        // router writes its HAR entry, as for every request with `via`.
         if host_key(&host).is_some() {
             *req.uri_mut() = path.parse::<Uri>().unwrap_or_else(|_| Uri::from_static("/"));
             if let Ok(value) = HeaderValue::from_str(authority.as_str()) {
@@ -109,17 +113,33 @@ impl ForwardProxy {
             req.headers_mut().remove(header::PROXY_AUTHORIZATION);
             return self.router.handle(req, ClientScheme::Http, peer, Some(ProxyMode::Http)).await;
         }
+        // What the client sent, before script rules (ADR 08).
+        let seen = self.seen(&req, || req.uri().to_string(), ProxyMode::Http);
         if self.is_own_address(&host, port) {
             let resp = loop_detected(&host, port);
-            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default());
+            self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default(), seen);
             return resp;
         }
         let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
         let base = format!("http://{authority}");
         let ctx = Ctx { source: "proxy", route: None, scheme: "http", host: host.clone(), port };
         let (resp, scripts) = self.through_scripts(req, &base, &host, ctx).await;
-        self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, scripts);
+        self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, scripts, seen);
         resp
+    }
+
+    /// A HAR record of what the client sent, only while the log is on: with
+    /// it off nothing is copied (ADR 08, I1).
+    fn seen<B>(&self, req: &Request<B>, url: impl FnOnce() -> String, mode: ProxyMode) -> Option<HarRecord> {
+        let har = self.router.har.as_ref()?;
+        har.enabled().then(|| HarRecord::start(req, url(), mode))
+    }
+
+    /// One closed tunnel, or a `CONNECT` the proxy answered itself.
+    fn record_tunnel(&self, started: SystemTime, host: &str, port: u16, status: u16, millis: u64, bytes: (u64, u64)) {
+        if let Some(har) = self.router.har.as_ref().filter(|h| h.enabled()) {
+            har.record(HarRecord::tunnel(started, host, port, status, millis, bytes));
+        }
     }
 
     /// Send a request to `base` (scheme and authority) plus its own path,
@@ -155,6 +175,7 @@ impl ForwardProxy {
 
     async fn connect(self: &Arc<Self>, req: Request<Incoming>, peer: SocketAddr, cancel: CancellationToken) -> Response<Body> {
         let start = Instant::now();
+        let started = SystemTime::now();
         let Some(authority) = req.uri().authority().cloned() else {
             return page(StatusCode::BAD_REQUEST, "Bad CONNECT", "<p>CONNECT needs a host and a port.</p>".into());
         };
@@ -163,6 +184,7 @@ impl ForwardProxy {
         if self.is_own_address(&host, port) {
             let resp = loop_detected(&host, port);
             self.log.push(LogEntry::tunnel(&host, resp.status().as_u16(), 0, 0, 0));
+            self.record_tunnel(started, &host, port, resp.status().as_u16(), 0, (0, 0));
             return resp;
         }
 
@@ -223,18 +245,22 @@ impl ForwardProxy {
             Ok(server) => server,
             Err(e) => {
                 let resp = bad_gateway(&host, &e);
-                self.log.push(LogEntry::tunnel(&host, resp.status().as_u16(), start.elapsed().as_millis() as u64, 0, 0));
+                let millis = start.elapsed().as_millis() as u64;
+                self.log.push(LogEntry::tunnel(&host, resp.status().as_u16(), millis, 0, 0));
+                self.record_tunnel(started, &host, port, resp.status().as_u16(), millis, (0, 0));
                 return resp;
             }
         };
         let upgrade = hyper::upgrade::on(req);
-        let log = self.log.clone();
+        let this = self.clone();
         tokio::spawn(async move {
             let (bytes_in, bytes_out) = match upgrade.await {
                 Ok(client) => tunnel(client, server, cancel).await,
                 Err(_) => (0, 0),
             };
-            log.push(LogEntry::tunnel(&host, 200, start.elapsed().as_millis() as u64, bytes_in, bytes_out));
+            let millis = start.elapsed().as_millis() as u64;
+            this.log.push(LogEntry::tunnel(&host, 200, millis, bytes_in, bytes_out));
+            this.record_tunnel(started, &host, port, 200, millis, (bytes_in, bytes_out));
         });
         empty(StatusCode::OK)
     }
@@ -247,10 +273,11 @@ impl ForwardProxy {
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let name = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
         let authority = if port == 443 { name } else { format!("{name}:{port}") };
+        let seen = self.seen(&req, || format!("https://{authority}{path}"), ProxyMode::Inspect);
         let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
         let ctx = Ctx { source: "proxy", route: None, scheme: "https", host: host.to_string(), port };
         let (resp, scripts) = self.through_scripts(req, &format!("https://{authority}"), host, ctx).await;
-        self.log_http(&method, host, &path, &resp, start, ProxyMode::Inspect, scripts);
+        self.log_http(&method, host, &path, &resp, start, ProxyMode::Inspect, scripts, seen);
         resp
     }
 
@@ -305,8 +332,12 @@ impl ForwardProxy {
         start: Instant,
         mode: ProxyMode,
         scripts: (Vec<String>, Option<String>),
+        seen: Option<HarRecord>,
     ) {
         let millis = start.elapsed().as_millis() as u64;
+        if let (Some(record), Some(har)) = (seen, self.router.har.as_ref()) {
+            har.record(record.finish(resp, millis).with_scripts(&scripts));
+        }
         let entry = LogEntry::http(method, host, path, resp.status().as_u16(), millis).via_proxy(mode);
         self.log.push(entry.with_scripts(scripts.0, scripts.1));
     }

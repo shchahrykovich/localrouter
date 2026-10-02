@@ -216,6 +216,32 @@ separately. The real server's certificate is always checked with the macOS
 trust store. The menu bar icon's right-click menu has **Open Chrome via
 Proxy** when Google Chrome is installed.
 
+### Proxy log
+
+Every request the proxy carries is written to HAR files, the format Chrome
+DevTools imports ([ADR 08](docs/adr/08-proxy-har-log-2026-10-02/README.md)). The
+log is on by default and writes only while the proxy is on.
+
+```
+localrouter proxy log                          # state: folder, viewer, limits, errors
+localrouter proxy log off                      # or on
+localrouter proxy log limits --mb 20 --requests 5000
+localrouter proxy log open                     # the viewer: http://proxy.localhost
+ls -t "$(localrouter proxy log path)"          # ~/Library/Logs/LocalRouter/proxy
+```
+
+- A new file starts at 20 MB or 5000 requests, whichever comes first; the 5
+  newest files are kept.
+- Secret headers are written as `[redacted]`. URLs are written as they are,
+  query included. Bodies are not written.
+- The viewer at `http://proxy.localhost` (also `router.localhost/proxy-log/`)
+  lists the files, shows the requests live, and downloads a file for
+  DevTools → Network → Import HAR file. It answers this Mac only and is read
+  only.
+- `proxy env` also sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and
+  `CURL_CA_BUNDLE` to a bundle of the macOS roots plus the inspection CA, so
+  Python and `curl` work with inspected hosts.
+
 ## Scripts
 
 A script rule runs a Lua 5.4 file on the HTTP traffic of a route or of a host
@@ -269,9 +295,12 @@ Checked on macOS 27.0 without root:
 
 So the daemon binds `0.0.0.0` and `[::]` on ports 80 and 443 and **closes every
 connection that does not come from a loopback address**. Your dev servers are not
-visible on the local network. The setting "Allow LAN access" turns this check
-off. If the macOS firewall is on, it can ask once whether to accept incoming
-connections.
+visible on the local network. The setting "Allow LAN access" lets other
+machines in, but only on the networks you allowed (ADR 08): a network is
+known by its router's MAC address, so LAN access at home does not open your
+dev servers in a café. `localrouter lan` shows this network and the list;
+`localrouter lan allow --name Home` adds it. If the macOS firewall is on, it
+can ask once whether to accept incoming connections.
 
 ## Tech stack
 
@@ -320,8 +349,9 @@ The full tree is in [ADR 01, components](docs/adr/01-project-setup-2026-09-26/08
 |---|---|
 | Router (tab) | List of routes with status dot (upstream up / down), note, "open in browser", "copy URL", remove. |
 | Logs (tab) | Live request log, filter by host. |
-| Proxy (tab) | Forward proxy on or off, its address, the command to start a program through it, Open Chrome via Proxy, the requests it carried. |
-| Settings (window: gear button, or **Settings…** in the right-click menu) | A tree of pages with a search field, as in JetBrains IDEs: General (open at login, uninstall), Routing (subdomain fallback, LAN access), HTTPS Certificates, Proxy (Inspection, Scripts), Daemon, Updates, Help. |
+| Proxy (tab) | Forward proxy on or off, its address, the command to start a program through it, Open Chrome via Proxy, the log line ("Log: on, 912 requests in …"), Open Proxy Log, Show Log Folder, the requests it carried. |
+| Settings (window: gear button, or **Settings…** in the right-click menu) | A tree of pages with a search field, as in JetBrains IDEs: General (open at login, uninstall), Routing (subdomain fallback, LAN access and its networks), HTTPS Certificates, Proxy (proxy log; Inspection, Scripts), Daemon, Updates, Help. |
+| Right-click menu | Open LocalRouter, Open Chrome via Proxy, Open Proxy Log, Show Proxy Log Folder, agent instructions and installers, Settings, Quit. |
 | Help (Settings page, or **Help** in the right-click menu) | How to add the MCP server to a coding agent, how to trust the CA in Firefox and Node. **Help with Claude** and **Help with Codex** (only when the app is installed) open a new agent session with a prompt that reads the help page first. |
 
 ## Development

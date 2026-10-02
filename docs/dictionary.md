@@ -327,7 +327,41 @@ out of git.
 A header that scripts see as `[redacted]`: `authorization`,
 `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `api-key`,
 `x-auth-token`, and the names in `secret_headers` of the config. Only the
-user, at a terminal, can let a rule see the values (`reveal_secrets`).
+user, at a terminal, can let a rule see the values (`reveal_secrets`). The
+proxy log writes the same headers as `[redacted]`, whatever a rule may see
+(one list, `libs/core/src/secrets.rs`).
+
+### Proxy log, HAR file
+
+The **proxy log** ([ADR 08](adr/08-proxy-har-log-2026-10-02/README.md)) is every
+request the forward proxy carries, written to **HAR files**: HAR 1.2 (HTTP
+Archive), the JSON format Chrome DevTools saves and imports. The files are
+`proxy-YYYYMMDD-HHMMSS.har` in `<logs folder>/proxy/`; a new file starts at
+`proxy_log_file_mb` or `proxy_log_file_requests`, and the 5 newest are kept.
+One entry holds the URL with its query, the headers (secrets redacted), the
+status and the time to the response headers; never a body. The in-memory
+request log does not change: it still has no headers and no query.
+
+### Proxy log viewer
+
+The read-only page at `proxy.localhost` (and `router.localhost/proxy-log/`)
+that shows the HAR files. The daemon serves it from files compiled into the
+binary, to this Mac only. `proxy` is a reserved host key for new routes.
+
+### LAN network, network id
+
+A network where "Allow LAN access" applies (ADR 08, change 4), in
+`lan_networks` of the config. A network is known by its **network id**: its
+router's MAC address, `mac:18:35:d1:15:d1:a8`, read from the macOS System
+Configuration store. On any other network only this Mac reaches ports 80 and
+443.
+
+### CA bundle
+
+`inspect-ca/bundle.pem`: the macOS system root certificates followed by the
+inspection CA. `proxy env` points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and
+`CURL_CA_BUNDLE` at it, because Python and `curl` replace their roots with
+the file they are given. Public certificates only.
 
 ## Programs and parts
 

@@ -251,6 +251,16 @@ async fn get_proxy_reads_the_proxy_settings_and_changes_nothing() {
     assert_eq!(before, after);
     assert_eq!(serde_json::from_str::<Value>(&config_before).unwrap()["proxy"]["enabled"], false);
 
+    // ADR 08, T11: the log block, passed through from the daemon.
+    let folder = d.home().join("logs/proxy");
+    assert_eq!(p["log"]["folder"], folder.display().to_string(), "{p}");
+    assert!(p["log"]["url"].as_str().unwrap().starts_with("http://proxy.localhost:"), "{p}");
+    assert_eq!(p["log"]["enabled"], true);
+    let tools = client.list_all_tools().await.unwrap();
+    let get_proxy = tools.iter().find(|t| t.name == "get_proxy").unwrap();
+    let description = get_proxy.description.as_deref().unwrap_or("");
+    assert!(description.contains("HAR log") && description.contains("log.folder") && description.contains("log.url"), "{description}");
+
     let params = CallToolRequestParams::new(Cow::Borrowed("get_proxy"))
         .with_arguments(json!({"enable": true}).as_object().unwrap().clone());
     match client.call_tool(params).await {

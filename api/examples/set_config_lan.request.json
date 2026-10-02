@@ -1,0 +1,14 @@
+{
+  "id": 17,
+  "method": "set_config",
+  "params": {
+    "allow_lan": true,
+    "lan_networks": [
+      {
+        "id": "mac:18:35:d1:15:d1:a8",
+        "name": "Home",
+        "router": "192.168.0.1"
+      }
+    ]
+  }
+}

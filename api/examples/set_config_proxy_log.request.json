@@ -1,0 +1,9 @@
+{
+  "id": 16,
+  "method": "set_config",
+  "params": {
+    "proxy_log": true,
+    "proxy_log_file_mb": 20,
+    "proxy_log_file_requests": 5000
+  }
+}

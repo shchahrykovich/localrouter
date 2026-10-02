@@ -154,7 +154,17 @@ impl fmt::Display for Instance {
 /// The help page for the ports the daemon has bound. Plain HTTP first: curl
 /// reads it without trusting the local CA.
 pub fn help_url(http_port: Option<u16>, https_port: Option<u16>) -> String {
-    let host = format!("{}.{}", crate::routes::HELP_HOST, crate::TLD);
+    builtin_url(crate::routes::HELP_HOST, http_port, https_port)
+}
+
+/// The proxy log viewer (ADR 08) for the ports the daemon has bound. Plain
+/// HTTP first: it works before the user trusts the local CA.
+pub fn proxy_log_url(http_port: Option<u16>, https_port: Option<u16>) -> String {
+    builtin_url(crate::routes::PROXY_LOG_HOST, http_port, https_port)
+}
+
+fn builtin_url(key: &str, http_port: Option<u16>, https_port: Option<u16>) -> String {
+    let host = format!("{key}.{}", crate::TLD);
     match (http_port, https_port) {
         (Some(80), _) => format!("http://{host}"),
         (Some(p), _) => format!("http://{host}:{p}"),

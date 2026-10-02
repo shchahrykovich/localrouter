@@ -390,24 +390,73 @@ fn proxy_on_shows_the_url_and_off_warns_about_running_programs() {
 }
 
 #[test]
-fn proxy_env_prints_four_exports_then_five_with_the_ca() {
+fn proxy_env_prints_the_exports_then_the_ca_names() {
     let d = Daemon::start();
     proxy_on(&d);
     let (ok, out, _) = d.cli(&["proxy", "env"]);
     assert!(ok);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 4, "{out}");
+    assert_eq!(lines.len(), 7, "{out}");
     assert!(lines[0].starts_with("export HTTPS_PROXY=http://127.0.0.1:"), "{out}");
     assert!(lines[1].starts_with("export HTTP_PROXY="));
     assert!(lines[2].contains("NO_PROXY=") && lines[2].contains(".localhost"), "{out}");
     assert_eq!(lines[3], "export NODE_USE_ENV_PROXY=1");
+    // ADR 08: curl reads a plain-http proxy only from the lowercase name.
+    assert!(lines[4].starts_with("export https_proxy=http://127.0.0.1:"), "{out}");
+    assert!(lines[5].starts_with("export http_proxy="));
+    assert!(lines[6].starts_with("export no_proxy="));
 
     assert!(d.cli(&["proxy", "inspect", "add", "api.example.com"]).0);
     let (_, out, _) = d.cli(&["proxy", "env"]);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 5, "{out}");
+    assert_eq!(lines.len(), 11, "{out}");
     let (_, ca_path, _) = d.cli(&["proxy", "ca-path"]);
     assert_eq!(lines[4], format!("export NODE_EXTRA_CA_CERTS={}", ca_path.trim()));
+    // ADR 08, I23: Python and curl get the bundle, never the CA alone.
+    let bundle = d.home().join("inspect-ca/bundle.pem");
+    for (i, name) in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"].iter().enumerate() {
+        assert_eq!(lines[5 + i], format!("export {name}={}", bundle.display()), "{out}");
+    }
+}
+
+// ADR 08, T10: `proxy log` prints the state; on, off, limits, path.
+#[test]
+fn proxy_log_commands() {
+    let d = Daemon::start();
+    let folder = d.home().join("logs/proxy");
+    let (ok, out, _) = d.cli(&["proxy", "log"]);
+    assert!(ok);
+    assert!(out.contains(&format!("Log        on, writes every proxied request to {}", folder.display())), "{out}");
+    assert!(out.contains("The proxy is off, so nothing is written"), "{out}");
+    assert!(out.contains("Viewer     http://proxy.localhost:"), "{out}");
+    assert!(out.contains("20 MB or 5000 requests per file"), "{out}");
+
+    let (ok, out, _) = d.cli(&["proxy", "log", "off"]);
+    assert!(ok && out.contains("Log        off"), "{out}");
+    let (ok, out, _) = d.cli(&["proxy", "log", "on"]);
+    assert!(ok && out.contains("Log        on"), "{out}");
+    let (ok, out, _) = d.cli(&["proxy", "log", "limits", "--mb", "5", "--requests", "200"]);
+    assert!(ok && out.contains("5 MB or 200 requests per file"), "{out}");
+    let (ok, _, err) = d.cli(&["proxy", "log", "limits", "--mb", "500"]);
+    assert!(!ok && err.contains("1 to 200"), "{err}");
+    let (ok, _, err) = d.cli(&["proxy", "log", "limits"]);
+    assert!(!ok && err.contains("--mb"), "{err}");
+
+    let (ok, out, _) = d.cli(&["proxy", "log", "path"]);
+    assert!(ok);
+    assert_eq!(out.trim(), folder.display().to_string());
+}
+
+// ADR 08, T10, G2: `proxy on` and `proxy` say where the log goes.
+#[test]
+fn proxy_on_prints_the_log_line() {
+    let d = Daemon::start();
+    let out = proxy_on(&d);
+    let folder = d.home().join("logs/proxy");
+    assert!(out.contains(&format!("Log: on, writes every request to {}", folder.display())), "{out}");
+    assert!(out.contains("proxy log off to stop"), "{out}");
+    let (_, out, _) = d.cli(&["proxy"]);
+    assert!(out.contains("Log: on, writes every request to"), "{out}");
 }
 
 #[test]

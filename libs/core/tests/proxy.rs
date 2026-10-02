@@ -156,6 +156,8 @@ fn fixed_status() -> StatusResult {
         routes_file_problem: None,
         listen_failed: vec![],
         proxy: None,
+        network: None,
+        notes: vec![],
     }
 }
 
@@ -175,6 +177,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
         tls_client: tls::insecure_loopback_client_config(),
         status: Some(Arc::new(|| Box::pin(async { Some(fixed_status()) }))),
         scripts: localrouter_core::scripts::Scripts::new(),
+        har: None,
     });
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -623,4 +626,385 @@ async fn router_name_serves_the_script_reference_at_scripts() {
     assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
     assert!(body.starts_with("# LocalRouter scripts"), "{body}");
     assert!(body.contains("on_exchange"), "{body}");
+}
+
+// ---- ADR 08, T6 and T17: the proxy log viewer at proxy.localhost
+
+mod proxy_log {
+    use std::time::{Duration, SystemTime};
+
+    use localrouter_core::har::viewer::{self, ViewerContext};
+    use localrouter_core::har::{HarLog, HarRecord, HarSettings};
+    use localrouter_core::logs::ProxyMode;
+    use localrouter_core::secrets::SecretHeaders;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    pub struct Viewer {
+        pub http: SocketAddr,
+        /// Connections here are served as if from 192.168.1.5 (I8).
+        pub lan: SocketAddr,
+        pub log: Arc<RequestLog>,
+        pub har: Arc<HarLog>,
+        pub dir: tempfile::TempDir,
+    }
+
+    pub async fn viewer(routes: Vec<Route>) -> Viewer {
+        let mut table = RouteTable::new();
+        for r in routes {
+            table.insert(r);
+        }
+        let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
+        let har = HarLog::new(
+            HarSettings {
+                folder: dir.path().join("logs/proxy"),
+                creator: "LocalRouter".into(),
+                version: "test".into(),
+                enabled: true,
+                file_mb: 20,
+                file_requests: 5000,
+            },
+            SecretHeaders::new(),
+        );
+        let log = Arc::new(RequestLog::new(100));
+        let proxy = Arc::new(Proxy {
+            instance: Instance::release(),
+            routes: Arc::new(Table { routes: RwLock::new(table), https_port: None }),
+            log: log.clone(),
+            tls_client: tls::insecure_loopback_client_config(),
+            status: None,
+            scripts: localrouter_core::scripts::Scripts::new(),
+            har: Some(har.clone()),
+        });
+        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http = http_listener.local_addr().unwrap();
+        let lan_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lan = lan_listener.local_addr().unwrap();
+        let p = proxy.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer) = http_listener.accept().await.unwrap();
+                tokio::spawn(p.clone().serve(stream, ClientScheme::Http, peer));
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = lan_listener.accept().await.unwrap();
+                let peer: SocketAddr = "192.168.1.5:50000".parse().unwrap();
+                tokio::spawn(proxy.clone().serve(stream, ClientScheme::Http, peer));
+            }
+        });
+        Viewer { http, lan, log, har, dir }
+    }
+
+    pub fn record(har: &HarLog, i: usize) {
+        let mut r = HarRecord::new(SystemTime::now(), "GET", format!("http://api.example.com/{i}?k=v"), ProxyMode::Http);
+        r.status = if i.is_multiple_of(2) { 200 } else { 500 };
+        r.request_headers.insert("authorization", "Bearer secret".parse().unwrap());
+        har.record(r);
+    }
+
+    pub async fn written(har: &HarLog, n: u64) {
+        for _ in 0..500 {
+            if har.written() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("only {} written", har.written());
+    }
+
+    pub async fn request(addr: SocketAddr, method: &str, host: &str, path: &str) -> (StatusCode, hyper::HeaderMap, String) {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+        tokio::spawn(conn);
+        let req = Request::builder().method(method).uri(path).header("host", host).body(Empty::<Bytes>::new()).unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    async fn files(v: &Viewer) -> serde_json::Value {
+        json(&get(v.http, "proxy.localhost", "/api/files").await.2)
+    }
+
+    // T6: every path, and ?download=1 sets Content-Disposition.
+    #[tokio::test]
+    async fn proxy_log_paths() {
+        let v = viewer(vec![]).await;
+        record(&v.har, 0);
+        written(&v.har, 1).await;
+        let (status, headers, page) = get(v.http, "proxy.localhost", "/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers["content-type"].to_str().unwrap().starts_with("text/html"));
+        assert!(page.contains("src=\"viewer.js\"") && page.contains("href=\"viewer.css\""), "relative URLs only: {page}");
+        for (path, kind) in [("/viewer.js", "text/javascript"), ("/viewer.css", "text/css")] {
+            let (status, headers, _) = get(v.http, "proxy.localhost", path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(headers["content-type"].to_str().unwrap().starts_with(kind), "{path}");
+        }
+        let f = files(&v).await;
+        assert_eq!((f["proxy"].clone(), f["log"].clone(), f["keep_files"].clone()), (json!(false), json!(true), json!(5)));
+        assert_eq!(f["files"].as_array().unwrap().len(), 1);
+        assert_eq!(f["files"][0]["entries"], 1);
+        assert_eq!(f["files"][0]["current"], true);
+        let name = f["files"][0]["name"].as_str().unwrap().to_string();
+
+        let (status, headers, body) = get(v.http, "proxy.localhost", &format!("/files/{name}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.get("content-disposition").is_none());
+        let har = json(&body);
+        assert_eq!(har["log"]["entries"][0]["request"]["url"], "http://api.example.com/0?k=v");
+        assert_eq!(har["log"]["entries"][0]["request"]["headers"][0]["value"], "[redacted]");
+        let on_disk = std::fs::read_to_string(v.har.folder().join(&name)).unwrap();
+        assert_eq!(body, on_disk, "the same bytes as the file");
+        let (_, headers, _) = get(v.http, "proxy.localhost", &format!("/files/{name}?download=1")).await;
+        assert_eq!(headers["content-disposition"], format!("attachment; filename=\"{name}\""));
+
+        let (status, _, body) = get(v.http, "proxy.localhost", &format!("/api/entries?file={name}&limit=10")).await;
+        assert_eq!(status, StatusCode::OK);
+        let page = json(&body);
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["before"], serde_json::Value::Null);
+        let (status, _, _) = get(v.http, "proxy.localhost", "/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // T6: the second address, router.localhost/proxy-log/, gives the same.
+    #[tokio::test]
+    async fn proxy_log_second_address() {
+        let v = viewer(vec![]).await;
+        let (status, headers, _) = get(v.http, "router.localhost", "/proxy-log").await;
+        assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(headers["location"], "/proxy-log/");
+        let (status, _, page) = get(v.http, "router.localhost", "/proxy-log/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page, get(v.http, "proxy.localhost", "/").await.2);
+        let (status, _, body) = get(v.http, "router.localhost", "/proxy-log/api/files").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&body)["log"], true);
+        let (status, _, _) = get(v.http, "router.localhost", "/proxy-logs").await;
+        assert_eq!(status, StatusCode::OK, "another path is the help page");
+    }
+
+    // T6, I8: another machine gets 403 at both addresses.
+    #[tokio::test]
+    async fn proxy_log_loopback_only() {
+        let v = viewer(vec![]).await;
+        for (host, path) in [("proxy.localhost", "/"), ("proxy.localhost", "/api/files"), ("router.localhost", "/proxy-log/")] {
+            let (status, headers, _) = get(v.lan, host, path).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{host}{path}");
+            assert!(headers.contains_key("content-security-policy"));
+            assert_eq!(get(v.http, host, path).await.0, StatusCode::OK, "{host}{path} from this Mac");
+        }
+    }
+
+    // T6, I10: only GET and HEAD.
+    #[tokio::test]
+    async fn proxy_log_methods() {
+        let v = viewer(vec![]).await;
+        for method in ["POST", "PUT", "DELETE", "PATCH"] {
+            let (status, headers, _) = request(v.http, method, "proxy.localhost", "/api/files").await;
+            assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{method}");
+            assert_eq!(headers["allow"], "GET, HEAD");
+        }
+        let (status, _, body) = request(v.http, "HEAD", "proxy.localhost", "/").await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, ""));
+    }
+
+    // T6, I9: only our files, never a link, never another name.
+    #[tokio::test]
+    async fn proxy_log_names() {
+        let v = viewer(vec![]).await;
+        let folder = v.har.folder().to_path_buf();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(v.dir.path().join("ca.key"), "PRIVATE KEY").unwrap();
+        std::os::unix::fs::symlink(v.dir.path().join("ca.key"), folder.join("proxy-20260101-000000.har")).unwrap();
+        std::fs::write(folder.join("notes.txt"), "mine").unwrap();
+        std::fs::write(v.dir.path().join("config.json"), "{}").unwrap();
+        for path in [
+            "/files/proxy-20260101-000000.har",
+            "/files/notes.txt",
+            "/files/../config.json",
+            "/files/%2e%2e/config.json",
+            "/files/..%2fconfig.json",
+            "/files/",
+            "/api/entries?file=proxy-20260101-000000.har",
+        ] {
+            let (status, _, body) = get(v.http, "proxy.localhost", path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert!(!body.contains("PRIVATE KEY"), "{path}");
+        }
+        let f = files(&v).await;
+        assert_eq!(f["files"].as_array().unwrap().len(), 0, "a link is not listed: {f}");
+    }
+
+    // T6, I10: the security headers on every answer; no CORS header.
+    #[tokio::test]
+    async fn proxy_log_headers() {
+        let v = viewer(vec![]).await;
+        for (method, path) in [("GET", "/"), ("GET", "/viewer.js"), ("GET", "/api/files"), ("GET", "/nope"), ("POST", "/")] {
+            let (_, headers, _) = request(v.http, method, "proxy.localhost", path).await;
+            assert_eq!(headers["content-security-policy"], "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'", "{path}");
+            assert_eq!(headers["x-content-type-options"], "nosniff", "{path}");
+            assert_eq!(headers["cache-control"], "no-store", "{path}");
+            assert_eq!(headers["referrer-policy"], "no-referrer", "{path}");
+            assert!(!headers.keys().any(|k| k.as_str().starts_with("access-control-")), "{path}: {headers:?}");
+        }
+    }
+
+    // T6, I3: the current file read during writes is always complete JSON.
+    #[tokio::test]
+    async fn proxy_log_current_file_is_whole() {
+        let v = viewer(vec![]).await;
+        record(&v.har, 0);
+        written(&v.har, 1).await;
+        let name = v.har.current().unwrap();
+        let har = v.har.clone();
+        let writer = tokio::spawn(async move {
+            for i in 1..2000 {
+                record(&har, i);
+                if i % 50 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+        for _ in 0..300 {
+            let (status, _, body) = get(v.http, "proxy.localhost", &format!("/files/{name}")).await;
+            assert_eq!(status, StatusCode::OK);
+            let har: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("cut JSON ({e})"));
+            assert!(!har["log"]["entries"].as_array().unwrap().is_empty());
+        }
+        writer.await.unwrap();
+    }
+
+    // T6, T17: the live feed sends entries and `off`; the channel exists
+    // only while a page listens.
+    #[tokio::test]
+    async fn proxy_log_live() {
+        let v = viewer(vec![]).await;
+        assert!(!v.har.resources().live_channel);
+        let mut stream = TcpStream::connect(v.http).await.unwrap();
+        stream.write_all(b"GET /api/live HTTP/1.1\r\nHost: proxy.localhost\r\n\r\n").await.unwrap();
+        let mut seen = String::new();
+        let mut buf = [0u8; 4096];
+        while !seen.contains(": live") {
+            let n = stream.read(&mut buf).await.unwrap();
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(seen.contains("text/event-stream"), "{seen}");
+        assert!(v.har.resources().live_channel);
+        record(&v.har, 7);
+        while !seen.contains("event: entry") {
+            let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await.unwrap().unwrap();
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(seen.contains("event: file"), "a new file: {seen}");
+        assert!(seen.contains("api.example.com/7"), "{seen}");
+        v.har.set_enabled(false);
+        while !seen.contains("event: off") {
+            let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await.unwrap().unwrap();
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        drop(stream);
+        v.har.set_enabled(true);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        record(&v.har, 8);
+        written(&v.har, 2).await;
+        for _ in 0..100 {
+            if !v.har.resources().live_channel {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            record(&v.har, 9);
+        }
+        assert!(!v.har.resources().live_channel, "the channel goes with the last page");
+    }
+
+    // T6, I7: the viewer is never logged and never a HAR entry.
+    #[tokio::test]
+    async fn proxy_log_not_logged() {
+        let v = viewer(vec![]).await;
+        for path in ["/", "/api/files", "/viewer.js"] {
+            get(v.http, "proxy.localhost", path).await;
+        }
+        get(v.http, "router.localhost", "/proxy-log/").await;
+        assert!(v.log.is_empty(), "{:?}", v.log.recent(None, 10));
+        assert_eq!(v.har.written(), 0);
+    }
+
+    // T7, I11: a route `proxy` (saved before ADR 08) wins over the viewer;
+    // the second address still works.
+    #[tokio::test]
+    async fn a_saved_proxy_route_wins_over_the_viewer() {
+        let up = echo_upstream().await;
+        let v = viewer(vec![route("proxy", format!("http://127.0.0.1:{}", up.port()))]).await;
+        let (status, _, body) = get(v.http, "proxy.localhost", "/x").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&body)["path"], "/x", "the dev server answered");
+        let (status, _, page) = get(v.http, "router.localhost", "/proxy-log/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(page.contains("viewer.js"));
+    }
+
+    // T6, I22: a 5 MB file arrives in chunks of at most 64 KB.
+    #[tokio::test]
+    async fn proxy_log_streams() {
+        let v = viewer(vec![]).await;
+        let folder = v.har.folder().to_path_buf();
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut content = br#"{"log":{"version":"1.2","creator":{"name":"x","version":"1"},"pages":[],"entries":["#.to_vec();
+        let line = format!("{{\"pad\":\"{}\"}}", "x".repeat(1000));
+        for i in 0..5000 {
+            content.extend_from_slice(if i == 0 { b"\n" } else { b",\n" });
+            content.extend_from_slice(line.as_bytes());
+        }
+        content.extend_from_slice(localrouter_core::har::CLOSING);
+        std::fs::write(folder.join("proxy-20260101-000000.har"), &content).unwrap();
+        let uri: hyper::Uri = "/files/proxy-20260101-000000.har".parse().unwrap();
+        let ctx = ViewerContext { cli: "localrouter" };
+        let resp = viewer::serve(&v.har, ctx, &hyper::Method::GET, &uri, "127.0.0.1".parse().unwrap()).await;
+        let mut body = resp.into_body();
+        let (mut total, mut biggest, mut frames) = (0usize, 0usize, 0usize);
+        while let Some(frame) = body.frame().await {
+            let data = frame.unwrap().into_data().unwrap();
+            total += data.len();
+            biggest = biggest.max(data.len());
+            frames += 1;
+        }
+        assert_eq!(total, content.len());
+        assert!(biggest <= viewer::CHUNK, "a chunk of {biggest} bytes");
+        assert!(frames >= content.len() / viewer::CHUNK, "{frames} frames");
+    }
+
+    // T6, I22: /api/entries on a large file returns the newest entries first,
+    // and the cursor walks back to the start.
+    #[tokio::test]
+    async fn proxy_log_entries_from_the_end() {
+        let v = viewer(vec![]).await;
+        let folder = v.har.folder().to_path_buf();
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut content = br#"{"log":{"version":"1.2","creator":{"name":"x","version":"1"},"pages":[],"entries":["#.to_vec();
+        for i in 0..20000 {
+            content.extend_from_slice(if i == 0 { b"\n" } else { b",\n" });
+            content.extend_from_slice(format!("{{\"i\":{i},\"pad\":\"{}\"}}", "x".repeat(2500)).as_bytes());
+        }
+        content.extend_from_slice(localrouter_core::har::CLOSING);
+        assert!(content.len() > 50_000_000);
+        std::fs::write(folder.join("proxy-20260101-000000.har"), &content).unwrap();
+        let (_, _, body) = get(v.http, "proxy.localhost", "/api/entries?file=proxy-20260101-000000.har&limit=500").await;
+        let page = json(&body);
+        let entries = page["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 500);
+        assert_eq!((entries[0]["i"].as_u64(), entries[499]["i"].as_u64()), (Some(19999), Some(19500)));
+        let before = page["before"].as_u64().unwrap();
+        let (_, _, body) =
+            get(v.http, "proxy.localhost", &format!("/api/entries?file=proxy-20260101-000000.har&limit=500&before={before}")).await;
+        assert_eq!(json(&body)["entries"][0]["i"], 19499);
+    }
+
+    use serde_json::json;
 }

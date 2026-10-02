@@ -41,9 +41,9 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
     public var keywords: [String] {
         switch self {
         case .general: ["open at login", "start", "login items", "uninstall", "delete"]
-        case .routing: ["subdomain fallback", "branch", "allow lan access", "network", "ports"]
+        case .routing: ["subdomain fallback", "branch", "allow lan access", "network", "ports", "lan networks", "router", "forget"]
         case .certificates: ["https", "certificate authority", "ca", "trust", "untrust", "ca.pem"]
-        case .proxy: ["forward proxy", "address", "port", "chrome"]
+        case .proxy: ["forward proxy", "address", "port", "chrome", "proxy log", "har", "requests per file", "mb per file", "viewer"]
         case .inspection: ["inspect host", "https", "inspection ca", "trust", "untrust", "decrypt"]
         case .scripts: ["lua", "script rules", "intercept", "log", "secrets", "api keys", "cookies"]
         case .daemon: ["version", "http port", "https port", "config.json", "restart", "errors"]

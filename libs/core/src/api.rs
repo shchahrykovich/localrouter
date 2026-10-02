@@ -20,7 +20,7 @@ use crate::scripts::engine::{LastError, ScriptKind};
 use crate::scripts::rules::ScriptRule;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.4";
+pub const API_VERSION: &str = "1.5";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
@@ -178,6 +178,30 @@ pub struct StatusResult {
     /// The forward proxy (ADR 06). Absent from daemons before API 1.3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyStatus>,
+    /// The network of the default route, for LAN access per network (ADR 08).
+    /// `None` when it cannot be recognised, and from daemons before API 1.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkStatus>,
+    /// Plain sentences for things the user should know (ADR 08): a saved
+    /// route that hides a built-in name, LAN access that now works per network.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// The network the Mac is on, as LAN access sees it (ADR 08, change 4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NetworkStatus {
+    /// `mac:18:35:d1:15:d1:a8`.
+    pub id: String,
+    /// The name in `lan_networks`, or empty when the network is not there.
+    #[serde(default)]
+    pub name: String,
+    /// The router's IP address.
+    pub router: String,
+    /// `en0`.
+    pub interface: String,
+    /// `allow_lan` is on and this network is in `lan_networks`.
+    pub lan_allowed: bool,
 }
 
 /// The forward proxy port and the inspection CA (ADR 06).
@@ -311,6 +335,16 @@ pub struct SetConfigParams {
     /// Header names scripts see as `[redacted]`, besides the defaults (ADR 07).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_headers: Option<Vec<String>>,
+    /// The proxy log (ADR 08). Out-of-range limits are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_log: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_log_file_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_log_file_requests: Option<u64>,
+    /// Replaces the whole list of networks where LAN access applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_networks: Option<Vec<crate::config::LanNetwork>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -357,6 +391,36 @@ pub struct GetProxyResult {
     /// Every script rule with its state (ADR 07). Absent before API 1.4.
     #[serde(default)]
     pub script_rules: Vec<ScriptRuleView>,
+    /// The HAR log of proxy traffic (ADR 08). Absent before API 1.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<ProxyLogStatus>,
+}
+
+/// The proxy log: where the HAR files are and how the writer is doing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProxyLogStatus {
+    /// `proxy_log` from the config.
+    pub enabled: bool,
+    /// The folder of the HAR files.
+    pub folder: String,
+    /// The viewer, for the user: `http://proxy.localhost` on this instance.
+    pub url: String,
+    pub file_mb: u64,
+    pub file_requests: u64,
+    /// Files kept; older ones are deleted.
+    pub keep_files: usize,
+    /// The file the next entry goes to, if one is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    /// HAR files in the folder.
+    pub files: usize,
+    /// Entries written since the daemon started.
+    pub written: u64,
+    /// Records dropped because the writer was behind.
+    pub dropped: u64,
+    /// Why the writer stopped, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ---- script rules (ADR 07)

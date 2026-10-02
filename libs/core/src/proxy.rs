@@ -24,10 +24,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 use crate::api::StatusResult;
+use crate::har::{HarLog, HarRecord, viewer};
 use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
-use crate::routes::{HELP_HOST, Route, Scheme, host_key};
+use crate::routes::{HELP_HOST, PROXY_LOG_HOST, PROXY_LOG_PATH, Route, Scheme, host_key};
 use crate::scripts::{Ctx, Scripts};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -62,6 +63,9 @@ pub struct Proxy {
     pub status: Option<StatusFn>,
     /// Script rules (ADR 07). Shared with the forward proxy.
     pub scripts: Arc<Scripts>,
+    /// The proxy log (ADR 08): records `.localhost` requests that came
+    /// through the forward proxy, and serves the viewer. Shared with it.
+    pub har: Option<Arc<HarLog>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,10 +121,25 @@ impl Proxy {
         let host = request_host(&req).unwrap_or_default();
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
+        let key = host_key(&host);
+
+        // The proxy log viewer: before the route lookup, never logged, no
+        // scripts (ADR 08, I7).
+        if let Some(response) = self.viewer(&req, key.as_deref(), &host, peer).await {
+            return response;
+        }
+        // Through the forward proxy: what the client sent, before scripts.
+        // router.localhost never reaches the HAR (I7).
+        let har = match (&self.har, via) {
+            (Some(har), Some(mode)) if har.enabled() && key.as_deref() != Some(HELP_HOST) => {
+                Some((har, HarRecord::start(&req, format!("{}://{host}{path}", scheme.as_str()), mode)))
+            }
+            _ => None,
+        };
 
         let mut answered_by = None;
         let mut scripts: (Vec<String>, Option<String>) = (vec![], None);
-        let response = if host_key(&host).as_deref() == Some(HELP_HOST) {
+        let response = if key.as_deref() == Some(HELP_HOST) {
             // Scripts never run on the help page (I20).
             let status = match &self.status {
                 Some(status) => status().await,
@@ -161,6 +180,11 @@ impl Proxy {
             }
         };
         let millis = start.elapsed().as_millis() as u64;
+        if let Some((har, record)) = har {
+            let mut record = record.finish(&response, millis).with_scripts(&scripts);
+            record.route = answered_by.clone();
+            har.record(record);
+        }
         let mut entry = LogEntry::http(&method, &host, &path, response.status().as_u16(), millis)
             .with_route(answered_by)
             .with_scripts(scripts.0, scripts.1);
@@ -169,6 +193,41 @@ impl Proxy {
         }
         self.log.push(entry);
         response
+    }
+
+    /// The viewer's answer for `proxy.localhost` and
+    /// `router.localhost/proxy-log/`, or `None` for any other request. A
+    /// route `proxy` saved before ADR 08 wins over the viewer (I11).
+    async fn viewer<B>(&self, req: &Request<B>, key: Option<&str>, host: &str, peer: SocketAddr) -> Option<Response<Body>> {
+        let har = self.har.as_ref()?;
+        let path = req.uri().path();
+        let rest = match key? {
+            PROXY_LOG_HOST => {
+                if self.routes.lookup(host, path).is_some_and(|r| r.host == PROXY_LOG_HOST) {
+                    return None;
+                }
+                path
+            }
+            HELP_HOST => {
+                let rest = path.strip_prefix(PROXY_LOG_PATH)?;
+                if rest.is_empty() {
+                    // Relative URLs in the page need the slash.
+                    return Some(redirect(&format!("{PROXY_LOG_PATH}/")));
+                }
+                if !rest.starts_with('/') {
+                    return None;
+                }
+                rest
+            }
+            _ => return None,
+        };
+        let uri = match req.uri().query() {
+            Some(q) => format!("{rest}?{q}"),
+            None => rest.to_string(),
+        };
+        let uri = uri.parse::<Uri>().unwrap_or_else(|_| Uri::from_static("/"));
+        let cli = self.instance.cli();
+        Some(viewer::serve(har, viewer::ViewerContext { cli: &cli }, req.method(), &uri, peer.ip()).await)
     }
 
     /// A route's answer: its folder, or its dev server. The error text is
@@ -456,6 +515,15 @@ fn bad_gateway(host: &str, route: &Route, error: &str) -> Response<Body> {
             escape(error)
         ),
     )
+}
+
+fn redirect(location: &str) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::PERMANENT_REDIRECT)
+        .header(header::LOCATION, location)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed_unsync())
+        .expect("static response parts are valid")
 }
 
 fn redirect_to_https(host: &str, path: &str, https_port: Option<u16>) -> Response<Body> {

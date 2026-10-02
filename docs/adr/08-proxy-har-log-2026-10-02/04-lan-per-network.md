@@ -50,6 +50,12 @@ came in on:
    `en0`: `192.168.0.1`.
 4. The ARP table (`sysctl` `NET_RT_FLAGS`) gives its MAC address.
 
+**As built (D1 in [plan versus actual](10-plan-vs-actual.md)).** Steps 3 and
+4 read the macOS System Configuration store instead of the routing and ARP
+tables: `State:/Network/Service/*/IPv4` has `InterfaceName`,
+`ARPResolvedIPAddress` and `ARPResolvedHardwareAddress`. On macOS 26 the ARP
+table is empty for a program without Local Network access; the store is not.
+
 No step runs a program, and nothing is cached. The lookup runs only for a
 connection from another machine while `allow_lan` is on, which is rare. A
 connection from this Mac is accepted before any lookup, as today. This follows

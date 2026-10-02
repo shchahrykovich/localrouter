@@ -9,7 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-const WORDS: [&str; 5] = ["localrouter ", "localrouterd", "router.localhost", "LocalRouter.md", "LocalRouter.app"];
+// `proxy.localhost` (ADR 08, I13): the viewer's URL comes from the instance.
+const WORDS: [&str; 6] = ["localrouter ", "localrouterd", "router.localhost", "proxy.localhost", "LocalRouter.md", "LocalRouter.app"];
 
 /// Lines that may name the release on purpose, with the reason.
 const ALLOWED: [(&str, &str); 3] = [

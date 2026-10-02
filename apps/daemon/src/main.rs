@@ -7,6 +7,7 @@ mod daemon;
 mod listen;
 mod lock;
 mod logfile;
+mod network;
 mod pidwatch;
 mod socket;
 mod store;
@@ -112,6 +113,7 @@ async fn run(paths: Paths, instance: Instance) -> anyhow::Result<()> {
     daemon.start_http_listeners()?;
     daemon.start_saved_tcp_routes();
     daemon.start_saved_proxy();
+    daemon.refresh_ca_bundle_if_old();
     let listener = socket::bind(&daemon)?;
     tokio::spawn(socket::serve(daemon.clone(), listener));
 

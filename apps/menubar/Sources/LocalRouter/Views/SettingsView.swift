@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var fallback = true
     @State private var allowLan = false
     @State private var proxyOn = false
+    @State private var logMb = 20
+    @State private var logRequests = 5000
+    @State private var networkName = ""
     @State private var newInspectHost = ""
     @State private var loaded = false
     @State private var confirmUninstall = false
@@ -34,7 +37,10 @@ struct SettingsView: View {
                 fallback = c.fallback
                 allowLan = c.allowLan
                 proxyOn = c.proxyEnabled ?? false
+                logMb = Int(c.proxyLogFileMb ?? 20)
+                logRequests = Int(c.proxyLogFileRequests ?? 5000)
             }
+            await model.loadLanNetworks()
             loaded = true
         }
         .onChange(of: query) { _, q in
@@ -169,8 +175,45 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Allow LAN access", isOn: $allowLan)
                 .onChange(of: allowLan) { _, on in if loaded { Task { await model.setAllowLan(on) } } }
-            Text("Off: only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes are always this Mac only.")
+            Text("On: other machines reach ports \(ports.http) and \(ports.https) only on the networks below. On other networks only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes, the proxy and the proxy log are always this Mac only.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+        lanNetworksSection
+    }
+
+    /// LAN access per network (ADR 08): this network and the allowed list.
+    /// Read when the page opens; nothing watches the network.
+    @ViewBuilder private var lanNetworksSection: some View {
+        Section("Networks") {
+            if let here = model.status?.network {
+                let known = model.lanNetworks.first { $0.id == here.id }
+                let name = (known?.name).flatMap { $0.isEmpty ? nil : $0 }
+                Text("This network: \(name.map { "\($0) " } ?? "")(router \(here.router) on \(here.interface)). \(here.lanAllowed ? "Allowed." : known != nil ? "In the list; turn on Allow LAN access." : "Not allowed.")")
+                if known != nil {
+                    Button("Stop Allowing") { Task { await model.forgetNetwork(here.id) } }
+                } else {
+                    HStack {
+                        TextField("Name", text: $networkName, prompt: Text("Home"))
+                        Button("Allow on This Network") {
+                            let name = networkName.trimmingCharacters(in: .whitespaces)
+                            networkName = ""
+                            Task { await model.allowThisNetwork(name: name) }
+                        }
+                    }
+                }
+            } else if model.status != nil {
+                Text("This network cannot be recognised (no router, or a VPN). LAN access does not work on it.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(model.lanNetworks) { network in LanNetworkRow(network: network) }
+            if model.lanNetworks.isEmpty {
+                Text("No network is allowed yet.").font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("A network is known by its router's MAC address.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Check Again") { Task { await model.loadLanNetworks() } }
+            }
         }
     }
 
@@ -212,6 +255,39 @@ struct SettingsView: View {
                     if model.chromeInstalled {
                         Button("Open Chrome via Proxy") { Task { await model.openChromeViaProxy() } }
                     }
+                }
+            }
+            proxyLogSection
+        }
+    }
+
+    /// The proxy log (ADR 08). Hidden when the daemon is older than API 1.5.
+    @ViewBuilder private var proxyLogSection: some View {
+        if let log = model.proxy?.log {
+            Section("Proxy log") {
+                Toggle("Write every proxied request to a HAR file", isOn: Binding(
+                    get: { log.enabled },
+                    set: { on in Task { await model.setProxyLog(on) } }))
+                LabeledContent("MB per file") {
+                    TextField("MB per file", value: $logMb, format: .number)
+                        .labelsHidden().frame(width: 90).multilineTextAlignment(.trailing)
+                        .onSubmit { Task { await model.setProxyLogLimits(mb: UInt64(max(logMb, 0)), requests: nil) } }
+                }
+                LabeledContent("Requests per file") {
+                    TextField("Requests per file", value: $logRequests, format: .number)
+                        .labelsHidden().frame(width: 90).multilineTextAlignment(.trailing)
+                        .onSubmit { Task { await model.setProxyLogLimits(mb: nil, requests: UInt64(max(logRequests, 0))) } }
+                }
+                Text(ProxyLog.explanation(keepFiles: log.keepFiles) + " A new file starts at whichever limit comes first.")
+                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Folder", value: log.folder)
+                if let line = ProxyLog.stateLine(log) {
+                    Text(line).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(ProxyLog.problems(log), id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
+                HStack {
+                    Button("Open Proxy Log") { Task { await model.openProxyLog() } }
+                    Button("Show Folder") { model.showProxyLogFolder() }
                 }
             }
         }
@@ -322,6 +398,7 @@ struct SettingsView: View {
                 Text(e).foregroundStyle(.red).font(.caption)
             }
             if let p = model.status?.routesFileProblem { Text(p).foregroundStyle(.orange).font(.caption) }
+            ForEach(model.status?.notes ?? [], id: \.self) { note in Text(note).foregroundStyle(.orange).font(.caption) }
             if let note = model.serviceNote {
                 Text(note).font(.caption)
                 Button("Open Login Items") { model.openLoginItems() }
@@ -421,3 +498,24 @@ private struct ScriptRuleRow: View {
         return parts.joined(separator: ", ") + " (\(life))"
     }
 }
+
+/// One allowed network: its name (edited in place), router and id, Forget.
+private struct LanNetworkRow: View {
+    @Environment(AppModel.self) private var model
+    let network: LanNetwork
+    @State private var name = ""
+
+    var body: some View {
+        HStack {
+            TextField("Name", text: $name, prompt: Text("No name"))
+                .frame(maxWidth: 160)
+                .onSubmit { Task { await model.renameNetwork(network.id, to: name.trimmingCharacters(in: .whitespaces)) } }
+            Text("router \(network.router)").font(.caption).foregroundStyle(.secondary)
+            Text(network.id).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+            Spacer()
+            Button("Forget") { Task { await model.forgetNetwork(network.id) } }
+        }
+        .onAppear { name = network.name }
+    }
+}
+

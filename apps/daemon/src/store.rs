@@ -86,6 +86,15 @@ pub fn read_config(path: &Path, instance: &Instance) -> Result<Option<Config>, S
     }
 }
 
+/// Whether `config.json` on disk names `field`, for a one-time update that
+/// must tell "missing" from "empty" (ADR 08, I18).
+pub fn config_has_field(path: &Path, field: &str) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|v| v.get(field).is_some())
+}
+
 fn load<T: Default>(path: &Path, parse: impl Fn(&str) -> Result<T, String>) -> Loaded<T> {
     load_or(path, T::default, parse)
 }

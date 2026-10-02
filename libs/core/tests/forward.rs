@@ -3,6 +3,8 @@
 //! T2 (absolute form, 400, 508, `.localhost`, proxy headers), T3 (tunnel),
 //! T5 (inspection: leaf only for the inspect set, never on 443), T6 (the
 //! upstream certificate is checked) and T13 (no query in the log).
+//! ADR 08: T4 (the HAR log records each mode; off records nothing) and T5
+//! (a stalled writer never delays traffic).
 //!
 //! Replaced parts: the internet is local echo and TLS servers; DNS is a
 //! resolver that records every name and refuses `.localhost`; the macOS trust
@@ -20,12 +22,15 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use localrouter_core::forward::ForwardProxy;
+use localrouter_core::har::{HarLog, HarSettings};
 use localrouter_core::inspect::InspectSet;
 use localrouter_core::instance::Instance;
 use localrouter_core::logs::{LogEntry, ProxyMode, RequestLog, Via};
 use localrouter_core::paths::Paths;
 use localrouter_core::proxy::{Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Route, RouteTable};
+use localrouter_core::scripts::Scripts;
+use localrouter_core::secrets::SecretHeaders;
 use localrouter_core::tls::{self, CaKind, CaLoad, CertStore, LocalCa};
 use localrouter_core::upstream::{BoxFuture, Resolve, Upstream};
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -198,6 +203,9 @@ struct Harness {
     echo: SocketAddr,
     /// Requests the self-signed server answered.
     self_signed_served: Arc<AtomicUsize>,
+    /// The proxy log (ADR 08), on, in the temp folder.
+    har: Arc<HarLog>,
+    scripts: Arc<Scripts>,
     _dir: tempfile::TempDir,
 }
 
@@ -219,16 +227,30 @@ async fn harness() -> Harness {
     table.insert(route("shop", format!("http://127.0.0.1:{}", echo.port())));
     let routes = Arc::new(Table(RwLock::new(table)));
     let log = Arc::new(RequestLog::new(100));
+    let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
+    let scripts = Scripts::new();
+    let secrets: Arc<SecretHeaders> = scripts.secrets.clone();
+    let har = HarLog::new(
+        HarSettings {
+            folder: dir.path().join("logs/proxy"),
+            creator: "LocalRouter".into(),
+            version: "test".into(),
+            enabled: true,
+            file_mb: 20,
+            file_requests: 5000,
+        },
+        secrets,
+    );
     let router = Arc::new(Proxy {
         instance: Instance::release(),
         routes: routes.clone(),
         log: log.clone(),
         tls_client: tls::insecure_loopback_client_config(),
         status: None,
-        scripts: localrouter_core::scripts::Scripts::new(),
+        scripts: scripts.clone(),
+        har: Some(har.clone()),
     });
 
-    let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
     let paths = Paths::under(dir.path().to_path_buf());
     let local = ready(LocalCa::load_or_create(&paths, &Instance::release()));
     let r = routes.clone();
@@ -264,7 +286,7 @@ async fn harness() -> Harness {
             tokio::spawn(forward.clone().serve(stream, peer, CancellationToken::new()));
         }
     });
-    Harness { proxy, log, resolver, inspection_ca, internet_ca, local_store, echo, self_signed_served, _dir: dir }
+    Harness { proxy, log, resolver, inspection_ca, internet_ca, local_store, echo, self_signed_served, har, scripts, _dir: dir }
 }
 
 /// Send one request to the proxy as written: `uri` may be absolute.
@@ -518,3 +540,149 @@ async fn proxy_log_entries_hold_no_query() {
     let text = serde_json::to_string(&entries).unwrap();
     assert!(!text.contains("secret") && !text.contains('?'), "{text}");
 }
+
+// ---- ADR 08: the HAR log
+
+/// The entries of the current HAR file once it has `n`, as written.
+async fn har_entries(h: &Harness, n: usize) -> Vec<serde_json::Value> {
+    for _ in 0..500 {
+        if h.har.written() >= n as u64
+            && let Some(name) = h.har.current()
+        {
+            let text = std::fs::read_to_string(h.har.folder().join(name)).unwrap();
+            let har: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("not HAR ({e}): {text}"));
+            return har["log"]["entries"].as_array().unwrap().clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the HAR file did not get {n} entries; written {}", h.har.written());
+}
+
+fn header<'a>(list: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+    list.as_array()?.iter().find(|h| h["name"] == name).and_then(|h| h["value"].as_str())
+}
+
+// T4: one absolute-form GET, one inspected request, one .localhost GET and
+// one tunnel: four entries, each with its mode, the query kept (U2).
+#[tokio::test]
+async fn har_records_each_mode() {
+    let h = harness().await;
+    let url = format!("http://127.0.0.1:{}/a?x=1", h.echo.port());
+    let (status, _) = send(h.proxy, &url, &[("authorization", "Bearer t")]).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = har_entries(&h, 1).await;
+    assert_eq!(entries[0]["request"]["url"], url);
+    assert_eq!(entries[0]["_mode"], "http");
+    assert_eq!(header(&entries[0]["request"]["headers"], "authorization"), Some("[redacted]"), "I4");
+
+    let stream = connect(h.proxy, "test.example:443").await.unwrap();
+    let tls = tls_over(stream, "test.example", &h.inspection_ca).await.unwrap();
+    let (status, _) = get_over(tls, "test.example", "/in?token=x").await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = har_entries(&h, 2).await;
+    assert_eq!(entries[1]["request"]["url"], "https://test.example/in?token=x");
+    assert_eq!(entries[1]["_mode"], "inspect");
+
+    let (status, _) = send(h.proxy, "http://shop.localhost/x?y=2", &[("host", "shop.localhost")]).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = har_entries(&h, 3).await;
+    assert_eq!(entries[2]["request"]["url"], "http://shop.localhost/x?y=2");
+    assert_eq!(entries[2]["_mode"], "http");
+    assert_eq!(entries[2]["_route"], "shop");
+
+    let echo = tcp_echo().await;
+    let mut stream = connect(h.proxy, &format!("127.0.0.1:{}", echo.port())).await.unwrap();
+    stream.write_all(b"ping").await.unwrap();
+    let mut back = [0u8; 4];
+    stream.read_exact(&mut back).await.unwrap();
+    drop(stream);
+    let entries = har_entries(&h, 4).await;
+    assert_eq!(entries[3]["request"]["method"], "CONNECT");
+    assert_eq!(entries[3]["request"]["url"], format!("https://127.0.0.1:{}", echo.port()));
+    assert_eq!(entries[3]["_mode"], "tunnel");
+    assert_eq!(entries[3]["_bytesIn"], 4);
+}
+
+// T4, I1: with the log off nothing is recorded and no writer starts.
+#[tokio::test]
+async fn har_off_records_nothing() {
+    let h = harness().await;
+    h.har.set_enabled(false);
+    for i in 0..10 {
+        send(h.proxy, &format!("http://127.0.0.1:{}/{i}", h.echo.port()), &[]).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(h.har.written(), 0);
+    let r = h.har.resources();
+    assert!(!r.writer_thread && !r.queue && !r.file_open, "{r:?}");
+    assert!(!h.har.folder().exists(), "no file, no folder");
+}
+
+// T4: the request headers are the client's, before scripts; the response
+// headers are what the client got, after scripts.
+#[tokio::test]
+async fn har_records_client_headers_before_scripts() {
+    let h = harness().await;
+    let script = h._dir.path().join("add.lua");
+    std::fs::write(
+        &script,
+        r#"return { kind = "intercept",
+             on_request = function(req) req.headers["x-from-script"] = "1" end,
+             on_response = function(req, res) res.headers["x-res-from-script"] = "1" end }"#,
+    )
+    .unwrap();
+    let rule: localrouter_core::scripts::rules::ScriptRule =
+        serde_json::from_value(serde_json::json!({ "id": "add", "host": "127.0.0.1", "script": script })).unwrap();
+    h.scripts.put(rule, Ok(localrouter_core::scripts::engine::load_file(&script).unwrap()));
+    let (status, _) = send(h.proxy, &format!("http://127.0.0.1:{}/h", h.echo.port()), &[("x-client", "c")]).await;
+    assert_eq!(status, StatusCode::OK);
+    let e = &har_entries(&h, 1).await[0];
+    assert_eq!(header(&e["request"]["headers"], "x-client"), Some("c"));
+    assert_eq!(header(&e["request"]["headers"], "x-from-script"), None, "before scripts");
+    assert_eq!(header(&e["response"]["headers"], "x-res-from-script"), Some("1"), "after scripts");
+    assert_eq!(e["_scripts"], serde_json::json!(["add"]));
+}
+
+// T5, I2: a stalled writer never delays traffic: every request completes,
+// and the records that did not fit are counted.
+#[tokio::test]
+async fn har_backpressure() {
+    let h = harness().await;
+    h.har.pause_for_tests(true);
+    let url = format!("http://127.0.0.1:{}/b", h.echo.port());
+    let mut tasks = vec![];
+    for _ in 0..50 {
+        let (proxy, url) = (h.proxy, url.clone());
+        tasks.push(tokio::spawn(async move {
+            for _ in 0..100 {
+                let (status, _) = send(proxy, &url, &[]).await;
+                assert_eq!(status, StatusCode::OK);
+            }
+        }));
+    }
+    let start = std::time::Instant::now();
+    for t in tasks {
+        t.await.unwrap();
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(60), "traffic waited for the writer");
+    assert!(h.har.dropped() > 0, "5000 records into a queue of 4096 with the writer paused");
+    h.har.pause_for_tests(false);
+}
+
+// T6, I7: the viewer and the help page reached through the proxy are not
+// HAR entries; the viewer is not in the request log either.
+#[tokio::test]
+async fn proxy_log_through_the_proxy_is_not_logged() {
+    let h = harness().await;
+    let (status, body) = send(h.proxy, "http://proxy.localhost/api/files", &[("host", "proxy.localhost")]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json(&body)["log"], true);
+    send(h.proxy, "http://router.localhost/", &[("host", "router.localhost")]).await;
+    send(h.proxy, "http://shop.localhost/", &[("host", "shop.localhost")]).await;
+    let entries = har_entries(&h, 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(h.har.written(), 1, "only shop.localhost: {entries:?}");
+    let logged: Vec<String> = h.log.recent(None, 10).iter().map(|e| e.host().to_string()).collect();
+    assert_eq!(logged, ["router.localhost", "shop.localhost"], "the viewer is not in the request log");
+}
+
