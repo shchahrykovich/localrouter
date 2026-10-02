@@ -299,7 +299,7 @@ is on; `{{CLI}} proxy log` shows its state, `{{CLI}} proxy log off` stops it.
   written too, the first 1 MB of each, decoded from gzip, br or zstd
   (`content.text`; base64 when they are not text). A WebSocket is written
   when it closes, with its messages in `_webSocketMessages`.
-- **Do not read a whole file**: one can be 20 MB. Use `jq` and ask for the
+- **Do not read a whole file**: one can be 100 MB. Use `jq` and ask for the
   rows you need.
 - The current file can be in the middle of a write. If `jq` fails on it, run
   it again.

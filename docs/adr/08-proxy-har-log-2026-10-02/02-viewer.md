@@ -58,7 +58,7 @@ files, no build step, no npm and no CDN.
 {
   "proxy": true, "log": true,
   "folder": "/Users/me/Library/Logs/LocalRouter/proxy",
-  "file_mb": 20, "file_requests": 5000, "keep_files": 5,
+  "file_mb": 100, "file_requests": 5000, "keep_files": 5,
   "dropped": 0, "error": null,
   "files": [
     { "name": "proxy-20261002-093512.har", "size": 1834221, "entries": 912, "current": true },
@@ -118,17 +118,23 @@ them does not change. Script rules never run on `proxy.localhost`. (Gap G7.)
    limits, `dropped`, and the writer error in red. When the proxy or the log is
    off, the page says so and shows how to turn it on: Settings → Proxy, or the
    CLI command. (Gap G1.)
-2. **File list.** Newest first, with size and entries. The current file is
-   selected.
+2. **One list for all files.** The table shows the requests of every kept
+   file as one list; the user does not choose a file. The menu lists the
+   files, newest first, with size and entries, only to download them.
+   (Changed 2026-10-02: the first version showed one file at a time, and with
+   bodies a page with video filled a 20 MB file in seconds.)
 3. **Table.** Time, method, status, host, path, mode, milliseconds, size;
    newest at the top. A filter box matches URL, method, status and mode. An
    "Errors only" switch shows status 400 and above, and 0. The page loads the
    500 newest entries with `/api/entries`; "Show more" loads the 500 before
-   them. It keeps at most 2,000 rows; older rows leave the page as new ones
+   them, and at the start of a file goes on with the end of the next older
+   file. It keeps at most 2,000 rows; older rows leave the page as new ones
    arrive. The filter works on the loaded rows.
 4. **Details.** A click on a row shows the request and response headers, the
    timings and the `_` fields.
-5. **Live.** New entries of the current file appear at the top.
+5. **Live.** New entries appear at the top; a new file does not clear the
+   list. A row is keyed by file and offset (`_id` starts again at 1 when the
+   daemon restarts); a row of a file the writer deleted leaves the page.
 6. **Download HAR.** A button per file, with one line under it: "In Chrome:
    DevTools → Network → Import HAR file, or drag the file onto the Network
    panel."

@@ -39,7 +39,7 @@ pub const FILE_MB_MIN: u64 = 1;
 pub const FILE_MB_MAX: u64 = 200;
 pub const FILE_REQUESTS_MIN: u64 = 100;
 pub const FILE_REQUESTS_MAX: u64 = 1_000_000;
-pub const DEFAULT_FILE_MB: u64 = 20;
+pub const DEFAULT_FILE_MB: u64 = 100;
 pub const DEFAULT_FILE_REQUESTS: u64 = 5000;
 
 /// What the live feed of the viewer sends (`/api/live`).

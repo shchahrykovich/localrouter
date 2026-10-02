@@ -9,7 +9,7 @@ struct SettingsView: View {
     @State private var fallback = true
     @State private var allowLan = false
     @State private var proxyOn = false
-    @State private var logMb = 20
+    @State private var logMb = 100
     @State private var logRequests = 5000
     @State private var networkName = ""
     @State private var newInspectHost = ""
@@ -36,7 +36,7 @@ struct SettingsView: View {
                 fallback = c.fallback
                 allowLan = c.allowLan
                 proxyOn = c.proxyEnabled ?? false
-                logMb = Int(c.proxyLogFileMb ?? 20)
+                logMb = Int(c.proxyLogFileMb ?? 100)
                 logRequests = Int(c.proxyLogFileRequests ?? 5000)
             }
             await model.loadLanNetworks()

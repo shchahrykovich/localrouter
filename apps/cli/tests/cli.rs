@@ -429,7 +429,7 @@ fn proxy_log_commands() {
     assert!(out.contains(&format!("Log        on, writes every proxied request to {}", folder.display())), "{out}");
     assert!(out.contains("The proxy is off, so nothing is written"), "{out}");
     assert!(out.contains("Viewer     http://proxy.localhost:"), "{out}");
-    assert!(out.contains("20 MB or 5000 requests per file"), "{out}");
+    assert!(out.contains("100 MB or 5000 requests per file"), "{out}");
 
     let (ok, out, _) = d.cli(&["proxy", "log", "off"]);
     assert!(ok && out.contains("Log        off"), "{out}");

@@ -163,10 +163,14 @@ const S = {
 };
 
 let info = null;          // the last /api/files answer
-let file = null;          // the file shown
-let rows = [];            // rows, newest first
+let rows = [];            // rows of every file, newest first
 const byKey = new Map();  // row key → row
-let before = null;        // cursor for older entries
+// The page shows all files as one list. Older entries are read page by page,
+// file by file from the newest: `reading` is where the next page comes from,
+// {file, before} (`before` null: from the end of that file), or null once the
+// oldest file is read.
+let reading = null;
+let started = false;      // the first page was asked for
 let loadingMore = false;
 const full = new Map();   // file@at → whole entry
 const fullWait = new Map();
@@ -184,7 +188,9 @@ function rowOf(e, f) {
   if (type === "ws") u.scheme = u.scheme === "http://" ? "ws://" : "wss://";
   const start = Date.parse(e.startedDateTime);
   const r = {
-    key: e._id !== undefined ? "i" + e._id : "a" + (e._at !== undefined ? e._at : Math.random()),
+    // An entry is known by its place in its file: `_id` starts again at 1
+    // when the daemon restarts, so it is unique only for an open request.
+    key: !e._open && e._at !== undefined && f ? f + "@" + e._at : "o" + (e._id !== undefined ? e._id : Math.random()),
     id: e._id, at: e._at, file: f, e,
     start: isNaN(start) ? 0 : start,
     method: e.request.method, status,
@@ -228,41 +234,73 @@ async function loadFiles() {
   const r = await fetch("api/files", { cache: "no-store" });
   if (!r.ok) throw new Error("api/files: " + r.status);
   info = await r.json();
-  if (!file || !info.files.some((f) => f.name === file)) {
-    const current = info.files.find((f) => f.current) || info.files[0];
-    if (current) pick(current.name);
+  const names = new Set(info.files.map((f) => f.name));
+  // The log keeps only the newest files: rows of a deleted file go too.
+  if (rows.some((x) => x.file && !names.has(x.file))) {
+    rows = rows.filter((x) => !x.file || names.has(x.file));
+    byKey.clear();
+    for (const x of rows) byKey.set(x.key, x);
+    if (S.sel && !byKey.has(S.sel)) S.sel = null;
+  }
+  // Older files are deleted first, so the rest of the walk went with it.
+  if (reading && !names.has(reading.file)) reading = null;
+  if (!started && info.files.length) {
+    started = true;
+    reading = { file: info.files[0].name, before: null };
+    loadEntries().catch(failure);
   }
   render();
 }
 
-function pick(name) {
-  if (file === name) return;
-  // Requests still open belong to the live feed, not to a file: keep them
-  // when the page follows the feed to a new file.
-  const keep = following() ? rows.filter((r) => r.open) : [];
-  file = name;
-  rows = keep;
-  byKey.clear();
-  for (const r of keep) byKey.set(r.key, r);
-  before = null;
-  S.sel = null;
-  S.range = null;
-  loadEntries(false).catch(failure);
-  render();
+/** Where the walk goes after `name`: the end of the next older file. */
+function olderThan(name) {
+  const i = info ? info.files.findIndex((f) => f.name === name) : -1;
+  const next = i >= 0 ? info.files[i + 1] : null;
+  return next ? { file: next.name, before: null } : null;
 }
 
-async function loadEntries(more) {
-  const name = file;
-  let url = "api/entries?file=" + encodeURIComponent(name) + "&limit=" + PAGE;
-  if (more && before !== null) url += "&before=" + before;
+/** Read everything again, as after a lag of the live feed. Requests still
+ *  open belong to the live feed, not to a file: they stay. */
+function restart() {
+  rows = rows.filter((x) => x.open);
+  byKey.clear();
+  for (const x of rows) byKey.set(x.key, x);
+  if (S.sel && !byKey.has(S.sel)) S.sel = null;
+  reading = null;
+  started = false;
+  loadFiles().catch(failure);
+}
+
+/** One page of older entries, from where `reading` points. A file that ends
+ *  before the page is full is followed by the next older one, so small files
+ *  read as one list. */
+async function loadEntries() {
+  if (!reading || loadingMore) return;
   loadingMore = true;
   try {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error("api/entries: " + r.status);
-    const page = await r.json();
-    if (name !== file) return;
-    for (const e of page.entries) upsert(rowOf(e, name));
-    before = page.before;
+    let got = 0;
+    while (reading && got < PAGE) {
+      const from = reading;
+      let url = "api/entries?file=" + encodeURIComponent(from.file) + "&limit=" + (PAGE - got);
+      if (from.before !== null) url += "&before=" + from.before;
+      const r = await fetch(url, { cache: "no-store" });
+      // Deleted since the last /api/files: so are the older ones.
+      if (r.status === 404) {
+        if (reading === from) reading = null;
+        break;
+      }
+      if (!r.ok) throw new Error("api/entries: " + r.status);
+      const page = await r.json();
+      if (reading !== from) break;
+      for (const e of page.entries) upsert(rowOf(e, from.file));
+      got += page.entries.length;
+      if (page.before !== null) {
+        // The server stopped inside the file: at the limit, or at its byte cap.
+        reading = { file: from.file, before: page.before };
+        break;
+      }
+      reading = olderThan(from.file);
+    }
     sortRows();
   } finally {
     loadingMore = false;
@@ -296,15 +334,6 @@ function cachedEntry(r) {
 
 // ---- live feed
 
-/** The page shows the file new entries go to: the current one, or the
- *  newest while none is open (after a daemon restart the next entry starts
- *  a new file). */
-function following() {
-  if (!info || !file) return true;
-  const target = info.files.find((f) => f.current) || info.files[0];
-  return !target || target.name === file;
-}
-
 function startLive() {
   const live = new EventSource("api/live");
   const on = (name, fn) =>
@@ -325,43 +354,35 @@ function startLive() {
   on("entry", liveEntry);
   on("open", liveOpen);
   on("message", liveMessage);
-  on("file", (name) => {
-    if (following()) {
-      loadFiles().then(() => pick(name)).catch(failure);
-    } else {
-      loadFiles().catch(failure);
-    }
-  });
+  on("file", () => loadFiles().catch(failure));
   on("off", () => loadFiles().catch(failure));
-  on("lagged", () => {
-    const name = file;
-    file = null;
-    loadFiles().then(() => pick(name)).catch(failure);
-  });
+  on("lagged", restart);
 }
 
 function liveEntry(e) {
   if (!info) return;
-  const current = info.files.find((f) => f.name === e._file);
-  if (current) current.entries = (current.entries || 0) + 1;
-  if (!file) {
-    loadFiles().catch(failure);
-    return;
+  const f = info.files.find((x) => x.name === e._file);
+  if (f) f.entries = (f.entries || 0) + 1;
+  else loadFiles().catch(failure);
+  const r = rowOf(e, e._file);
+  // The open row of this request becomes the row of its entry.
+  const open = e._id !== undefined ? byKey.get("o" + e._id) : null;
+  if (open) {
+    rows.splice(rows.indexOf(open), 1);
+    byKey.delete(open.key);
+    fresh.delete(open.key);
+    if (S.sel === open.key) S.sel = r.key;
+    if (S.ctx && S.ctx.key === open.key) S.ctx.key = r.key;
   }
-  if (e._file !== file) {
-    if (following()) loadFiles().then(() => { pick(e._file); liveEntry(e); }).catch(failure);
-    return;
-  }
-  const r = upsert(rowOf(e, file));
-  if (r.id !== undefined) liveMsgs.delete(r.id);
-  fresh.add(r.key);
+  const row = upsert(r);
+  if (row.id !== undefined) liveMsgs.delete(row.id);
+  fresh.add(row.key);
   sortRows();
   render();
 }
 
 function liveOpen(e) {
-  if (!following()) return;
-  const r = upsert(rowOf(e, file));
+  const r = upsert(rowOf(e, null));
   fresh.add(r.key);
   sortRows();
   render();
@@ -374,7 +395,7 @@ function liveMessage(m) {
     liveMsgs.set(m.id, list);
   }
   list.push(m.message);
-  const r = byKey.get("i" + m.id);
+  const r = byKey.get("o" + m.id);
   if (r) {
     r.messages = list.length;
     render();
@@ -503,7 +524,7 @@ const COLS = [
   ["size", "Size", "64px"],
 ];
 // Columns that step aside while the details are open, to leave the request room.
-const AUTO_HIDE = new Set(["time", "type", "host", "mode", "bar"]);
+const AUTO_HIDE = new Set(["type", "host", "mode", "bar"]);
 // Columns sorted largest first on the first click.
 const NUMERIC = new Set(["time", "ms", "size"]);
 
@@ -574,11 +595,12 @@ function drawToolbar(vis) {
   $("menu-btn").classList.toggle("active", S.pop === "menu");
   $("group-label").textContent = (GROUPS.find((g) => g[0] === S.group) || GROUPS[0])[1];
   const tree = S.view === "tree";
-  $("view-tree").classList.toggle("on", tree);
-  $("view-list").classList.toggle("on", !tree);
+  // One button for each pair: the icon shows the state, the title the click.
+  setToggle("view-btn", "icon-tree", "icon-list", tree, tree ? "Tree view. Click for the list view" : "List view. Click for the tree view");
+  const allOpen = treeAllOpen(vis);
+  setToggle("tree-btn", "icon-collapse", "icon-expand", allOpen, allOpen ? "Collapse all" : "Expand all");
   $("group-anchor").hidden = tree;
-  $("tree-expand").hidden = !tree;
-  $("tree-collapse").hidden = !tree;
+  $("tree-btn").hidden = !tree;
 
   $("live-dot").className = "dot" + (S.live ? " live" : "");
   $("icon-pause").toggleAttribute("hidden", !S.live);
@@ -642,11 +664,13 @@ function niceStep(len, px) {
 }
 
 function relLabel(ms) {
+  // At most 3 digits after the point: 70 s is "1.167 min", not "1.1666666 min".
+  const r = (x) => String(+x.toFixed(3));
   if (ms === 0) return "0";
-  if (ms < 1000) return ms + " ms";
-  if (ms < 60000) return ms / 1000 + " s";
-  if (ms < 3600000) return ms / 60000 + " min";
-  return ms / 3600000 + " h";
+  if (ms < 1000) return r(ms) + " ms";
+  if (ms < 60000) return r(ms / 1000) + " s";
+  if (ms < 3600000) return r(ms / 60000) + " min";
+  return r(ms / 3600000) + " h";
 }
 
 function drawTimeline(span, vis) {
@@ -801,6 +825,22 @@ function nodeOpen(key, kind) {
   return key in S.tx ? S.tx[key] : kind !== "host";
 }
 
+/** Every host and folder of the tree is open. */
+function treeAllOpen(vis) {
+  for (const r of vis) {
+    const keys = nodeKeys(r);
+    for (let i = 0; i < keys.length; i++) if (!nodeOpen(keys[i], i === 0 ? "host" : "folder")) return false;
+  }
+  return true;
+}
+
+function setToggle(id, onIcon, offIcon, on, title) {
+  $(onIcon).style.display = on ? "" : "none";
+  $(offIcon).style.display = on ? "none" : "";
+  $(id).title = title;
+  $(id).setAttribute("aria-label", title);
+}
+
 function setAllNodes(open) {
   const tx = {};
   for (const r of lastVis) for (const k of nodeKeys(r)) tx[k] = open;
@@ -924,11 +964,11 @@ function drawTable(span, vis, sel) {
   if (!rows.length) {
     if (!info) empty.append("Loading…");
     else if (!info.files.length) empty.append("No requests yet. The first request through the proxy starts a file.");
-    else empty.append("No requests in this file yet.");
+    else empty.append("No requests yet.");
   } else {
     empty.append("No requests match this filter.");
   }
-  $("more-wrap").hidden = before === null || rows.length >= MAX_ROWS || !rows.length;
+  $("more-wrap").hidden = reading === null || rows.length >= MAX_ROWS || !rows.length;
   $("more").disabled = loadingMore;
 }
 
@@ -1026,7 +1066,7 @@ function drawDetail(r) {
   const tabs = tabsFor(r, e);
   const tab = tabs.some((t) => t[0] === S.tab) ? S.tab : tabs[0][0];
   const needWhole = tab !== "headers" && tab !== "timing" && r.at !== undefined && !cachedEntry(r);
-  const live = r.id !== undefined ? liveMsgs.get(r.id) : null;
+  const live = r.open && r.id !== undefined ? liveMsgs.get(r.id) : null;
   const key = [r.key, r.status, r.open, tab, S.ff, S.frame, live ? live.length : 0, !!cachedEntry(r), S.max].join("|");
 
   // The head changes with the row (status, open), the body only with this key.
@@ -1394,20 +1434,16 @@ function drawMenu(m) {
   m.append(h("button", { class: "item", type: "button", onClick: () => { S.tl = !S.tl; save(); render(); } }, h("span", { class: "box" + (S.tl ? " on" : "") }), "Timeline"));
   const wf = !S.hide.bar;
   m.append(h("button", { class: "item", type: "button", onClick: () => { S.hide.bar = wf; save(); render(); } }, h("span", { class: "box" + (wf ? " on" : "") }), "Waterfall column"));
-  m.append(h("div", { class: "pop-sep" }), h("div", { class: "pop-title", text: "Log files" }));
+  m.append(h("div", { class: "pop-sep" }), h("div", { class: "pop-title", text: "Download a log file" }));
   if (!info || !info.files.length) m.append(h("div", { class: "note", text: "No file yet. The first request through the proxy makes one." }));
   for (const f of info ? info.files : []) {
     const meta = (f.entries !== null && f.entries !== undefined ? count(f.entries) + " requests, " : "") + fmtSize(f.size);
-    m.append(h("div", { class: "file-item" + (f.name === file ? " picked" : ""), onClick: () => { S.pop = null; pick(f.name); } },
+    m.append(h("a", { class: "file-item", href: "files/" + encodeURIComponent(f.name) + "?download=1", title: "Download " + f.name, onClick: () => setTimeout(closePops, 0) },
       h("div", { class: "file-name" }, h("span", { text: f.name }), f.current ? h("span", { class: "tag-live", text: "Live" }) : null),
       h("div", { class: "file-meta", text: meta })));
   }
-  if (file) {
-    const cur = info && info.files.find((f) => f.name === file);
-    m.append(h("div", { class: "pop-sep" }));
-    m.append(h("a", { class: "item", href: "files/" + encodeURIComponent(file) + "?download=1", onClick: () => setTimeout(closePops, 0) },
-      h("span", { text: "Download HAR" }), h("span", { class: "hint", text: cur ? fmtSize(cur.size) : "" })));
-    m.append(h("div", { class: "note", text: "Chrome: DevTools → Network → Import HAR file, or drag the file onto the Network panel." }));
+  if (info && info.files.length) {
+    m.append(h("div", { class: "note", text: "The table shows the requests of all these files. To open one in Chrome: DevTools → Network → Import HAR file, or drag the file onto the Network panel." }));
   }
   if (info) {
     m.append(h("div", { class: "pop-sep" }));
@@ -1747,23 +1783,20 @@ document.addEventListener("DOMContentLoaded", () => {
   $("group-btn").addEventListener("click", toggle("group"));
   $("cols-btn").addEventListener("click", toggle("cols"));
   $("menu-btn").addEventListener("click", toggle("menu"));
-  const view = (v) => () => { S.view = v; save(); render(); };
-  $("view-tree").addEventListener("click", view("tree"));
-  $("view-list").addEventListener("click", view("list"));
-  $("tree-expand").addEventListener("click", () => setAllNodes(true));
-  $("tree-collapse").addEventListener("click", () => setAllNodes(false));
+  $("view-btn").addEventListener("click", () => { S.view = S.view === "tree" ? "list" : "tree"; save(); render(); });
+  $("tree-btn").addEventListener("click", () => setAllNodes(!treeAllOpen(lastVis)));
   $("builder").addEventListener("mousedown", (e) => { if (e.target === $("builder")) closeBuilder(); });
   $("live-btn").addEventListener("click", () => setLive(!S.live));
   $("range").addEventListener("click", () => { S.range = null; render(); });
   $("tl-btn").addEventListener("click", () => { S.tl = !S.tl; save(); render(); });
   $("tl-canvas").addEventListener("mousedown", tlDown);
-  $("more").addEventListener("click", () => loadEntries(true).catch(failure));
+  $("more").addEventListener("click", () => loadEntries().catch(failure));
   $("resize").addEventListener("mousedown", resizeDown);
   $("resize").addEventListener("dblclick", () => { S.detailW = null; S.max = false; save(); render(); });
   $("scroll").addEventListener("scroll", () => {
     const s = $("scroll");
-    if (!loadingMore && before !== null && rows.length < MAX_ROWS && s.scrollTop + s.clientHeight > s.scrollHeight - 200) {
-      loadEntries(true).catch(failure);
+    if (!loadingMore && reading !== null && rows.length < MAX_ROWS && s.scrollTop + s.clientHeight > s.scrollHeight - 200) {
+      loadEntries().catch(failure);
     }
   });
   window.addEventListener("keydown", onKey);

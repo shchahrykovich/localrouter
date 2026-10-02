@@ -1073,14 +1073,14 @@ fn wait_written(c: &mut Client, n: u64) -> Value {
     }
 }
 
-// T8: a fresh home gets the log on, 20 MB, 5000 requests; get_proxy has the
+// T8: a fresh home gets the log on, 100 MB, 5000 requests; get_proxy has the
 // log block with the folder under the temp home.
 #[test]
 fn proxy_log_defaults() {
     let d = Daemon::start();
     let mut c = d.client();
     let config = c.call("get_config", json!({}));
-    assert_eq!((config["proxy_log"].clone(), config["proxy_log_file_mb"].clone(), config["proxy_log_file_requests"].clone()), (json!(true), json!(20), json!(5000)));
+    assert_eq!((config["proxy_log"].clone(), config["proxy_log_file_mb"].clone(), config["proxy_log_file_requests"].clone()), (json!(true), json!(100), json!(5000)));
     assert_eq!(config["lan_networks"], json!([]));
     let log = c.call("get_proxy", json!({}))["log"].clone();
     assert_eq!(log["folder"], d.dir.path().join("logs/proxy").display().to_string());

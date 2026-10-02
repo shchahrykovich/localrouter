@@ -101,7 +101,7 @@ The proxy writes every request it carries to HAR files in
 - Headers are written as they are, cookies and API keys too. Bodies are
   written too, the first 1 MB of each (`content.text`, base64 when not text),
   and the messages of a WebSocket (`_webSocketMessages`).
-- **Do not read a whole file**: it can be 20 MB. Use `jq`:
+- **Do not read a whole file**: it can be 100 MB. Use `jq`:
   `f=$(ls -t "$({{CLI}} proxy log path)"/proxy-*.har | head -1)`, then
   `jq -r '.log.entries[] | select(.response.status >= 400) | "\(.response.status) \(.request.url)"' "$f"`.
 - The current file can be in the middle of a write. If `jq` fails on it,

@@ -157,12 +157,12 @@ mod tests {
         assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
     }
 
-    // ADR 08, T8: the log is on by default, 20 MB or 5000 requests per file;
+    // ADR 08, T8: the log is on by default, 100 MB or 5000 requests per file;
     // a file written before ADR 08 gets the same.
     #[test]
     fn proxy_log_fields_default() {
         let old = Config::parse(r#"{"version":1,"allow_lan":true}"#, &dev()).unwrap();
-        assert_eq!((old.proxy_log, old.proxy_log_file_mb, old.proxy_log_file_requests), (true, 20, 5000));
+        assert_eq!((old.proxy_log, old.proxy_log_file_mb, old.proxy_log_file_requests), (true, 100, 5000));
         assert!(old.lan_networks.is_empty());
         let mut c = Config::defaults_for(&dev());
         c.lan_networks = vec![LanNetwork { id: "mac:18:35:d1:15:d1:a8".into(), name: "Home".into(), router: "192.168.0.1".into() }];

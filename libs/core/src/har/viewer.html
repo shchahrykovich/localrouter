@@ -30,10 +30,7 @@
   <div id="layout" class="layout">
     <main class="list">
       <div class="toolbar">
-        <div class="seg view">
-          <button id="view-tree" type="button" title="Tree view" aria-label="Tree view"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2.5v9.5h4"></path><path d="M3 7h4"></path><rect x="8.5" y="5" width="5" height="4" rx="1"></rect><rect x="8.5" y="10" width="5" height="4" rx="1"></rect><rect x="1.5" y="1" width="3" height="3" rx="0.8"></rect></svg></button>
-          <button id="view-list" type="button" title="List view" aria-label="List view"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M5.5 4h8"></path><path d="M5.5 8h8"></path><path d="M5.5 12h8"></path><circle cx="2.5" cy="4" r="0.6" fill="currentColor"></circle><circle cx="2.5" cy="8" r="0.6" fill="currentColor"></circle><circle cx="2.5" cy="12" r="0.6" fill="currentColor"></circle></svg></button>
-        </div>
+        <button id="view-btn" class="btn tight icon" type="button"><svg id="icon-tree" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2.5v9.5h4"></path><path d="M3 7h4"></path><rect x="8.5" y="5" width="5" height="4" rx="1"></rect><rect x="8.5" y="10" width="5" height="4" rx="1"></rect><rect x="1.5" y="1" width="3" height="3" rx="0.8"></rect></svg><svg id="icon-list" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M5.5 4h8"></path><path d="M5.5 8h8"></path><path d="M5.5 12h8"></path><circle cx="2.5" cy="4" r="0.6" fill="currentColor"></circle><circle cx="2.5" cy="8" r="0.6" fill="currentColor"></circle><circle cx="2.5" cy="12" r="0.6" fill="currentColor"></circle></svg></button>
         <div class="anchor">
           <button id="filters-btn" class="btn tight" type="button" title="Filters" aria-label="Filters"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12l-4.5 5.5V13l-3 1.5V8.5z"></path></svg><span id="filter-count" class="badge" hidden></span><span class="caret">▾</span></button>
           <div id="filters" class="pop filters" hidden></div>
@@ -46,8 +43,7 @@
           <button id="cols-btn" class="btn" type="button">Columns<span class="caret">▾</span></button>
           <div id="cols" class="pop right cols" hidden></div>
         </div>
-        <button id="tree-expand" class="link-btn tall" type="button">Expand all</button>
-        <button id="tree-collapse" class="link-btn tall" type="button">Collapse all</button>
+        <button id="tree-btn" class="btn tight icon" type="button"><svg id="icon-expand" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6 8 2.5 11.5 6M4.5 10 8 13.5 11.5 10"></path></svg><svg id="icon-collapse" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 11.5 2.5M4.5 13.5 8 10 11.5 13.5"></path></svg></button>
         <button id="range" class="range mono" type="button" title="Clear time range" hidden></button>
         <span id="count" class="count mono"></span>
       </div>

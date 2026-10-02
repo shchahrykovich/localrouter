@@ -116,7 +116,7 @@ a new file. (Gap G9.)
 | Full | `entries == proxy_log_file_requests`, or `size + next entry > proxy_log_file_mb` MB |
 | Kept | the 5 newest files whose names match the pattern; older ones are deleted at each new file |
 | Never touched | any file whose name does not match `proxy-\d{8}-\d{6}(-\d+)?\.har` |
-| Most disk used | 5 × `proxy_log_file_mb`: 100 MB with the defaults |
+| Most disk used | 5 × `proxy_log_file_mb`: 500 MB with the defaults |
 
 The user asked for "two params, rolling log by size or number of requests".
 This ADR reads that as both limits at once, and the first one reached starts a
@@ -135,7 +135,7 @@ so an old `config.json` gets the defaults.
 | Field | Default | Allowed |
 |---|---|---|
 | `proxy_log` | `true` | `true`, `false` |
-| `proxy_log_file_mb` | `20` | 1 to 200 (the viewer parses a whole file in the browser) |
+| `proxy_log_file_mb` | `100` (was 20; with bodies a page with video filled 20 MB in seconds) | 1 to 200 (Chrome's "Import HAR file" parses a whole file) |
 | `proxy_log_file_requests` | `5000` | 100 to 1,000,000 |
 
 Changes apply at once. Off stops new records at the next request, and the
