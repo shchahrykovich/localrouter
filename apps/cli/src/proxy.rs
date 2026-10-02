@@ -320,7 +320,7 @@ pub fn describe_log(p: &GetProxyResult, instance: &Instance) -> String {
     if let Some(e) = &log.error {
         out.push_str(&format!("Error      {e}. Nothing is written until: {cli} proxy log off && {cli} proxy log on\n"));
     }
-    out.push_str("\nHeaders and URLs are written as they are, cookies and API keys too. Bodies are not written.\n");
+    out.push_str("\nHeaders and URLs are written as they are, cookies and API keys too, and the first 1 MB of each body.\n");
     out
 }
 

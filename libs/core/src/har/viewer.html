@@ -8,40 +8,64 @@
 <script src="viewer.js" defer></script>
 </head>
 <body>
-<header>
-  <h1>Proxy log</h1>
-  <p id="state" class="state">Loading…</p>
-  <p id="error" class="error" hidden></p>
-  <p id="hint" class="hint" hidden></p>
-</header>
-<main>
-  <aside>
-    <h2>Files</h2>
-    <ul id="files" class="files"></ul>
-    <p class="note">In Chrome: DevTools → Network → Import HAR file, or drag the file onto the Network panel.</p>
-  </aside>
-  <section class="requests">
-    <div class="tools">
-      <input id="filter" type="search" placeholder="Filter: URL, method, status, mode" autocomplete="off">
-      <label><input id="errors" type="checkbox"> Errors only</label>
-      <span id="count" class="count"></span>
+<div class="app">
+  <header class="top">
+    <div class="brand"><span class="brand-name">LocalRouter</span><span class="slash">/</span><span class="brand-page">Proxy log</span></div>
+    <div id="state" class="state"></div>
+    <div class="grow"></div>
+    <div class="anchor">
+      <button id="menu-btn" class="icon-btn" type="button" title="More" aria-haspopup="true"><span></span><span></span><span></span></button>
+      <div id="menu" class="pop menu right" hidden></div>
     </div>
-    <table>
-      <thead>
-        <tr><th>Time</th><th>Method</th><th>Status</th><th>Host</th><th>Path</th><th>Mode</th><th class="num">ms</th><th class="num">Size</th></tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <p id="empty" class="note" hidden></p>
-    <button id="more" type="button" hidden>Show more</button>
-  </section>
-  <section id="details" class="details" hidden>
-    <div class="details-head">
-      <h2 id="details-title"></h2>
-      <button id="close" type="button">Close</button>
-    </div>
-    <div id="details-body"></div>
-  </section>
-</main>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <div id="layout" class="layout">
+    <main class="list">
+      <div class="toolbar">
+        <label class="search"><input id="q" type="search" placeholder="Filter by URL, method, status, mode" autocomplete="off" spellcheck="false"></label>
+        <button id="inv" class="check" type="button" title="Show the requests that do not match the text"><span class="box"></span>Invert</button>
+        <div class="anchor">
+          <button id="filters-btn" class="btn" type="button">Filters<span id="filter-count" class="badge" hidden></span><span class="caret">▾</span></button>
+          <div id="filters" class="pop filters" hidden></div>
+        </div>
+        <div class="anchor">
+          <button id="group-btn" class="btn" type="button"><span class="muted">Group</span><span id="group-label">None</span><span class="caret">▾</span></button>
+          <div id="group" class="pop right narrow" hidden></div>
+        </div>
+        <div class="anchor">
+          <button id="cols-btn" class="btn" type="button">Columns<span class="caret">▾</span></button>
+          <div id="cols" class="pop right narrow" hidden></div>
+        </div>
+        <button id="live-btn" class="btn" type="button" title="Pause or resume new requests"><span id="live-dot" class="dot"></span><span id="live-label">Live</span></button>
+        <button id="range" class="range mono" type="button" title="Clear time range" hidden></button>
+        <span id="count" class="count mono"></span>
+      </div>
+      <div class="typebar">
+        <div id="types" class="types"></div>
+        <div class="grow"></div>
+        <button id="tl-btn" class="check small" type="button"><span class="box"></span>Timeline</button>
+      </div>
+      <div id="timeline" class="timeline"><canvas id="tl-canvas"></canvas></div>
+      <div id="scroll" class="scroll dense">
+        <div id="thead" class="thead"></div>
+        <div id="rows"></div>
+        <div id="empty" class="empty" hidden></div>
+        <div id="more-wrap" class="more" hidden><button id="more" class="btn" type="button">Load older requests</button></div>
+      </div>
+    </main>
+    <section id="detail" class="detail" hidden>
+      <div id="resize" class="resize" title="Drag to resize, double-click to reset"></div>
+      <div class="dhead">
+        <div id="dtop" class="dtop"></div>
+        <div id="durl" class="durl mono"></div>
+        <div id="dactions" class="dactions"></div>
+        <div id="dtabs" class="dtabs"></div>
+      </div>
+      <div id="dbody" class="dbody"></div>
+    </section>
+  </div>
+</div>
+<div id="ctx" class="pop ctx" hidden></div>
+<div id="toast" class="toast" hidden></div>
 </body>
 </html>

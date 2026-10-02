@@ -26,13 +26,18 @@ use hyper::{Method, Response, StatusCode, Uri};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{broadcast, mpsc};
 
-use super::{CLOSING, HarLog, KEEP_FILES, LiveEvent, file_key};
+use super::{CLOSING, HarLog, KEEP_FILES, LiveEvent, file_key, summarize};
 use crate::proxy::Body;
 
 /// Files and `/api/entries` are read in chunks of this size.
 pub const CHUNK: usize = 64 * 1024;
 /// Entries `/api/entries` returns at most.
 pub const MAX_ENTRIES: usize = 2000;
+/// Bytes of entry lines one `/api/entries` call reads at most: with bodies a
+/// line can be large, so a page may hold fewer entries than asked.
+pub const PAGE_BYTES: usize = 16 << 20;
+/// The longest entry `/api/entry` reads.
+pub const MAX_ENTRY: u64 = 64 << 20;
 /// A comment line on `/api/live` this often keeps the connection open.
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
@@ -68,6 +73,7 @@ pub async fn serve(log: &Arc<HarLog>, ctx: ViewerContext<'_>, method: &Method, u
         "/viewer.css" => fixed(CSS, "text/css; charset=utf-8"),
         "/api/files" => json(files_json(log, &ctx)),
         "/api/entries" => entries(log, query).await,
+        "/api/entry" => entry(log, query).await,
         "/api/live" => live(log),
         _ => match path.strip_prefix("/files/") {
             Some(name) => file(log, name, query.split('&').any(|p| p == "download=1")).await,
@@ -199,7 +205,8 @@ async fn file(log: &HarLog, name: &str, download: bool) -> Response<Body> {
 /// `/api/entries?file=<name>&before=<offset>&limit=<n>`: the newest entries
 /// before byte `before`, newest first, read backwards from the end in chunks
 /// (I22). `before` in the answer is the cursor for the next page, `null` at
-/// the start of the file.
+/// the start of the file. Each entry is a summary without bodies (see
+/// [`summarize`]), with `_at`: where it starts, for `/api/entry`.
 async fn entries(log: &HarLog, query: &str) -> Response<Body> {
     let mut name = None;
     let mut before = None;
@@ -220,7 +227,15 @@ async fn entries(log: &HarLog, query: &str) -> Response<Body> {
     let end = before.map_or(len, |b| b.min(len));
     let read = tokio::task::spawn_blocking(move || read_backwards(&path, end, limit)).await;
     let Ok(Ok((lines, next))) = read else { return text(StatusCode::NOT_FOUND, "The file could not be read.\n") };
-    // The lines are entries exactly as written: no parse, no copy into a tree.
+    let lines: Vec<Vec<u8>> = lines
+        .into_iter()
+        .filter_map(|(at, line)| {
+            let mut v: serde_json::Value = serde_json::from_slice(&line).ok()?;
+            summarize(&mut v);
+            v["_at"] = at.into();
+            serde_json::to_vec(&v).ok()
+        })
+        .collect();
     let mut out = Vec::with_capacity(lines.iter().map(|l| l.len() + 1).sum::<usize>() + 128);
     out.extend_from_slice(b"{\"file\":");
     out.extend_from_slice(serde_json::to_string(&name).unwrap_or_default().as_bytes());
@@ -237,12 +252,14 @@ async fn entries(log: &HarLog, query: &str) -> Response<Body> {
     full(StatusCode::OK, "application/json", Bytes::from(out))
 }
 
-/// Up to `limit` entry lines that end before byte `end`, newest first, and
-/// the offset where the oldest of them starts (`None` once the header is
-/// reached). Memory: one chunk, one partial line and the lines returned.
-pub fn read_backwards(path: &std::path::Path, end: u64, limit: usize) -> std::io::Result<(Vec<Vec<u8>>, Option<u64>)> {
+/// Up to `limit` entry lines that end before byte `end`, newest first, each
+/// with the offset where it starts, and the offset where the oldest of them
+/// starts (`None` once the header is reached). It stops early after
+/// [`PAGE_BYTES`]. Memory: one chunk, one partial line and the lines returned.
+#[allow(clippy::type_complexity)]
+pub fn read_backwards(path: &std::path::Path, end: u64, limit: usize) -> std::io::Result<(Vec<(u64, Vec<u8>)>, Option<u64>)> {
     let mut f = File::open(path)?;
-    let mut lines: Vec<Vec<u8>> = vec![];
+    let mut lines: Vec<(u64, Vec<u8>)> = vec![];
     let mut carry: Vec<u8> = vec![];
     let mut pos = end;
     let mut buf = vec![0u8; CHUNK];
@@ -280,7 +297,7 @@ pub fn read_backwards(path: &std::path::Path, end: u64, limit: usize) -> std::io
 }
 
 /// One line read backwards. `Some(next)` when the walk is over.
-fn take_line(line: &[u8], offset: u64, lines: &mut Vec<Vec<u8>>, limit: usize) -> Option<Option<u64>> {
+fn take_line(line: &[u8], offset: u64, lines: &mut Vec<(u64, Vec<u8>)>, limit: usize) -> Option<Option<u64>> {
     let line = line.strip_suffix(b",").unwrap_or(line);
     if line.starts_with(b"{\"log\"") {
         return Some(None);
@@ -291,8 +308,71 @@ fn take_line(line: &[u8], offset: u64, lines: &mut Vec<Vec<u8>>, limit: usize) -
     if serde_json::from_slice::<serde::de::IgnoredAny>(line).is_err() {
         return None;
     }
-    lines.push(line.to_vec());
-    (lines.len() >= limit).then_some(Some(offset))
+    lines.push((offset, line.to_vec()));
+    let bytes: usize = lines.iter().map(|(_, l)| l.len()).sum();
+    (lines.len() >= limit || bytes >= PAGE_BYTES).then_some(Some(offset))
+}
+
+/// `/api/entry?file=<name>&at=<offset>`: one whole entry, bodies and
+/// WebSocket messages included. `at` must be the start of an entry line, as
+/// `/api/entries` and the live feed give it.
+async fn entry(log: &HarLog, query: &str) -> Response<Body> {
+    let mut name = None;
+    let mut at = None;
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some(("file", v)) => name = Some(v.to_string()),
+            Some(("at", v)) => at = v.parse::<u64>().ok(),
+            _ => {}
+        }
+    }
+    let (Some(name), Some(at)) = (name, at) else { return text(StatusCode::BAD_REQUEST, "Give file=<name> and at=<offset>.\n") };
+    let Some(path) = checked(log, &name) else { return text(StatusCode::NOT_FOUND, "No such proxy log file.\n") };
+    let Some((len, _)) = readable(log, &name, &path) else { return text(StatusCode::NOT_FOUND, "No such proxy log file.\n") };
+    let read = tokio::task::spawn_blocking(move || read_entry(&path, at, len)).await;
+    match read {
+        Ok(Some(line)) => full(StatusCode::OK, "application/json", Bytes::from(line)),
+        _ => text(StatusCode::NOT_FOUND, "No entry starts there.\n"),
+    }
+}
+
+/// The entry line that starts at `at`, if one does: the byte before it is a
+/// newline, and the line is one JSON object.
+pub fn read_entry(path: &std::path::Path, at: u64, len: u64) -> Option<Vec<u8>> {
+    if at == 0 || at >= len {
+        return None;
+    }
+    let mut f = File::open(path).ok()?;
+    f.seek(SeekFrom::Start(at - 1)).ok()?;
+    let mut line = vec![];
+    let mut buf = vec![0u8; CHUNK];
+    let mut first = true;
+    let mut left = len - (at - 1);
+    while left > 0 {
+        let want = (left as usize).min(CHUNK);
+        f.read_exact(&mut buf[..want]).ok()?;
+        left -= want as u64;
+        let mut chunk = &buf[..want];
+        if first {
+            if chunk[0] != b'\n' {
+                return None;
+            }
+            chunk = &chunk[1..];
+            first = false;
+        }
+        match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                line.extend_from_slice(&chunk[..i]);
+                break;
+            }
+            None => line.extend_from_slice(chunk),
+        }
+        if line.len() as u64 > MAX_ENTRY {
+            return None;
+        }
+    }
+    let line = line.strip_suffix(b",").map(<[u8]>::to_vec).unwrap_or(line);
+    (line.first() == Some(&b'{') && serde_json::from_slice::<serde::de::IgnoredAny>(&line).is_ok()).then_some(line)
 }
 
 /// `/api/live`: server-sent events, one per new entry, while the page is
@@ -309,6 +389,8 @@ fn live(log: &HarLog) -> Response<Body> {
             let chunk = tokio::select! {
                 ev = events.recv() => match ev {
                     Ok(LiveEvent::Entry(line)) => format!("event: entry\ndata: {line}\n\n"),
+                    Ok(LiveEvent::Open(line)) => format!("event: open\ndata: {line}\n\n"),
+                    Ok(LiveEvent::Message(line)) => format!("event: message\ndata: {line}\n\n"),
                     Ok(LiveEvent::File(name)) => format!("event: file\ndata: {}\n\n", serde_json::to_string(&name).unwrap_or_default()),
                     Ok(LiveEvent::Off) => "event: off\ndata: {}\n\n".to_string(),
                     Err(broadcast::error::RecvError::Lagged(_)) => "event: lagged\ndata: {}\n\n".to_string(),
@@ -370,13 +452,13 @@ mod tests {
         let len = std::fs::metadata(&path).unwrap().len();
         let (lines, next) = read_backwards(&path, len, 500).unwrap();
         assert_eq!(lines.len(), 500);
-        assert_eq!(index(&lines[0]), 2999);
-        assert_eq!(index(&lines[499]), 2500);
+        assert_eq!(index(&lines[0].1), 2999);
+        assert_eq!(index(&lines[499].1), 2500);
         let (lines, next) = read_backwards(&path, next.unwrap(), 2000).unwrap();
-        assert_eq!((index(&lines[0]), index(&lines[1999])), (2499, 500));
+        assert_eq!((index(&lines[0].1), index(&lines[1999].1)), (2499, 500));
         let (lines, next) = read_backwards(&path, next.unwrap(), 2000).unwrap();
         assert_eq!(lines.len(), 500);
-        assert_eq!(index(&lines[499]), 0);
+        assert_eq!(index(&lines[499].1), 0);
         assert_eq!(next, None, "the header ends the walk");
     }
 
@@ -388,7 +470,37 @@ mod tests {
         std::fs::File::create(&path).unwrap().write_all(&har(4, CHUNK * 2)).unwrap();
         let len = std::fs::metadata(&path).unwrap().len();
         let (lines, next) = read_backwards(&path, len, 10).unwrap();
-        assert_eq!(lines.iter().map(|l| index(l)).collect::<Vec<_>>(), vec![3, 2, 1, 0]);
+        assert_eq!(lines.iter().map(|(_, l)| index(l)).collect::<Vec<_>>(), vec![3, 2, 1, 0]);
         assert_eq!(next, None);
+    }
+
+    // /api/entry reads the one entry that starts at an offset, and nothing
+    // that does not start an entry.
+    #[test]
+    fn one_entry_by_its_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-20261002-000000.har");
+        std::fs::File::create(&path).unwrap().write_all(&har(3, 10)).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let (lines, _) = read_backwards(&path, len, 10).unwrap();
+        for (at, line) in &lines {
+            assert_eq!(read_entry(&path, *at, len).as_deref(), Some(&line[..]));
+        }
+        assert_eq!(read_entry(&path, lines[0].0 + 1, len), None, "not the start of a line");
+        assert_eq!(read_entry(&path, 0, len), None, "the header");
+        assert_eq!(read_entry(&path, len, len), None);
+    }
+
+    // A page stops at PAGE_BYTES, and its cursor goes on from there.
+    #[test]
+    fn a_page_stops_at_its_byte_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-20261002-000000.har");
+        std::fs::File::create(&path).unwrap().write_all(&har(5, PAGE_BYTES / 2)).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let (lines, next) = read_backwards(&path, len, 100).unwrap();
+        assert_eq!(lines.len(), 2);
+        let (lines, _) = read_backwards(&path, next.unwrap(), 100).unwrap();
+        assert_eq!(index(&lines[0].1), 2);
     }
 }

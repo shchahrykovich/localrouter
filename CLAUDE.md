@@ -164,9 +164,17 @@ list, so a new tool needs that test changed on purpose.
   `libs/core/src/scripts.md`, served at `router.localhost/scripts`; keep it in
   step with `lua_api.rs` (a test reads the field names from the tables).
 - **The proxy log (ADR 08)** lives in `libs/core/src/har/`: `entry.rs` (a
-  record becomes one HAR entry), `writer.rs` (the file, roll, prune, repair),
-  `mod.rs` (`HarLog`: the on flag, the queue, the `har-writer` thread),
-  `viewer.rs` and its `viewer.html/.js/.css`. The network task checks
+  record becomes one HAR entry; bodies are decoded here, on the writer
+  thread), `capture.rs` (bodies: a copy of the first 1 MB of each, inside a
+  256 MB budget; the entry is written when the response body ends or is
+  dropped), `websocket.rs` (after a 101 the copy loops read the frames,
+  `permessage-deflate` included, into `_webSocketMessages`; the entry is
+  written at close), `writer.rs` (the file, roll, prune, repair), `mod.rs`
+  (`HarLog`: the on flag, the queue, the `har-writer` thread, live events),
+  `viewer.rs` and its `viewer.html/.js/.css`. A copy never delays traffic: it
+  is cut at the limit or the budget. `/api/entries` and the live feed give
+  summaries without bodies (`summarize`), each with `_at`, its offset;
+  `/api/entry?file=&at=` gives one whole entry. The network task checks
   `enabled()` before it copies anything and only calls `try_send`; the writer
   thread exists only while there are records. A file is valid HAR after every
   entry: only the closing `\n]}}\n` is ever rewritten. The viewer at

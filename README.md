@@ -235,7 +235,8 @@ ls -t "$(localrouter proxy log path)"          # ~/Library/Logs/LocalRouter/prox
 - A new file starts at 20 MB or 5000 requests, whichever comes first; the 5
   newest files are kept.
 - Headers are written as they are, cookies and API keys too. URLs are written
-  as they are, query included. Bodies are not written.
+  as they are, query included. Request and response bodies are written too,
+  the first 1 MB of each, and the messages of a WebSocket when it closes.
 - The viewer at `http://proxy.localhost` (also `router.localhost/proxy-log/`)
   lists the files, shows the requests live, and downloads a file for
   DevTools → Network → Import HAR file. It answers this Mac only and is read

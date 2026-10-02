@@ -681,3 +681,112 @@ async fn proxy_log_through_the_proxy_is_not_logged() {
     assert_eq!(logged, ["router.localhost", "shop.localhost"], "the viewer is not in the request log");
 }
 
+
+// ---- bodies and WebSocket messages in the proxy log
+
+/// A raw request through the proxy, so a test controls the body.
+async fn raw(proxy: SocketAddr, head: &str, body: &[u8]) -> String {
+    let mut s = TcpStream::connect(proxy).await.unwrap();
+    s.write_all(head.as_bytes()).await.unwrap();
+    s.write_all(body).await.unwrap();
+    let mut out = vec![];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read_to_end(&mut out)).await;
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// The request and response bodies are in the entry, written when the
+// response body ended.
+#[tokio::test]
+async fn har_records_request_and_response_bodies() {
+    let h = harness().await;
+    let port = h.echo.port();
+    let body = br#"{"prompt":"hello"}"#;
+    let head = format!(
+        "POST http://127.0.0.1:{port}/v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    let answer = raw(h.proxy, &head, body).await;
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let entries = har_entries(&h, 1).await;
+    let e = &entries[0];
+    assert_eq!(e["request"]["postData"]["text"], r#"{"prompt":"hello"}"#);
+    assert_eq!(e["request"]["postData"]["mimeType"], "application/json");
+    assert_eq!(e["request"]["bodySize"], body.len());
+    let text = e["response"]["content"]["text"].as_str().unwrap();
+    assert!(text.contains("/v1/messages"), "the echo body: {text}");
+    assert!(answer.ends_with(text), "the entry holds what the client got");
+    assert!(e["_id"].as_u64().is_some());
+}
+
+/// A WebSocket server that sends back every text and binary message.
+async fn ws_echo() -> SocketAddr {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(msg)) = ws.next().await {
+                    if (msg.is_text() || msg.is_binary()) && ws.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+// A WebSocket through the proxy: its entry is written when it closes, with
+// every message in both directions.
+#[tokio::test]
+async fn har_records_websocket_messages() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    let h = harness().await;
+    let up = ws_echo().await;
+    let mut s = TcpStream::connect(h.proxy).await.unwrap();
+    let port = up.port();
+    s.write_all(
+        format!(
+            "GET http://127.0.0.1:{port}/live HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut head = vec![];
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        s.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
+    let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(s, Role::Client, None).await;
+    ws.send(Message::text("hello")).await.unwrap();
+    assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap(), "hello");
+    ws.send(Message::binary(vec![1u8, 2, 3])).await.unwrap();
+    assert_eq!(ws.next().await.unwrap().unwrap().into_data().to_vec(), vec![1u8, 2, 3]);
+    assert_eq!(h.har.written(), 0, "an open WebSocket is not written yet");
+    ws.close(None).await.unwrap();
+    while ws.next().await.is_some() {}
+    drop(ws);
+
+    let entries = har_entries(&h, 1).await;
+    let e = &entries[0];
+    assert_eq!(e["response"]["status"], 101);
+    assert_eq!(e["_resourceType"], "websocket");
+    let messages: Vec<(String, u64, String)> = e["_webSocketMessages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["type"].as_str().unwrap().to_string(), m["opcode"].as_u64().unwrap(), m["data"].as_str().unwrap().to_string()))
+        .collect();
+    let want = |kind: &str, opcode: u64, data: &str| (kind.to_string(), opcode, data.to_string());
+    assert_eq!(&messages[..4], &[want("send", 1, "hello"), want("receive", 1, "hello"), want("send", 2, "AQID"), want("receive", 2, "AQID")]);
+    assert!(messages[4..].iter().any(|m| m.0 == "send" && m.1 == 8), "the close frame: {messages:?}");
+}

@@ -30,6 +30,8 @@ use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::har::HarRecord;
+use crate::har::capture::Recording;
+use crate::har::websocket::{self, WsTap};
 use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
@@ -121,11 +123,23 @@ impl ForwardProxy {
             return resp;
         }
         let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+        let (req, rec) = self.recording(seen, req);
         let base = format!("http://{authority}");
         let ctx = Ctx { source: "proxy", route: None, scheme: "http", host: host.clone(), port };
         let (resp, scripts) = self.through_scripts(req, &base, &host, ctx).await;
-        self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, scripts, seen);
-        resp
+        self.log_sent(&method, &host, &path, resp, start, ProxyMode::Http, scripts, rec)
+    }
+
+    /// Follow a request the proxy sends on: its body, and its WebSocket
+    /// messages after an upgrade.
+    fn recording(&self, seen: Option<HarRecord>, req: Request<Body>) -> (Request<Body>, Option<Recording>) {
+        match (seen, self.router.har.as_ref()) {
+            (Some(record), Some(har)) => {
+                let (req, rec) = har.start_recording(record, req);
+                (req, Some(rec))
+            }
+            _ => (req, None),
+        }
     }
 
     /// A HAR record of what the client sent, only while the log is on: with
@@ -275,15 +289,16 @@ impl ForwardProxy {
         let authority = if port == 443 { name } else { format!("{name}:{port}") };
         let seen = self.seen(&req, || format!("https://{authority}{path}"), ProxyMode::Inspect);
         let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+        let (req, rec) = self.recording(seen, req);
         let ctx = Ctx { source: "proxy", route: None, scheme: "https", host: host.to_string(), port };
         let (resp, scripts) = self.through_scripts(req, &format!("https://{authority}"), host, ctx).await;
-        self.log_http(&method, host, &path, &resp, start, ProxyMode::Inspect, scripts, seen);
-        resp
+        self.log_sent(&method, host, &path, resp, start, ProxyMode::Inspect, scripts, rec)
     }
 
     /// Send a request to the real server at `uri`, as the client wrote it:
     /// hop-by-hop and proxy headers removed, nothing added (I10).
     async fn send(&self, mut req: Request<Body>, uri: Uri) -> Result<Response<Body>, String> {
+        let tap = req.extensions_mut().remove::<WsTap>();
         let wants_upgrade = is_upgrade(req.headers());
         let client_upgrade = wants_upgrade.then(|| hyper::upgrade::on(&mut req));
         let (mut parts, body) = req.into_parts();
@@ -298,9 +313,18 @@ impl ForwardProxy {
             && let Some(client_upgrade) = client_upgrade
         {
             let server_upgrade = hyper::upgrade::on(&mut resp);
+            let extensions = resp.headers().get(header::SEC_WEBSOCKET_EXTENSIONS).and_then(|v| v.to_str().ok()).map(str::to_string);
+            if let Some(tap) = &tap {
+                tap.mark_started();
+            }
             tokio::spawn(async move {
                 if let Ok((client, server)) = tokio::try_join!(client_upgrade, server_upgrade) {
-                    let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut TokioIo::new(server)).await;
+                    match tap {
+                        Some(tap) => websocket::pump(TokioIo::new(client), TokioIo::new(server), tap, extensions).await,
+                        None => {
+                            let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut TokioIo::new(server)).await;
+                        }
+                    }
                 }
             });
             let (parts, body) = resp.into_parts();
@@ -340,6 +364,32 @@ impl ForwardProxy {
         }
         let entry = LogEntry::http(method, host, path, resp.status().as_u16(), millis).via_proxy(mode);
         self.log.push(entry.with_scripts(scripts.0, scripts.1));
+    }
+
+    /// Log a request the proxy sent on. With a recording, the entry is
+    /// written when the response body ends or the WebSocket closes.
+    #[allow(clippy::too_many_arguments)]
+    fn log_sent(
+        &self,
+        method: &str,
+        host: &str,
+        path: &str,
+        resp: Response<Body>,
+        start: Instant,
+        mode: ProxyMode,
+        scripts: (Vec<String>, Option<String>),
+        rec: Option<Recording>,
+    ) -> Response<Body> {
+        let millis = start.elapsed().as_millis() as u64;
+        let entry = LogEntry::http(method, host, path, resp.status().as_u16(), millis).via_proxy(mode);
+        self.log.push(entry.with_scripts(scripts.0.clone(), scripts.1.clone()));
+        match (rec, self.router.har.as_ref()) {
+            (Some(mut rec), Some(har)) => {
+                rec.record = rec.record.finish(&resp, millis).with_scripts(&scripts);
+                har.end_recording(rec, resp)
+            }
+            _ => resp,
+        }
     }
 
     fn not_a_proxy_request(&self) -> Response<Body> {

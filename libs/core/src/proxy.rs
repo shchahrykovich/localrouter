@@ -24,6 +24,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 use crate::api::StatusResult;
+use crate::har::websocket::WsTap;
 use crate::har::{HarLog, HarRecord, viewer};
 use crate::inspect::bare_host;
 use crate::instance::Instance;
@@ -130,7 +131,7 @@ impl Proxy {
         }
         // Through the forward proxy: what the client sent, before scripts.
         // router.localhost never reaches the HAR (I7).
-        let har = match (&self.har, via) {
+        let mut har = match (&self.har, via) {
             (Some(har), Some(mode)) if har.enabled() && key.as_deref() != Some(HELP_HOST) => {
                 Some((har, HarRecord::start(&req, format!("{}://{host}{path}", scheme.as_str()), mode)))
             }
@@ -139,6 +140,8 @@ impl Proxy {
 
         let mut answered_by = None;
         let mut scripts: (Vec<String>, Option<String>) = (vec![], None);
+        // A request sent to a route: its body and WebSocket messages too.
+        let mut recording = None;
         let response = if key.as_deref() == Some(HELP_HOST) {
             // Scripts never run on the help page (I20).
             let status = match &self.status {
@@ -158,7 +161,12 @@ impl Proxy {
                     if scheme == ClientScheme::Http && route.https_only {
                         redirect_to_https(&host, &path, self.routes.https_port())
                     } else {
-                        let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+                        let mut req = req.map(|b| b.map_err(Into::into).boxed_unsync());
+                        if let Some((log, record)) = har.take() {
+                            let (r, rec) = log.start_recording(record, req);
+                            req = r;
+                            recording = Some((log, rec));
+                        }
                         let send = |req: Request<Body>| self.serve_route(req, &route, &host, scheme, peer);
                         match self.scripts.matching(&host, req.uri().path(), req.method().as_str()) {
                             None => send(req).await.0,
@@ -180,12 +188,19 @@ impl Proxy {
             }
         };
         let millis = start.elapsed().as_millis() as u64;
+        let status = response.status().as_u16();
+        let mut response = response;
         if let Some((har, record)) = har {
             let mut record = record.finish(&response, millis).with_scripts(&scripts);
             record.route = answered_by.clone();
             har.record(record);
         }
-        let mut entry = LogEntry::http(&method, &host, &path, response.status().as_u16(), millis)
+        if let Some((har, mut rec)) = recording {
+            rec.record = rec.record.finish(&response, millis).with_scripts(&scripts);
+            rec.record.route = answered_by.clone();
+            response = har.end_recording(rec, response);
+        }
+        let mut entry = LogEntry::http(&method, &host, &path, status, millis)
             .with_route(answered_by)
             .with_scripts(scripts.0, scripts.1);
         if let Some(mode) = via {
@@ -267,6 +282,7 @@ impl Proxy {
             .map_err(|e| format!("cannot connect to {}: {e}", route.target))?;
         let _ = tcp.set_nodelay(true);
 
+        let tap = req.extensions_mut().remove::<WsTap>();
         let wants_upgrade = is_upgrade(req.headers());
         let client_upgrade = wants_upgrade.then(|| hyper::upgrade::on(&mut req));
         let strip = route.path.as_deref().filter(|_| route.strip_path);
@@ -291,12 +307,21 @@ impl Proxy {
         if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
             if let Some(client_upgrade) = client_upgrade {
                 let server_upgrade = hyper::upgrade::on(&mut resp);
+                let extensions = resp.headers().get(header::SEC_WEBSOCKET_EXTENSIONS).and_then(|v| v.to_str().ok()).map(str::to_string);
+                if let Some(tap) = &tap {
+                    tap.mark_started();
+                }
                 tokio::spawn(async move {
                     match tokio::try_join!(client_upgrade, server_upgrade) {
                         Ok((client, server)) => {
                             let mut client = TokioIo::new(client);
                             let mut server = TokioIo::new(server);
-                            let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                            match tap {
+                                Some(tap) => crate::har::websocket::pump(client, server, tap, extensions).await,
+                                None => {
+                                    let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                                }
+                            }
                         }
                         Err(e) => tracing::debug!("upgrade failed: {e}"),
                     }

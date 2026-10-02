@@ -8,8 +8,10 @@
 //! only while there are records: it starts at the first one and exits after
 //! 30 seconds without any, closing its file and dropping its queue (I21).
 
+pub mod capture;
 pub mod entry;
 pub mod viewer;
+pub mod websocket;
 mod writer;
 
 use std::path::{Path, PathBuf};
@@ -18,9 +20,11 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::sync::broadcast;
 
 pub use entry::HarRecord;
+use crate::scripts::bodies::Budget;
 pub use writer::{CLOSING, file_key};
 
 
@@ -41,8 +45,14 @@ pub const DEFAULT_FILE_REQUESTS: u64 = 5000;
 /// What the live feed of the viewer sends (`/api/live`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveEvent {
-    /// One entry, as written to the file: JSON on one line.
+    /// One entry written to the file: its summary (no bodies, see
+    /// [`summarize`]) with `_file` and `_at`, JSON on one line.
     Entry(Arc<str>),
+    /// A response still on its way, or an open WebSocket: the summary of what
+    /// is known, with `_open: true`. Its entry follows with the same `_id`.
+    Open(Arc<str>),
+    /// One WebSocket message: `{"id":…,"message":{…}}`.
+    Message(Arc<str>),
     /// A new file started.
     File(String),
     /// The log was turned off.
@@ -86,6 +96,8 @@ pub struct HarLog {
     folder: PathBuf,
     creator: String,
     version: String,
+    /// The memory every body copy and WebSocket message takes together.
+    budget: Arc<Budget>,
     on: AtomicBool,
     /// A write failed: nothing more is written until off and on (I15).
     failed: AtomicBool,
@@ -115,6 +127,7 @@ impl HarLog {
             folder: settings.folder,
             creator: settings.creator,
             version: settings.version,
+            budget: Budget::new(capture::BUDGET),
             on: AtomicBool::new(settings.enabled),
             failed: AtomicBool::new(false),
             proxy_on: AtomicBool::new(false),
@@ -219,7 +232,7 @@ impl HarLog {
         if self.failed.load(Ordering::Relaxed) {
             return;
         }
-        let entry = record.to_entry();
+        let mut entry = record.to_entry();
         let line = match serde_json::to_string(&entry) {
             Ok(line) => line,
             Err(_) => return,
@@ -230,15 +243,20 @@ impl HarLog {
         };
         let result = {
             let mut state = self.state.lock().unwrap();
-            state.append(line.as_bytes(), record.started, limits, &self.header())
+            state.append(line.as_bytes(), record.started, limits, &self.header()).map(|f| (f, state.current_name(), state.last_at))
         };
         match result {
-            Ok(new_file) => {
+            Ok((new_file, file, at)) => {
                 self.written.fetch_add(1, Ordering::Relaxed);
                 if let Some(name) = new_file {
                     self.send_live(|| LiveEvent::File(name));
                 }
-                self.send_live(|| LiveEvent::Entry(Arc::from(line)));
+                self.send_live(move || {
+                    summarize(&mut entry);
+                    entry["_file"] = file.into();
+                    entry["_at"] = at.into();
+                    LiveEvent::Entry(Arc::from(entry.to_string()))
+                });
             }
             Err(e) => self.fail(e),
         }
@@ -263,6 +281,24 @@ impl HarLog {
                 let _ = tx.send(event());
             }
         }
+    }
+
+    /// Tell open viewer pages about a response still on its way.
+    pub fn send_open(&self, record: &HarRecord) {
+        self.send_live(|| {
+            let mut entry = record.to_entry();
+            summarize(&mut entry);
+            entry["_open"] = true.into();
+            LiveEvent::Open(Arc::from(entry.to_string()))
+        });
+    }
+
+    /// Tell open viewer pages about one WebSocket message.
+    pub fn send_message(&self, id: u64, message: &websocket::WsMessage) {
+        self.send_live(|| {
+            let event = serde_json::json!({ "id": id, "message": message });
+            LiveEvent::Message(Arc::from(event.to_string()))
+        });
     }
 
     /// The first line of every file.
@@ -373,7 +409,7 @@ impl HarLog {
         match live.as_ref() {
             Some(tx) => tx.subscribe(),
             None => {
-                let (tx, rx) = broadcast::channel(64);
+                let (tx, rx) = broadcast::channel(1024);
                 *live = Some(tx);
                 rx
             }
@@ -398,6 +434,28 @@ impl HarLog {
     /// Tests only: a shorter idle time than 30 seconds (T17).
     pub fn set_idle_for_tests(&self, idle: Duration) {
         self.idle_ms.store(idle.as_millis() as u64, Ordering::Relaxed);
+    }
+}
+
+/// An entry for the list in the viewer: the bodies and WebSocket messages
+/// left out, their sizes kept. `_body` says a body is in the file, and
+/// `_messages` counts the messages. The page reads the whole entry when it
+/// shows one.
+pub fn summarize(entry: &mut Value) {
+    if let Some(content) = entry.pointer_mut("/response/content").and_then(Value::as_object_mut)
+        && content.remove("text").is_some()
+    {
+        content.insert("_body".into(), true.into());
+    }
+    if let Some(post) = entry.pointer_mut("/request/postData").and_then(Value::as_object_mut)
+        && post.remove("text").is_some()
+    {
+        post.insert("_body".into(), true.into());
+    }
+    if let Some(o) = entry.as_object_mut()
+        && let Some(Value::Array(messages)) = o.remove("_webSocketMessages")
+    {
+        o.insert("_messages".into(), messages.len().into());
     }
 }
 

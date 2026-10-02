@@ -1,10 +1,13 @@
 //! One HAR 1.2 entry (ADR 08, change 1, "What one entry holds").
 //!
 //! The network task copies what it saw into a [`HarRecord`]; the writer
-//! thread turns it into JSON with [`HarRecord::to_entry`]. Bodies are never
-//! copied (U1). The URL keeps its query (U2): the record is not built from a
-//! `LogEntry`, which drops it (ADR 01, I10).
+//! thread turns it into JSON with [`HarRecord::to_entry`]. Bodies are copied
+//! up to a limit (`capture.rs`) and decoded here, on the writer thread. The
+//! URL keeps its query (U2): the record is not built from a `LogEntry`, which
+//! drops it (ADR 01, I10).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use hyper::header::{self, HeaderMap};
@@ -12,12 +15,22 @@ use hyper::{StatusCode, Version};
 use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value, json};
 
+use super::capture::{Copied, DECODED_LIMIT};
+use super::websocket::WsMessage;
 use crate::logs::ProxyMode;
+use crate::scripts::bodies::{BodyClass, Decoder, Encoding, LimitedVec, Reservation};
+use crate::scripts::lua_api::base64_encode;
+
+/// Record ids: unique in one daemon run, so the viewer can match an open
+/// request with its entry.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// What the proxy saw of one request: copied by the network task, boxed, and
 /// freed after one write.
 #[derive(Debug, Clone)]
 pub struct HarRecord {
+    /// `_id` in the entry.
+    pub id: u64,
     /// When the proxy got the request.
     pub started: SystemTime,
     /// Milliseconds until the response headers (or until a tunnel closed).
@@ -41,12 +54,26 @@ pub struct HarRecord {
     /// Tunnels only.
     pub bytes_in: Option<u64>,
     pub bytes_out: Option<u64>,
+    /// What passed of the bodies, when the log copied them.
+    pub request_body: Option<Copied>,
+    pub response_body: Option<Copied>,
+    /// Milliseconds from the response headers to the end of the body, or
+    /// how long a WebSocket stayed open.
+    pub receive_ms: u64,
+    /// The response body did not end normally.
+    pub body_error: Option<String>,
+    /// The messages of a WebSocket, and how many were not kept.
+    pub ws_messages: Option<Vec<WsMessage>>,
+    pub ws_dropped: u64,
+    /// The memory the copies take, given back when the record is freed.
+    pub held: Vec<Arc<Reservation>>,
 }
 
 impl HarRecord {
     /// A record with no headers: the caller fills what it knows.
     pub fn new(started: SystemTime, method: &str, url: String, mode: ProxyMode) -> Self {
         Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             started,
             wait_ms: 0,
             method: method.to_string(),
@@ -62,6 +89,13 @@ impl HarRecord {
             script_error: None,
             bytes_in: None,
             bytes_out: None,
+            request_body: None,
+            response_body: None,
+            receive_ms: 0,
+            body_error: None,
+            ws_messages: None,
+            ws_dropped: 0,
+            held: vec![],
         }
     }
 
@@ -112,13 +146,9 @@ impl HarRecord {
             .collect();
         let response_headers: Vec<Value> =
             self.response_headers.iter().map(|(name, value)| header_json(name.as_str(), value.as_bytes())).collect();
-        let request_size = content_length(&self.request_headers);
-        let response_size = content_length(&self.response_headers);
-        let mime = self
-            .response_headers
-            .get(header::CONTENT_TYPE)
-            .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
-            .unwrap_or_default();
+        let request_size = self.request_body.as_ref().map(|c| c.size).or_else(|| content_length(&self.request_headers));
+        let response_size = self.response_body.as_ref().map(|c| c.size).or_else(|| content_length(&self.response_headers));
+        let mime = header_text(&self.response_headers, header::CONTENT_TYPE).unwrap_or_default();
         let redirect = self
             .response_headers
             .get(header::LOCATION)
@@ -126,22 +156,35 @@ impl HarRecord {
             .unwrap_or_default();
         let status_text = StatusCode::from_u16(self.status).ok().and_then(|s| s.canonical_reason()).unwrap_or("");
 
+        let mut content = json!({ "size": response_size.unwrap_or(0), "mimeType": mime });
+        if let Some(copied) = self.response_body.as_ref().filter(|c| c.size > 0) {
+            body_fields(&mut content, copied, Some(&mime), header_text(&self.response_headers, header::CONTENT_ENCODING).as_deref());
+        }
+        let mut request = json!({
+            "method": self.method,
+            "url": self.url,
+            "httpVersion": version(self.request_version),
+            "cookies": [],
+            "headers": request_headers,
+            "queryString": query_string(&self.url),
+            "headersSize": -1,
+            "bodySize": request_size.map_or(-1, |n| n as i64),
+        });
+        if let Some(copied) = self.request_body.as_ref().filter(|c| c.size > 0) {
+            let ctype = header_text(&self.request_headers, header::CONTENT_TYPE).unwrap_or_default();
+            let mut post = json!({ "mimeType": ctype });
+            body_fields(&mut post, copied, Some(&ctype), header_text(&self.request_headers, header::CONTENT_ENCODING).as_deref());
+            if let Some(o) = post.as_object_mut() {
+                o.remove("size");
+            }
+            request["postData"] = post;
+        }
+
         let mut entry = Map::new();
+        entry.insert("_id".into(), self.id.into());
         entry.insert("startedDateTime".into(), iso_ms(self.started).into());
-        entry.insert("time".into(), self.wait_ms.into());
-        entry.insert(
-            "request".into(),
-            json!({
-                "method": self.method,
-                "url": self.url,
-                "httpVersion": version(self.request_version),
-                "cookies": [],
-                "headers": request_headers,
-                "queryString": query_string(&self.url),
-                "headersSize": -1,
-                "bodySize": request_size.map_or(-1, |n| n as i64),
-            }),
-        );
+        entry.insert("time".into(), (self.wait_ms + self.receive_ms).into());
+        entry.insert("request".into(), request);
         entry.insert(
             "response".into(),
             json!({
@@ -150,15 +193,25 @@ impl HarRecord {
                 "httpVersion": version(self.response_version),
                 "cookies": [],
                 "headers": response_headers,
-                "content": { "size": response_size.unwrap_or(0), "mimeType": mime },
+                "content": content,
                 "redirectURL": redirect,
                 "headersSize": -1,
                 "bodySize": response_size.map_or(-1, |n| n as i64),
             }),
         );
         entry.insert("cache".into(), json!({}));
-        entry.insert("timings".into(), json!({ "send": 0, "wait": self.wait_ms, "receive": 0 }));
+        entry.insert("timings".into(), json!({ "send": 0, "wait": self.wait_ms, "receive": self.receive_ms }));
         entry.insert("_mode".into(), mode(self.mode).into());
+        if let Some(messages) = &self.ws_messages {
+            entry.insert("_resourceType".into(), "websocket".into());
+            entry.insert("_webSocketMessages".into(), serde_json::to_value(messages).unwrap_or_default());
+            if self.ws_dropped > 0 {
+                entry.insert("_webSocketDropped".into(), self.ws_dropped.into());
+            }
+        }
+        if let Some(e) = &self.body_error {
+            entry.insert("_bodyError".into(), e.clone().into());
+        }
         if let Some(route) = &self.route {
             entry.insert("_route".into(), route.clone().into());
         }
@@ -175,6 +228,70 @@ impl HarRecord {
             entry.insert("_bytesOut".into(), n.into());
         }
         Value::Object(entry)
+    }
+}
+
+fn header_text(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
+    headers.get(name).map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
+}
+
+/// `text`, `encoding` (`base64` for bytes that are not text), `size` after
+/// decoding, and `_truncated` when only the first bytes were kept.
+fn body_fields(target: &mut Value, copied: &Copied, content_type: Option<&str>, content_encoding: Option<&str>) {
+    let Some(o) = target.as_object_mut() else { return };
+    let (bytes, cut) = match decode(copied, Encoding::of(content_encoding)) {
+        Ok(v) => v,
+        Err(why) => {
+            o.insert("_decodeError".into(), why.into());
+            (copied.data.clone(), copied.truncated)
+        }
+    };
+    let ct = content_type.filter(|c| !c.is_empty());
+    let text_like = ct.is_none() || matches!(BodyClass::of(ct), BodyClass::Text | BodyClass::Events);
+    let text = if text_like {
+        match std::str::from_utf8(&bytes) {
+            Ok(t) => Some(t.to_string()),
+            // A cut body may end inside a character.
+            Err(e) if cut && e.error_len().is_none() => Some(String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned()),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    match text {
+        Some(t) => {
+            o.insert("text".into(), t.into());
+        }
+        None => {
+            o.insert("text".into(), base64_encode(&bytes).into());
+            o.insert("encoding".into(), "base64".into());
+        }
+    }
+    if cut {
+        o.insert("_truncated".into(), true.into());
+    } else {
+        o.insert("size".into(), bytes.len().into());
+    }
+}
+
+/// The body without its Content-Encoding, and whether it is cut. A cut body
+/// gives what decodes of its first bytes.
+fn decode(copied: &Copied, encoding: Encoding) -> Result<(Vec<u8>, bool), String> {
+    if matches!(encoding, Encoding::Identity | Encoding::Unknown) {
+        return Ok((copied.data.clone(), copied.truncated));
+    }
+    let mut d = Decoder::new(encoding, LimitedVec::new(DECODED_LIMIT)).map_err(|e| e.to_string())?;
+    match d.write_all(&copied.data) {
+        Ok(()) => {}
+        Err(_) if d.sink().truncated || copied.truncated => return Ok((std::mem::take(&mut d.sink_mut().data), true)),
+        Err(e) => return Err(format!("the body does not decode: {e}")),
+    }
+    if copied.truncated {
+        return Ok((std::mem::take(&mut d.sink_mut().data), true));
+    }
+    match d.finish() {
+        Ok(v) => Ok((v.data, v.truncated)),
+        Err(e) => Err(format!("the body does not decode: {e}")),
     }
 }
 
@@ -357,5 +474,83 @@ mod tests {
         assert_eq!(value(&e["request"]["headers"], "x-api-key"), "k");
         assert_eq!(value(&e["request"]["headers"], "accept"), "*/*");
         assert_eq!(value(&e["response"]["headers"], "set-cookie"), "b=2");
+    }
+
+    fn copied(data: &[u8], size: u64, truncated: bool) -> Copied {
+        Copied { data: data.to_vec(), size, truncated }
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    // Bodies: text as it is, sizes from the bytes that passed, the time to
+    // the end of the body.
+    #[test]
+    fn text_bodies_are_written_with_their_sizes() {
+        let mut r = get();
+        r.method = "POST".into();
+        r.request_headers.insert("content-type", HeaderValue::from_static("application/json"));
+        r.request_body = Some(copied(br#"{"q":1}"#, 7, false));
+        r.response_body = Some(copied(br#"{"ok":true}"#, 11, false));
+        r.receive_ms = 5;
+        let e = r.to_entry();
+        assert_eq!(e["request"]["postData"], json!({"mimeType": "application/json", "text": "{\"q\":1}"}));
+        assert_eq!(e["request"]["bodySize"], 7);
+        assert_eq!(e["response"]["content"], json!({"size": 11, "mimeType": "application/json", "text": "{\"ok\":true}"}));
+        assert_eq!(e["response"]["bodySize"], 11);
+        assert_eq!((e["time"].as_u64(), e["timings"]["receive"].as_u64()), (Some(17), Some(5)));
+        assert!(e["_id"].as_u64().unwrap() > 0);
+    }
+
+    // A gzip body is written decoded; bodySize stays the bytes on the wire.
+    #[test]
+    fn an_encoded_body_is_decoded() {
+        let plain = "hello ".repeat(1000);
+        let wire = gzip(plain.as_bytes());
+        let mut r = get();
+        r.response_headers.insert("content-type", HeaderValue::from_static("text/plain; charset=utf-8"));
+        r.response_headers.insert("content-encoding", HeaderValue::from_static("gzip"));
+        r.response_body = Some(copied(&wire, wire.len() as u64, false));
+        let e = r.to_entry();
+        assert_eq!(e["response"]["content"]["text"], plain);
+        assert_eq!(e["response"]["content"]["size"], plain.len());
+        assert_eq!(e["response"]["bodySize"], wire.len());
+    }
+
+    // Bytes that are not text are base64; a cut body says so.
+    #[test]
+    fn binary_and_cut_bodies() {
+        let mut r = get();
+        r.response_headers.insert("content-type", HeaderValue::from_static("image/png"));
+        r.response_body = Some(copied(&[0x89, b'P', b'N', b'G'], 9000, true));
+        let e = r.to_entry();
+        let c = &e["response"]["content"];
+        assert_eq!((c["text"].as_str(), c["encoding"].as_str()), (Some("iVBORw=="), Some("base64")));
+        assert_eq!(c["_truncated"], true);
+        assert_eq!(e["response"]["bodySize"], 9000);
+
+        let mut r = get();
+        r.response_headers.insert("content-type", HeaderValue::from_static("text/plain"));
+        r.response_body = Some(copied("aé".as_bytes().split_at(2).0, 3, true));
+        assert_eq!(r.to_entry()["response"]["content"]["text"], "a", "a cut character is left out");
+    }
+
+    // A WebSocket keeps its messages in Chrome's field.
+    #[test]
+    fn websocket_messages() {
+        let mut r = get();
+        r.status = 101;
+        r.ws_messages = Some(vec![WsMessage { kind: "send", time: 1.5, opcode: 1, data: "hi".into(), size: 2, truncated: false }]);
+        r.ws_dropped = 3;
+        r.receive_ms = 4000;
+        let e = r.to_entry();
+        assert_eq!(e["_resourceType"], "websocket");
+        assert_eq!(e["_webSocketMessages"], json!([{"type": "send", "time": 1.5, "opcode": 1, "data": "hi", "_size": 2}]));
+        assert_eq!(e["_webSocketDropped"], 3);
+        assert_eq!(e["timings"]["receive"], 4000);
     }
 }

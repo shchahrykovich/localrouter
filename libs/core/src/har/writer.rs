@@ -70,11 +70,14 @@ pub struct State {
     pub error: Option<String>,
     /// Entry counts of the files this run wrote, at most [`KEEP_FILES`].
     counts: Vec<(String, u64)>,
+    /// Where the last appended entry starts in its file: the viewer reads
+    /// one whole entry from there.
+    pub last_at: u64,
 }
 
 impl State {
     pub fn new(folder: PathBuf) -> Self {
-        Self { folder, current: None, file: None, error: None, counts: vec![] }
+        Self { folder, current: None, file: None, error: None, counts: vec![], last_at: 0 }
     }
 
     pub fn is_open(&self) -> bool {
@@ -129,6 +132,7 @@ impl State {
         buf.extend_from_slice(line);
         buf.extend_from_slice(CLOSING);
         let at = current.size - CLOSING.len() as u64;
+        self.last_at = at + if current.entries == 0 { 1 } else { 2 };
         let file = self.file.as_ref().expect("an open file");
         file.write_all_at(&buf, at).map_err(|e| format!("cannot write {}: {e}", current.path.display()))?;
         current.size = at + buf.len() as u64;

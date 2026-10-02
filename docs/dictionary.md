@@ -330,7 +330,8 @@ Archive), the JSON format Chrome DevTools saves and imports. The files are
 `proxy-YYYYMMDD-HHMMSS.har` in `<logs folder>/proxy/`; a new file starts at
 `proxy_log_file_mb` or `proxy_log_file_requests`, and the 5 newest are kept.
 One entry holds the URL with its query, the headers as they are, the
-status and the time to the response headers; never a body. The in-memory
+status, the times, the first 1 MB of each body, and a WebSocket's
+messages. An entry is written when its response body ends. The in-memory
 request log does not change: it still has no headers and no query.
 
 ### Proxy log viewer

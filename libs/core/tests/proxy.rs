@@ -1002,5 +1002,33 @@ mod proxy_log {
         assert_eq!(json(&body)["entries"][0]["i"], 19499);
     }
 
+    // The list has no bodies, only that they exist; /api/entry gives one
+    // whole entry at the offset the list names.
+    #[tokio::test]
+    async fn proxy_log_list_without_bodies_and_one_whole_entry() {
+        let v = viewer(vec![]).await;
+        let mut r = HarRecord::new(SystemTime::now(), "POST", "http://api.example.com/v1".into(), ProxyMode::Http);
+        r.status = 200;
+        r.response_headers.insert("content-type", "application/json".parse().unwrap());
+        r.request_body = Some(localrouter_core::har::capture::Copied { data: b"{}".to_vec(), size: 2, truncated: false });
+        r.response_body = Some(localrouter_core::har::capture::Copied { data: br#"{"ok":1}"#.to_vec(), size: 8, truncated: false });
+        v.har.record(r);
+        written(&v.har, 1).await;
+        let name = files(&v).await["files"][0]["name"].as_str().unwrap().to_string();
+        let (_, _, body) = get(v.http, "proxy.localhost", &format!("/api/entries?file={name}")).await;
+        let e = &json(&body)["entries"][0];
+        assert!(e["response"]["content"].get("text").is_none(), "no body in the list: {e}");
+        assert_eq!(e["response"]["content"]["_body"], true);
+        assert_eq!(e["request"]["postData"]["_body"], true);
+        let at = e["_at"].as_u64().unwrap();
+        let (status, _, body) = get(v.http, "proxy.localhost", &format!("/api/entry?file={name}&at={at}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let whole = json(&body);
+        assert_eq!(whole["response"]["content"]["text"], r#"{"ok":1}"#);
+        assert_eq!(whole["request"]["postData"]["text"], "{}");
+        let (status, _, _) = get(v.http, "proxy.localhost", &format!("/api/entry?file={name}&at={}", at + 1)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     use serde_json::json;
 }

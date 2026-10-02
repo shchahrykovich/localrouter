@@ -295,7 +295,10 @@ DevTools imports) in `{{PROXY_LOG_FOLDER}}`. The user sees them at
 is on; `{{CLI}} proxy log` shows its state, `{{CLI}} proxy log off` stops it.
 
 - Headers are written as they are, cookies and API keys too. URLs are
-  written as they are, query included. Bodies are not written.
+  written as they are, query included. Request and response bodies are
+  written too, the first 1 MB of each, decoded from gzip, br or zstd
+  (`content.text`; base64 when they are not text). A WebSocket is written
+  when it closes, with its messages in `_webSocketMessages`.
 - **Do not read a whole file**: one can be 20 MB. Use `jq` and ask for the
   rows you need.
 - The current file can be in the middle of a write. If `jq` fails on it, run
