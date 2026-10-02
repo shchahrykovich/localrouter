@@ -153,6 +153,11 @@ pub struct RecordingBody {
     inner: Body,
     copy: BodyCopy,
     finish: Option<Finish>,
+    /// `Content-Length`: hyper stops polling once it sent that many bytes,
+    /// before a body like a file's can say it ended.
+    length: Option<u64>,
+    /// Data bytes that passed.
+    seen: u64,
 }
 
 impl RecordingBody {
@@ -173,8 +178,9 @@ impl hyper::body::Body for RecordingBody {
             Some(Ok(f)) => {
                 if let Some(data) = f.data_ref() {
                     self.copy.push(data);
+                    self.seen += data.len() as u64;
                 }
-                if self.inner.is_end_stream() {
+                if self.inner.is_end_stream() || self.length.is_some_and(|n| self.seen >= n) {
                     self.end(None);
                 }
             }
@@ -251,13 +257,18 @@ impl HarLog {
     /// The response the client gets. Its entry is written when the body
     /// ends; a body that never ends is written when the client goes away.
     pub fn finish(self: &Arc<Self>, record: HarRecord, request: Option<BodyCopy>, resp: Response<Body>) -> Response<Body> {
+        let length = resp
+            .headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
         let streams = !resp.headers().contains_key(hyper::header::CONTENT_LENGTH);
         if streams {
             self.send_open(&record);
         }
         let copy = BodyCopy::new(self.budget.clone());
         let finish = Finish { log: self.clone(), record, request, headers_at: Instant::now() };
-        resp.map(|inner| RecordingBody { inner, copy, finish: Some(finish) }.boxed_unsync())
+        resp.map(|inner| RecordingBody { inner, copy, finish: Some(finish), length, seen: 0 }.boxed_unsync())
     }
 }
 

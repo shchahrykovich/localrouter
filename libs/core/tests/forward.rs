@@ -222,11 +222,17 @@ async fn harness() -> Harness {
         asked: Mutex::new(vec![]),
     });
 
+    let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
+    // A folder route: its files have a Content-Length the body ends at.
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("big.txt"), "x".repeat(300_000)).unwrap();
+    std::fs::write(site.join("small.txt"), "hi\n").unwrap();
     let mut table = RouteTable::new();
     table.insert(route("shop", format!("http://127.0.0.1:{}", echo.port())));
+    table.insert(route("site", format!("file://{}", site.display())));
     let routes = Arc::new(Table(RwLock::new(table)));
     let log = Arc::new(RequestLog::new(100));
-    let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
     let scripts = Scripts::new();
     let har = HarLog::new(HarSettings {
         folder: dir.path().join("logs/proxy"),
@@ -716,6 +722,38 @@ async fn har_records_request_and_response_bodies() {
     assert!(text.contains("/v1/messages"), "the echo body: {text}");
     assert!(answer.ends_with(text), "the entry holds what the client got");
     assert!(e["_id"].as_u64().is_some());
+}
+
+// A file of a folder route that the client read to the end is a whole
+// response: no `_bodyError`, every byte counted.
+#[tokio::test]
+async fn har_folder_route_bodies_read_to_the_end_have_no_error() {
+    let h = harness().await;
+    for (path, len) in [("/big.txt", 300_000), ("/small.txt", 3)] {
+        let (status, body) = send(h.proxy, &format!("http://site.localhost{path}"), &[]).await;
+        assert_eq!((status, body.len()), (StatusCode::OK, len), "{path}");
+    }
+    let entries = har_entries(&h, 2).await;
+    for e in &entries {
+        let url = e["request"]["url"].as_str().unwrap();
+        assert!(e.get("_bodyError").is_none(), "{url}: {}", e["_bodyError"]);
+        let len = if url.ends_with("/big.txt") { 300_000 } else { 3 };
+        assert_eq!(e["response"]["bodySize"], len, "{url}");
+    }
+}
+
+// A client that goes away in the middle of a file: the entry says so.
+#[tokio::test]
+async fn har_folder_route_body_cut_by_the_client_has_an_error() {
+    let h = harness().await;
+    std::fs::write(h._dir.path().join("site/huge.txt"), vec![b'x'; 32 << 20]).unwrap();
+    let mut s = TcpStream::connect(h.proxy).await.unwrap();
+    s.write_all(b"GET http://site.localhost/huge.txt HTTP/1.1\r\nHost: site.localhost\r\n\r\n").await.unwrap();
+    let mut buf = vec![0u8; 64 << 10];
+    s.read_exact(&mut buf).await.unwrap();
+    drop(s);
+    let entries = har_entries(&h, 1).await;
+    assert_eq!(entries[0]["_bodyError"], "the client closed the connection before the body ended");
 }
 
 /// A WebSocket server that sends back every text and binary message.
