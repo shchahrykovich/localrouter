@@ -220,6 +220,32 @@ public struct ProxyStatus: Codable, Equatable, Sendable {
     public var errors: [String]
     /// Nil until the inspection CA exists.
     public var inspectCa: CaStatus?
+    /// The proxy clients' ports (ADR 09). Nil when there are none, and from
+    /// daemons before API 1.6.
+    public var clients: [ProxyClientStatus]?
+}
+
+/// One more proxy port, for one client (ADR 09). The log marks each request
+/// with the name of the port that carried it.
+public struct ProxyClient: Codable, Equatable, Sendable, Identifiable {
+    public var name: String
+    public var port: UInt16
+    public var id: String { name }
+    public init(name: String, port: UInt16) {
+        self.name = name
+        self.port = port
+    }
+
+    enum CodingKeys: String, CodingKey { case name, port }
+}
+
+/// One proxy client's port and whether it is bound (ADR 09).
+public struct ProxyClientStatus: Codable, Equatable, Sendable {
+    public var name: String
+    public var configured: UInt16
+    public var port: UInt16?
+    public var bound: [String]
+    public var errors: [String]
 }
 
 public struct RegisterRouteResult: Codable, Equatable, Sendable {
@@ -419,6 +445,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var proxyLogFileRequests: UInt64?
     /// The networks where LAN access applies (ADR 08).
     public var lanNetworks: [LanNetwork]?
+    /// More proxy ports, one per client (ADR 09). Nil from a daemon before 1.6.
+    public var proxyClients: [ProxyClient]?
 }
 
 public struct SetConfigParams: Codable, Equatable, Sendable {
@@ -437,9 +465,12 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     public var proxyLogFileRequests: UInt64?
     /// Replaces the whole list (ADR 08).
     public var lanNetworks: [LanNetwork]?
+    /// Replaces the whole list of proxy clients (ADR 09).
+    public var proxyClients: [ProxyClient]?
     public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
                 inspectHosts: [String]? = nil, proxyLog: Bool? = nil,
-                proxyLogFileMb: UInt64? = nil, proxyLogFileRequests: UInt64? = nil, lanNetworks: [LanNetwork]? = nil) {
+                proxyLogFileMb: UInt64? = nil, proxyLogFileRequests: UInt64? = nil, lanNetworks: [LanNetwork]? = nil,
+                proxyClients: [ProxyClient]? = nil) {
         self.fallback = fallback
         self.allowLan = allowLan
         self.proxyEnabled = proxyEnabled
@@ -449,6 +480,7 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
         self.proxyLogFileMb = proxyLogFileMb
         self.proxyLogFileRequests = proxyLogFileRequests
         self.lanNetworks = lanNetworks
+        self.proxyClients = proxyClients
     }
 }
 
@@ -462,9 +494,19 @@ public struct ResetCaResult: Codable, Equatable, Sendable {
     public var commonName: String
 }
 
+/// `get_proxy` for one proxy client's port (ADR 09); nil for the main port.
+public struct GetProxyParams: Codable, Equatable, Sendable {
+    public var client: String?
+    public init(client: String? = nil) {
+        self.client = client
+    }
+}
+
 /// Everything a client needs to use the forward proxy (ADR 06).
 public struct GetProxyResult: Codable, Equatable, Sendable {
     public var enabled: Bool
+    /// The proxy client this reply is for (ADR 09); nil for the main port.
+    public var client: String?
     public var url: String
     public var port: UInt16
     public var bound: [String]
@@ -483,14 +525,18 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
     /// The HAR log of proxy traffic (ADR 08). Nil from a 1.4 daemon: the app
     /// then hides the log controls.
     public var log: ProxyLogStatus?
+    /// Every proxy client's port (ADR 09). Nil when there are none.
+    public var clients: [ProxyClientStatus]?
 
     enum CodingKeys: String, CodingKey {
-        case enabled, url, port, bound, errors, inspectHosts, inspectSet, inspectCa, env, chromeArgs, notes, scriptRules, log
+        case enabled, client, url, port, bound, errors, inspectHosts, inspectSet, inspectCa, env, chromeArgs, notes, scriptRules, log,
+             clients
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decode(Bool.self, forKey: .enabled)
+        client = try c.decodeIfPresent(String.self, forKey: .client)
         url = try c.decode(String.self, forKey: .url)
         port = try c.decode(UInt16.self, forKey: .port)
         bound = try c.decode([String].self, forKey: .bound)
@@ -503,6 +549,7 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
         notes = try c.decode([String].self, forKey: .notes)
         scriptRules = try c.decodeIfPresent([ScriptRuleView].self, forKey: .scriptRules) ?? []
         log = try c.decodeIfPresent(ProxyLogStatus.self, forKey: .log)
+        clients = try c.decodeIfPresent([ProxyClientStatus].self, forKey: .clients)
     }
 }
 

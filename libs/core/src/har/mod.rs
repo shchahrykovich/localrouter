@@ -83,6 +83,15 @@ pub struct FileInfo {
     pub current: bool,
 }
 
+/// One proxy port, for the viewer's client menu (ADR 09).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ClientInfo {
+    /// The proxy client's name; `default` for the main port.
+    pub name: String,
+    /// The bound port, or `None` while it is not listening.
+    pub port: Option<u16>,
+}
+
 /// What the log holds right now. Tests use it to prove the idle state (T17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resources {
@@ -103,6 +112,8 @@ pub struct HarLog {
     failed: AtomicBool,
     /// `proxy_enabled`, for the viewer's state line.
     proxy_on: AtomicBool,
+    /// The proxy ports, for the viewer's client menu (ADR 09).
+    clients: Mutex<Vec<ClientInfo>>,
     file_mb: AtomicU64,
     file_requests: AtomicU64,
     dropped: AtomicU64,
@@ -131,6 +142,7 @@ impl HarLog {
             on: AtomicBool::new(settings.enabled),
             failed: AtomicBool::new(false),
             proxy_on: AtomicBool::new(false),
+            clients: Mutex::new(vec![]),
             file_mb: AtomicU64::new(settings.file_mb),
             file_requests: AtomicU64::new(settings.file_requests),
             dropped: AtomicU64::new(0),
@@ -337,6 +349,15 @@ impl HarLog {
 
     pub fn proxy_on(&self) -> bool {
         self.proxy_on.load(Ordering::Relaxed)
+    }
+
+    /// The daemon sets the proxy ports each time one binds or closes.
+    pub fn set_clients(&self, clients: Vec<ClientInfo>) {
+        *self.clients.lock().unwrap() = clients;
+    }
+
+    pub fn clients(&self) -> Vec<ClientInfo> {
+        self.clients.lock().unwrap().clone()
     }
 
     pub fn limits(&self) -> (u64, u64) {

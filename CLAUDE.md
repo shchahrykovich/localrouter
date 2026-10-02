@@ -12,7 +12,9 @@ decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
 `docs/adr/06-forward-proxy-2026-10-01/` (a forward proxy for Chrome and Claude Code),
 `docs/adr/07-proxy-scripts-lua-2026-10-01/` (Lua scripts that change or record traffic) and
 `docs/adr/08-proxy-har-log-2026-10-02/` (the proxy log in HAR files, its viewer at
-`proxy.localhost`, LAN access per network).
+`proxy.localhost`, LAN access per network) and
+`docs/adr/09-proxy-clients-2026-10-02/` (one more proxy port per client, `_client`
+in the log, `proxy.localhost/<client>`).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 

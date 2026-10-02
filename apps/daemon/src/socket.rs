@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use localrouter_core::api::{
-    ApiError, Empty, ErrorCode, Event, FindFreePortParams, GetLogsParams, HelloParams, HostParams, IdParams, Request,
+    ApiError, Empty, ErrorCode, Event, FindFreePortParams, GetLogsParams, GetProxyParams, HelloParams, HostParams, IdParams, Request,
     Response, SetConfigParams, SetScriptRuleParams, SubscribeLogsParams, SubscribeLogsResult,
 };
 use localrouter_core::routes::Route;
@@ -142,8 +142,7 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, write: &Arc<Mutex<OwnedWri
         "set_config" => json(daemon.set_config(params::<SetConfigParams>(req.params)?).await?),
         "reset_ca" => json(daemon.reset_ca().await?),
         "get_proxy" => {
-            let _: Empty = params(req.params)?;
-            json(daemon.get_proxy().await)
+            json(daemon.get_proxy(params::<GetProxyParams>(req.params)?).await?)
         }
         "reset_inspect_ca" => {
             let _: Empty = params(req.params)?;

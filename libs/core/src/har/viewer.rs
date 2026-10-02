@@ -6,6 +6,9 @@
 //! Three rules: loopback peers only (I8), `GET` and `HEAD` only, no CORS
 //! headers (I10); only our HAR files are served, never a link (I9). Nothing
 //! is kept between requests, and no request holds a whole file (I22).
+//!
+//! `/<client>` is the same page with one proxy client chosen (ADR 09), and
+//! `/api/entries?client=<name>` gives only that client's entries.
 
 use std::convert::Infallible;
 use std::error::Error;
@@ -27,6 +30,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::{CLOSING, HarLog, KEEP_FILES, LiveEvent, file_key, summarize};
+use crate::config::{DEFAULT_CLIENT, ProxyClient};
 use crate::proxy::Body;
 
 /// Files and `/api/entries` are read in chunks of this size.
@@ -36,6 +40,9 @@ pub const MAX_ENTRIES: usize = 2000;
 /// Bytes of entry lines one `/api/entries` call reads at most: with bodies a
 /// line can be large, so a page may hold fewer entries than asked.
 pub const PAGE_BYTES: usize = 16 << 20;
+/// Bytes of entry lines one `/api/entries` call looks at, kept or not: with a
+/// client filter few lines may match, and a call never reads a whole file.
+pub const SCAN_BYTES: usize = 64 << 20;
 /// The longest entry `/api/entry` reads.
 pub const MAX_ENTRY: u64 = 64 << 20;
 /// A comment line on `/api/live` this often keeps the connection open.
@@ -77,9 +84,36 @@ pub async fn serve(log: &Arc<HarLog>, ctx: ViewerContext<'_>, method: &Method, u
         "/api/live" => live(log),
         _ => match path.strip_prefix("/files/") {
             Some(name) => file(log, name, query.split('&').any(|p| p == "download=1")).await,
-            None => text(StatusCode::NOT_FOUND, "Not found.\n"),
+            None => client_page(log, path),
         },
     }
+}
+
+/// `/<client>`: the page, with that client chosen by the script (ADR 09),
+/// for `default` and the clients in the config; any other name is not found.
+/// `/<client>/` goes to `/<client>`, so the page's relative URLs work.
+fn client_page(log: &HarLog, path: &str) -> Response<Body> {
+    let name = path.trim_start_matches('/');
+    let (name, slash) = match name.strip_suffix('/') {
+        Some(n) => (n, true),
+        None => (name, false),
+    };
+    if !is_client_name(name) || !log.clients().iter().any(|c| c.name == name) {
+        return text(StatusCode::NOT_FOUND, "Not found.\n");
+    }
+    if !slash {
+        return fixed(HTML, "text/html; charset=utf-8");
+    }
+    let mut r = text(StatusCode::FOUND, "Moved.\n");
+    if let Ok(v) = HeaderValue::from_str(&format!("../{name}")) {
+        r.headers_mut().insert(header::LOCATION, v);
+    }
+    r
+}
+
+/// A name a client page or filter may have: `default`, or a valid client name.
+fn is_client_name(name: &str) -> bool {
+    name == DEFAULT_CLIENT || ProxyClient::check_name(name).is_ok()
 }
 
 /// The security headers every answer carries.
@@ -127,6 +161,7 @@ fn files_json(log: &HarLog, ctx: &ViewerContext<'_>) -> serde_json::Value {
         "dropped": log.dropped(),
         "error": log.error(),
         "cli": ctx.cli,
+        "clients": log.clients(),
         "files": log.files(),
     })
 }
@@ -202,30 +237,37 @@ async fn file(log: &HarLog, name: &str, download: bool) -> Response<Body> {
     secure(r)
 }
 
-/// `/api/entries?file=<name>&before=<offset>&limit=<n>`: the newest entries
-/// before byte `before`, newest first, read backwards from the end in chunks
-/// (I22). `before` in the answer is the cursor for the next page, `null` at
-/// the start of the file. Each entry is a summary without bodies (see
-/// [`summarize`]), with `_at`: where it starts, for `/api/entry`.
+/// `/api/entries?file=<name>&before=<offset>&limit=<n>&client=<name>`: the
+/// newest entries before byte `before`, newest first, read backwards from the
+/// end in chunks (I22). `before` in the answer is the cursor for the next
+/// page, `null` at the start of the file. Each entry is a summary without
+/// bodies (see [`summarize`]), with `_at`: where it starts, for `/api/entry`.
+/// With `client`, only that proxy client's entries (ADR 09); the page may
+/// then be short or empty and still have a cursor.
 async fn entries(log: &HarLog, query: &str) -> Response<Body> {
     let mut name = None;
     let mut before = None;
     let mut limit = 500usize;
+    let mut client = None;
     for pair in query.split('&') {
         match pair.split_once('=') {
             Some(("file", v)) => name = Some(v.to_string()),
             Some(("before", v)) => before = v.parse::<u64>().ok(),
             Some(("limit", v)) => limit = v.parse::<usize>().unwrap_or(500).clamp(1, MAX_ENTRIES),
+            Some(("client", v)) if !v.is_empty() => client = Some(v.to_string()),
             _ => {}
         }
     }
     let Some(name) = name else { return text(StatusCode::BAD_REQUEST, "Give file=<name>.\n") };
+    if client.as_deref().is_some_and(|c| !is_client_name(c)) {
+        return text(StatusCode::BAD_REQUEST, "No such proxy client name.\n");
+    }
     let Some(path) = checked(log, &name) else { return text(StatusCode::NOT_FOUND, "No such proxy log file.\n") };
     let Some((len, current)) = readable(log, &name, &path) else {
         return text(StatusCode::NOT_FOUND, "No such proxy log file.\n");
     };
     let end = before.map_or(len, |b| b.min(len));
-    let read = tokio::task::spawn_blocking(move || read_backwards(&path, end, limit)).await;
+    let read = tokio::task::spawn_blocking(move || read_backwards(&path, end, limit, client.as_deref())).await;
     let Ok(Ok((lines, next))) = read else { return text(StatusCode::NOT_FOUND, "The file could not be read.\n") };
     let lines: Vec<Vec<u8>> = lines
         .into_iter()
@@ -253,13 +295,20 @@ async fn entries(log: &HarLog, query: &str) -> Response<Body> {
 }
 
 /// Up to `limit` entry lines that end before byte `end`, newest first, each
-/// with the offset where it starts, and the offset where the oldest of them
-/// starts (`None` once the header is reached). It stops early after
-/// [`PAGE_BYTES`]. Memory: one chunk, one partial line and the lines returned.
+/// with the offset where it starts, and the offset where the oldest line it
+/// looked at starts (`None` once the header is reached). With `client`, only
+/// that client's lines are kept. It stops early after [`PAGE_BYTES`] kept or
+/// [`SCAN_BYTES`] looked at. Memory: one chunk, one partial line and the
+/// lines returned.
 #[allow(clippy::type_complexity)]
-pub fn read_backwards(path: &std::path::Path, end: u64, limit: usize) -> std::io::Result<(Vec<(u64, Vec<u8>)>, Option<u64>)> {
+pub fn read_backwards(
+    path: &std::path::Path,
+    end: u64,
+    limit: usize,
+    client: Option<&str>,
+) -> std::io::Result<(Vec<(u64, Vec<u8>)>, Option<u64>)> {
     let mut f = File::open(path)?;
-    let mut lines: Vec<(u64, Vec<u8>)> = vec![];
+    let mut walk = Walk { lines: vec![], limit, client, kept_bytes: 0, scanned: 0 };
     let mut carry: Vec<u8> = vec![];
     let mut pos = end;
     let mut buf = vec![0u8; CHUNK];
@@ -282,35 +331,62 @@ pub fn read_backwards(path: &std::path::Path, end: u64, limit: usize) -> std::io
             }
             let line = &chunk[i + 1..line_end];
             let offset = start + i as u64 + 1;
-            if let Some(done) = take_line(line, offset, &mut lines, limit) {
-                return Ok((lines, done));
+            if let Some(done) = walk.take(line, offset) {
+                return Ok((walk.lines, done));
             }
             line_end = i;
         }
         if start == 0 {
             // The first line of the file is the header.
-            return Ok((lines, None));
+            return Ok((walk.lines, None));
         }
         carry.extend_from_slice(&chunk[..line_end]);
         pos = start;
     }
 }
 
-/// One line read backwards. `Some(next)` when the walk is over.
-fn take_line(line: &[u8], offset: u64, lines: &mut Vec<(u64, Vec<u8>)>, limit: usize) -> Option<Option<u64>> {
-    let line = line.strip_suffix(b",").unwrap_or(line);
-    if line.starts_with(b"{\"log\"") {
-        return Some(None);
+/// The state of one backwards walk.
+struct Walk<'a> {
+    lines: Vec<(u64, Vec<u8>)>,
+    limit: usize,
+    client: Option<&'a str>,
+    kept_bytes: usize,
+    scanned: usize,
+}
+
+/// The one field a client filter reads; serde skips the rest of the line.
+#[derive(serde::Deserialize)]
+struct ClientTag<'a> {
+    #[serde(rename = "_client", borrow, default)]
+    client: Option<std::borrow::Cow<'a, str>>,
+}
+
+impl Walk<'_> {
+    /// One line read backwards. `Some(next)` when the walk is over.
+    fn take(&mut self, line: &[u8], offset: u64) -> Option<Option<u64>> {
+        let line = line.strip_suffix(b",").unwrap_or(line);
+        if line.starts_with(b"{\"log\"") {
+            return Some(None);
+        }
+        if line.first() != Some(&b'{') {
+            return None;
+        }
+        self.scanned += line.len();
+        let keep = match self.client {
+            None => serde_json::from_slice::<serde::de::IgnoredAny>(line).is_ok(),
+            Some(wanted) => match serde_json::from_slice::<ClientTag>(line) {
+                // The main port writes no `_client` (ADR 09).
+                Ok(tag) => tag.client.as_deref().unwrap_or(DEFAULT_CLIENT) == wanted,
+                Err(_) => false,
+            },
+        };
+        if keep {
+            self.lines.push((offset, line.to_vec()));
+            self.kept_bytes += line.len();
+        }
+        let full = self.lines.len() >= self.limit || self.kept_bytes >= PAGE_BYTES || self.scanned >= SCAN_BYTES;
+        full.then_some(Some(offset))
     }
-    if line.first() != Some(&b'{') {
-        return None;
-    }
-    if serde_json::from_slice::<serde::de::IgnoredAny>(line).is_err() {
-        return None;
-    }
-    lines.push((offset, line.to_vec()));
-    let bytes: usize = lines.iter().map(|(_, l)| l.len()).sum();
-    (lines.len() >= limit || bytes >= PAGE_BYTES).then_some(Some(offset))
 }
 
 /// `/api/entry?file=<name>&at=<offset>`: one whole entry, bodies and
@@ -450,13 +526,13 @@ mod tests {
         let path = dir.path().join("proxy-20261002-000000.har");
         std::fs::File::create(&path).unwrap().write_all(&har(3000, 100)).unwrap();
         let len = std::fs::metadata(&path).unwrap().len();
-        let (lines, next) = read_backwards(&path, len, 500).unwrap();
+        let (lines, next) = read_backwards(&path, len, 500, None).unwrap();
         assert_eq!(lines.len(), 500);
         assert_eq!(index(&lines[0].1), 2999);
         assert_eq!(index(&lines[499].1), 2500);
-        let (lines, next) = read_backwards(&path, next.unwrap(), 2000).unwrap();
+        let (lines, next) = read_backwards(&path, next.unwrap(), 2000, None).unwrap();
         assert_eq!((index(&lines[0].1), index(&lines[1999].1)), (2499, 500));
-        let (lines, next) = read_backwards(&path, next.unwrap(), 2000).unwrap();
+        let (lines, next) = read_backwards(&path, next.unwrap(), 2000, None).unwrap();
         assert_eq!(lines.len(), 500);
         assert_eq!(index(&lines[499].1), 0);
         assert_eq!(next, None, "the header ends the walk");
@@ -469,7 +545,7 @@ mod tests {
         let path = dir.path().join("proxy-20261002-000000.har");
         std::fs::File::create(&path).unwrap().write_all(&har(4, CHUNK * 2)).unwrap();
         let len = std::fs::metadata(&path).unwrap().len();
-        let (lines, next) = read_backwards(&path, len, 10).unwrap();
+        let (lines, next) = read_backwards(&path, len, 10, None).unwrap();
         assert_eq!(lines.iter().map(|(_, l)| index(l)).collect::<Vec<_>>(), vec![3, 2, 1, 0]);
         assert_eq!(next, None);
     }
@@ -482,13 +558,99 @@ mod tests {
         let path = dir.path().join("proxy-20261002-000000.har");
         std::fs::File::create(&path).unwrap().write_all(&har(3, 10)).unwrap();
         let len = std::fs::metadata(&path).unwrap().len();
-        let (lines, _) = read_backwards(&path, len, 10).unwrap();
+        let (lines, _) = read_backwards(&path, len, 10, None).unwrap();
         for (at, line) in &lines {
             assert_eq!(read_entry(&path, *at, len).as_deref(), Some(&line[..]));
         }
         assert_eq!(read_entry(&path, lines[0].0 + 1, len), None, "not the start of a line");
         assert_eq!(read_entry(&path, 0, len), None, "the header");
         assert_eq!(read_entry(&path, len, len), None);
+    }
+
+    /// Entries `i` with `_client`: none for i % 3 == 0 (the main port),
+    /// `chrome` for 1, `agent` for 2.
+    fn har_with_clients(entries: usize, pad: usize) -> Vec<u8> {
+        let mut out = br#"{"log":{"version":"1.2","creator":{"name":"x","version":"1"},"pages":[],"entries":["#.to_vec();
+        for i in 0..entries {
+            out.extend_from_slice(if i == 0 { b"\n" } else { b",\n" });
+            let client = match i % 3 {
+                0 => String::new(),
+                1 => ",\"_client\":\"chrome\"".to_string(),
+                _ => ",\"_client\":\"agent\"".to_string(),
+            };
+            out.extend_from_slice(format!("{{\"i\":{i}{client},\"pad\":\"{}\"}}", "x".repeat(pad)).as_bytes());
+        }
+        out.extend_from_slice(CLOSING);
+        out
+    }
+
+    // ADR 09: a client filter keeps only that client's lines, newest first;
+    // `default` is the lines without `_client`.
+    #[test]
+    fn a_client_filter_keeps_only_its_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-20261002-000000.har");
+        std::fs::File::create(&path).unwrap().write_all(&har_with_clients(30, 10)).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let indexes = |client| read_backwards(&path, len, 4, Some(client)).unwrap().0.iter().map(|(_, l)| index(l)).collect::<Vec<_>>();
+        assert_eq!(indexes("chrome"), vec![28, 25, 22, 19]);
+        assert_eq!(indexes("agent"), vec![29, 26, 23, 20]);
+        assert_eq!(indexes("default"), vec![27, 24, 21, 18]);
+        assert_eq!(indexes("nobody"), Vec::<u64>::new());
+        // The cursor goes on from the last line looked at.
+        let (lines, next) = read_backwards(&path, len, 4, Some("chrome")).unwrap();
+        assert_eq!(next, Some(lines[3].0));
+        let (lines, next) = read_backwards(&path, next.unwrap(), 100, Some("chrome")).unwrap();
+        assert_eq!(lines.iter().map(|(_, l)| index(l)).collect::<Vec<_>>(), vec![16, 13, 10, 7, 4, 1]);
+        assert_eq!(next, None);
+    }
+
+    // ADR 09: with a filter that matches nothing, a call stops after
+    // SCAN_BYTES and gives a cursor, instead of reading the whole file.
+    #[test]
+    fn a_filter_stops_after_scan_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-20261002-000000.har");
+        let pad = 1 << 20;
+        let count = SCAN_BYTES / pad + 8;
+        std::fs::File::create(&path).unwrap().write_all(&har_with_clients(count, pad)).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let (lines, next) = read_backwards(&path, len, 10, Some("nobody")).unwrap();
+        assert!(lines.is_empty());
+        let next = next.expect("a cursor inside the file");
+        let scanned = len - next;
+        assert!(scanned >= SCAN_BYTES as u64 && scanned < (SCAN_BYTES + 2 * pad) as u64, "looked at {scanned} bytes of {len}");
+        let (lines, rest) = read_backwards(&path, next, 10, Some("nobody")).unwrap();
+        assert!(lines.is_empty());
+        assert_eq!(rest, None, "the second call reaches the header");
+    }
+
+    // ADR 09: /<client> is the page for a known client, /<client>/ goes to
+    // /<client>, and any other name is not found.
+    #[test]
+    fn client_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = HarLog::new(super::super::HarSettings {
+            folder: dir.path().join("proxy"),
+            creator: "x".into(),
+            version: "1".into(),
+            enabled: true,
+            file_mb: 20,
+            file_requests: 5000,
+        });
+        let info = |name: &str| super::super::ClientInfo { name: name.into(), port: None };
+        log.set_clients(vec![info("default"), info("chrome"), info("agent-1")]);
+        for name in ["/chrome", "/default", "/agent-1"] {
+            let r = client_page(&log, name);
+            assert_eq!(r.status(), StatusCode::OK, "{name}");
+            assert_eq!(r.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        }
+        let r = client_page(&log, "/chrome/");
+        assert_eq!(r.status(), StatusCode::FOUND);
+        assert_eq!(r.headers()[header::LOCATION], "../chrome");
+        for name in ["/nope", "/nope/", "/Chrome", "/a/b", "/x.js", "/-a", "/"] {
+            assert_eq!(client_page(&log, name).status(), StatusCode::NOT_FOUND, "{name}");
+        }
     }
 
     // A page stops at PAGE_BYTES, and its cursor goes on from there.
@@ -498,9 +660,9 @@ mod tests {
         let path = dir.path().join("proxy-20261002-000000.har");
         std::fs::File::create(&path).unwrap().write_all(&har(5, PAGE_BYTES / 2)).unwrap();
         let len = std::fs::metadata(&path).unwrap().len();
-        let (lines, next) = read_backwards(&path, len, 100).unwrap();
+        let (lines, next) = read_backwards(&path, len, 100, None).unwrap();
         assert_eq!(lines.len(), 2);
-        let (lines, _) = read_backwards(&path, next.unwrap(), 100).unwrap();
+        let (lines, _) = read_backwards(&path, next.unwrap(), 100, None).unwrap();
         assert_eq!(index(&lines[0].1), 2);
     }
 }

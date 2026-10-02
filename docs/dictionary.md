@@ -207,6 +207,7 @@ The user's settings, stored in `config.json` and written only by the daemon.
 | `proxy_enabled` | off | bind the proxy port (ADR 06) |
 | `proxy_port` | `8877` (`7877` for a suffixed instance) | the proxy port |
 | `inspect_hosts` | empty | host patterns whose `CONNECT`s are inspected |
+| `proxy_clients` | empty | more proxy ports, each with a client name (ADR 09) |
 
 ### Local CA
 
@@ -252,6 +253,16 @@ table and never leave the Mac.
 The port of the forward proxy: `127.0.0.1` and `::1` only, never the LAN,
 whatever `allow_lan` says. Off by default; turned on and off without a
 restart.
+
+### Proxy client
+
+One more proxy port with a name, for one program: `chrome`, `agent-1`
+([ADR 09](adr/09-proxy-clients-2026-10-02/README.md)). It opens and closes
+with the proxy port. Each request it carries has `_client` with the name in
+the proxy log; the main proxy port is the client `default` and writes no
+`_client`. The viewer shows one client's requests at `proxy.localhost/<name>`.
+Not to be confused with the `client` of `hello` ("cli", "mcp"), which names
+a program that talks to the daemon.
 
 ### Tunnel
 
@@ -376,7 +387,7 @@ the file they are given. Public certificates only.
 |---|---|
 | **socket API** | The only way clients talk to the daemon. Newline-delimited JSON over the Unix socket `daemon.sock`. Shaped like JSON-RPC 2.0. Has 16 methods; ADR 06 added `get_proxy` and `reset_inspect_ca`, ADR 07 `set_script_rule`, `remove_script_rule` and `list_script_rules`. |
 | **method** | One call of the socket API, for example `register_route`. |
-| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes, `1.3` the forward proxy, `1.4` script rules. A client stops when the major number differs from its own. |
+| **`api_version`** | Version of the socket API, returned by `hello`. Started at `1.0`; `1.1` added path routes, `1.3` the forward proxy, `1.4` script rules, `1.5` the proxy log, `1.6` proxy clients. A client stops when the major number differs from its own. |
 | **MCP tool** | One function an agent can call through the MCP shim. There are nine: `register_route`, `unregister_route`, `list_routes`, `find_free_port`, `get_logs`, `status`, `get_proxy`, `set_script_rule`, `remove_script_rule`. |
 | **API example** | One JSON file in `api/examples/`. Both the Rust and the Swift tests decode every example, so the two type sets stay equal. |
 

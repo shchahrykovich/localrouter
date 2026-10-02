@@ -1260,3 +1260,214 @@ fn lan_update_from_allow_lan_true() {
     assert!(c.call("status", json!({})).get("notes").is_none());
 }
 
+
+// ---- ADR 09: proxy clients, one more proxy port per client
+
+/// The bound port of proxy client `name`, from status.
+fn client_port(c: &mut Client, name: &str) -> Option<u16> {
+    let s = c.call("status", json!({}));
+    let clients = s["proxy"]["clients"].as_array().cloned().unwrap_or_default();
+    clients.iter().find(|x| x["name"] == name)?["port"].as_u64().map(|p| p as u16)
+}
+
+/// Every entry of the proxy log files, oldest first.
+fn har_entries(d: &Daemon) -> Vec<Value> {
+    let dir = d.dir.path().join("logs/proxy");
+    let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    names
+        .iter()
+        .flat_map(|p| {
+            let har: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            har["log"]["entries"].as_array().unwrap().clone()
+        })
+        .collect()
+}
+
+/// GET a path of the viewer at proxy.localhost on the daemon's HTTP port.
+fn viewer_get(http: u16, path: &str) -> (String, String) {
+    let mut s = TcpStream::connect(("127.0.0.1", http)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: proxy.localhost\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
+    (head.to_string(), body.to_string())
+}
+
+// A client's port binds with the proxy, its requests carry `_client`, the
+// main port's do not, and get_proxy gives the client's own settings.
+#[test]
+fn a_proxy_client_has_its_own_port_and_its_name_in_the_log() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let main = proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "chrome", "port": 0}]}));
+    let chrome = client_port(&mut c, "chrome").expect("the client's port is bound");
+    assert_ne!(chrome, main);
+    let s = c.call("status", json!({}));
+    assert_eq!(s["proxy"]["clients"][0]["bound"], json!([format!("127.0.0.1:{chrome}"), format!("[::1]:{chrome}")]));
+    assert_eq!(read_config(&d)["proxy_clients"], json!([{"name": "chrome", "port": 0}]));
+
+    let http = s["http"]["port"].as_u64().unwrap() as u16;
+    get_through(main, http, "/from-main");
+    get_through(chrome, http, "/from-chrome");
+    wait_written(&mut c, 2);
+    let entries = har_entries(&d);
+    let by_path = |p: &str| entries.iter().find(|e| e["request"]["url"].as_str().unwrap().ends_with(p)).unwrap().clone();
+    assert_eq!(by_path("/from-chrome")["_client"], "chrome");
+    assert!(by_path("/from-main").get("_client").is_none(), "the main port writes no _client");
+
+    let p = c.call("get_proxy", json!({"client": "chrome"}));
+    assert_eq!(p["client"], "chrome");
+    assert_eq!(p["url"], format!("http://127.0.0.1:{chrome}"));
+    assert_eq!(p["env"]["HTTPS_PROXY"], format!("http://127.0.0.1:{chrome}"));
+    let profile = p["chrome_args"][0].as_str().unwrap();
+    assert!(profile.starts_with("--user-data-dir=") && profile.ends_with("/chrome-proxy-chrome"), "{profile}");
+    assert!(p["log"]["url"].as_str().unwrap().ends_with("/chrome"), "{p}");
+    let main_reply = c.call("get_proxy", json!({}));
+    assert!(main_reply.get("client").is_none());
+    assert_eq!(main_reply["url"], format!("http://127.0.0.1:{main}"));
+    assert_eq!(c.call("get_proxy", json!({"client": "default"}))["url"], main_reply["url"]);
+    assert_eq!(c.error_code("get_proxy", json!({"client": "nobody"})), "not_found");
+}
+
+// The loop check knows every proxy port: a request on one port for another
+// port of the same proxy is answered 508 and not sent on.
+#[test]
+fn a_request_for_another_proxy_port_is_a_loop() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let main = proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "agent", "port": 0}]}));
+    let agent = client_port(&mut c, "agent").unwrap();
+    assert!(get_through(main, agent, "/x").starts_with("HTTP/1.1 508"));
+    assert!(get_through(agent, main, "/x").starts_with("HTTP/1.1 508"));
+}
+
+// Off closes the clients' ports and their connections; on binds them again;
+// removing a client closes its port and keeps the others.
+#[test]
+fn client_ports_follow_the_proxy_switch_and_the_list() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "a", "port": 0}, {"name": "b", "port": 0}]}));
+    let a = client_port(&mut c, "a").unwrap();
+    let target = echo_server();
+    let mut tunnel = connect_through(a, &format!("127.0.0.1:{target}"));
+
+    c.call("set_config", json!({"proxy_enabled": false}));
+    let mut buf = [0u8; 4];
+    assert_eq!(tunnel.read(&mut buf).unwrap_or(0), 0, "the open tunnel is closed");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(TcpStream::connect(("127.0.0.1", a)).is_err(), "the client's listener is closed");
+    assert_eq!(client_port(&mut c, "a"), None);
+    assert_eq!(c.call("status", json!({}))["proxy"]["clients"][0]["errors"], json!([]));
+
+    c.call("set_config", json!({"proxy_enabled": true}));
+    let a = client_port(&mut c, "a").expect("bound again");
+    let b = client_port(&mut c, "b").expect("bound again");
+    c.call("set_config", json!({"proxy_clients": [{"name": "b", "port": 0}]}));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(TcpStream::connect(("127.0.0.1", a)).is_err(), "a removed client's port is closed");
+    assert_eq!(client_port(&mut c, "b"), Some(b), "the other client keeps its port");
+}
+
+// A client the call adds on a taken port fails the call and changes nothing,
+// as the main port does (I12).
+#[test]
+fn a_taken_client_port_changes_nothing() {
+    let (port, _held) = (20000 + (std::process::id() % 5000) as u16..30000)
+        .find_map(|p| {
+            let v4 = std::net::TcpListener::bind(("127.0.0.1", p)).ok()?;
+            let v6 = std::net::TcpListener::bind(("::1", p)).ok()?;
+            drop(v4);
+            Some((p, v6))
+        })
+        .expect("a free port");
+    let d = Daemon::start();
+    let mut c = d.client();
+    proxy_on(&mut c);
+    let before = read_config(&d);
+    let v = c.raw("set_config", json!({"proxy_clients": [{"name": "chrome", "port": port}]}));
+    assert_eq!(v["error"]["code"], "port_in_use", "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().starts_with("proxy client chrome: "), "{v}");
+    assert_eq!(read_config(&d), before, "config.json is not written");
+    assert_eq!(c.call("get_config", json!({}))["proxy_clients"], json!([]));
+}
+
+// Names and ports are checked before anything is bound or written.
+#[test]
+fn proxy_client_names_and_ports_are_checked() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
+    c.call("set_config", json!({"http_port": http, "proxy_port": 18877}));
+    for (list, says) in [
+        (json!([{"name": "Chrome", "port": 0}]), "a-z, 0-9"),
+        (json!([{"name": "default", "port": 0}]), "reserved"),
+        (json!([{"name": "api", "port": 0}]), "reserved"),
+        (json!([{"name": "a", "port": 0}, {"name": "a", "port": 0}]), "twice"),
+        (json!([{"name": "a", "port": 18900}, {"name": "b", "port": 18900}]), "both have port 18900"),
+        (json!([{"name": "a", "port": http}]), "http_port"),
+        (json!([{"name": "a", "port": 18877}]), "proxy_port"),
+    ] {
+        let v = c.raw("set_config", json!({"proxy_clients": list}));
+        assert_eq!(v["error"]["code"], "invalid_request", "{list}");
+        assert!(v["error"]["message"].as_str().unwrap().contains(says), "{list}: {v}");
+    }
+    c.call("set_config", json!({"proxy_clients": [{"name": "a", "port": 18900}]}));
+    assert_eq!(c.raw("set_config", json!({"proxy_port": 18900}))["error"]["code"], "invalid_request", "the main port may not take a client's");
+}
+
+// Saved clients bind at start, with the saved proxy.
+#[test]
+fn saved_proxy_clients_bind_at_start() {
+    let d = Daemon::start_with(|dir| {
+        let mut config: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+        config["proxy_enabled"] = json!(true);
+        config["proxy_port"] = json!(0);
+        config["proxy_clients"] = json!([{"name": "agent-1", "port": 0}]);
+        std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+    });
+    let mut c = d.client();
+    let port = client_port(&mut c, "agent-1").expect("bound at start");
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+}
+
+// The viewer lists the clients, filters entries by client, and serves the
+// page at /<client>.
+#[test]
+fn the_viewer_lists_and_filters_by_client() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let main = proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "chrome", "port": 0}]}));
+    let chrome = client_port(&mut c, "chrome").unwrap();
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap() as u16;
+    get_through(main, http, "/m1");
+    get_through(chrome, http, "/c1");
+    get_through(main, http, "/m2");
+    let log = wait_written(&mut c, 3);
+    let file = log["current"].as_str().unwrap().to_string();
+
+    let (_, body) = viewer_get(http, "/api/files");
+    let files: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(files["clients"], json!([{"name": "default", "port": main}, {"name": "chrome", "port": chrome}]));
+
+    let paths = |client: &str| -> Vec<String> {
+        let (_, body) = viewer_get(http, &format!("/api/entries?file={file}&client={client}"));
+        let page: Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("{e}: {body}"));
+        page["entries"].as_array().unwrap().iter().map(|e| e["request"]["url"].as_str().unwrap().rsplit('/').next().unwrap().to_string()).collect()
+    };
+    assert_eq!(paths("chrome"), ["c1"]);
+    assert_eq!(paths("default"), ["m2", "m1"]);
+    let (head, _) = viewer_get(http, &format!("/api/entries?file={file}&client=No%20such"));
+    assert!(head.starts_with("HTTP/1.1 400"), "{head}");
+
+    let (head, body) = viewer_get(http, "/chrome");
+    assert!(head.starts_with("HTTP/1.1 200") && body.contains("viewer.js"), "{head}");
+    let (head, _) = viewer_get(http, "/chrome/");
+    assert!(head.starts_with("HTTP/1.1 302") && head.to_ascii_lowercase().contains("location: ../chrome"), "{head}");
+}

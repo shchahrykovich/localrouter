@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 
 use localrouter_core::api::{
     self, ApiError, CaState, CaStatus, ErrorCode, FindFreePortParams, FindFreePortResult, GetLogsParams, GetLogsResult,
-    GetProxyResult, HelloParams, HelloResult, HostParams, IdParams, InspectChange, ListRoutesResult, ListScriptRulesResult,
-    NetworkStatus, PortStatus, ProxyLogStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams,
+    GetProxyParams, GetProxyResult, HelloParams, HelloResult, HostParams, IdParams, InspectChange, ListRoutesResult,
+    ListScriptRulesResult, NetworkStatus, PortStatus, ProxyClientStatus, ProxyLogStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams,
     SetConfigResult, SetScriptRuleParams, SetScriptRuleResult, StatusResult, UnregisterRouteResult,
 };
-use localrouter_core::config::{Config, LanNetwork};
-use localrouter_core::forward::ForwardProxy;
-use localrouter_core::har::{self, HarLog, HarSettings};
+use localrouter_core::config::{Config, DEFAULT_CLIENT, LanNetwork, ProxyClient};
+use localrouter_core::forward::{ClientPort, ForwardProxy};
+use localrouter_core::har::{self, ClientInfo, HarLog, HarSettings};
 use localrouter_core::inspect::{self, InspectSet};
 use localrouter_core::logs::RequestLog;
 use localrouter_core::instance::Instance;
@@ -48,9 +48,9 @@ pub struct Shared {
     pub https_port: AtomicU16,
     /// Hosts the forward proxy inspects (ADR 06), from `inspect_hosts`.
     pub inspect: RwLock<InspectSet>,
-    /// The forward proxy port while bound, else `0`. The proxy reads it for
-    /// its loop check (I9).
-    pub proxy_port: Arc<AtomicU16>,
+    /// Every bound proxy port, the main one and the clients' (ADR 09). The
+    /// proxy reads it for its loop check (I9).
+    pub proxy_ports: Arc<RwLock<Vec<u16>>>,
 }
 
 impl RouteSource for Shared {
@@ -74,10 +74,10 @@ struct TcpHandle {
     cancel: CancellationToken,
 }
 
-/// The bound forward proxy port (ADR 06). Cancelling closes the listeners
-/// and every open proxy connection (I2).
+/// A bound forward proxy port (ADR 06), the main one or a client's (ADR 09).
+/// Cancelling closes the listeners and every open proxy connection (I2).
 struct ProxyHandle {
-    /// `proxy_port` from the config when it was bound (`0` = any port).
+    /// The port in the config when it was bound (`0` = any port).
     configured: u16,
     port: u16,
     cancel: CancellationToken,
@@ -95,6 +95,8 @@ struct Problems {
     inspect_ca: Option<String>,
     /// Why the proxy port is not bound while it should be.
     proxy: Vec<String>,
+    /// Why a proxy client's port is not bound while the proxy is on.
+    proxy_clients: HashMap<String, String>,
     /// The one-time update of `allow_lan` to a list of networks (ADR 08).
     lan_note: Option<String>,
 }
@@ -120,6 +122,8 @@ pub struct Daemon {
     pids: PidWatch,
     tcp: Mutex<HashMap<String, TcpHandle>>,
     proxy_listener: Mutex<Option<ProxyHandle>>,
+    /// The proxy clients' ports, by name (ADR 09).
+    client_listeners: Mutex<HashMap<String, ProxyHandle>>,
     problems: Mutex<Problems>,
     trust_cache: TrustCache,
     inspect_trust_cache: TrustCache,
@@ -174,7 +178,7 @@ impl Daemon {
             http_port: AtomicU16::new(0),
             https_port: AtomicU16::new(0),
             inspect: RwLock::new(InspectSet::new(&config.value.inspect_hosts)),
-            proxy_port: Arc::new(AtomicU16::new(0)),
+            proxy_ports: Arc::new(RwLock::new(vec![])),
         });
         if (config.problem.is_some() || !paths.config().exists())
             && let Err(e) = store::save_config(&paths.config(), &config.value)
@@ -268,7 +272,7 @@ impl Daemon {
                 log: log.clone(),
                 local_certs: certs.clone(),
                 inspect_certs: inspect_certs.clone(),
-                own_port: shared.proxy_port.clone(),
+                own_ports: shared.proxy_ports.clone(),
             });
             let weak = this_for_scripts.clone();
             scripts.set_on_disable(Arc::new(move |id: String| {
@@ -291,6 +295,7 @@ impl Daemon {
                 pids,
                 tcp: Mutex::new(HashMap::new()),
                 proxy_listener: Mutex::new(None),
+                client_listeners: Mutex::new(HashMap::new()),
                 problems: Mutex::new(problems),
                 trust_cache: Mutex::new(None),
                 inspect_trust_cache: Mutex::new(None),
@@ -300,6 +305,8 @@ impl Daemon {
         });
         // Hosts of saved rules join the inspect set.
         daemon.refresh_inspect();
+        // The viewer's client menu knows the clients before any port binds.
+        daemon.refresh_proxy_ports();
         daemon
     }
 
@@ -480,14 +487,73 @@ impl Daemon {
                 self.problems.lock().unwrap().proxy = vec![e.message];
             }
         }
+        // A client's taken port does not stop the others (ADR 09).
+        for client in &config.proxy_clients {
+            match bind_proxy(client.port) {
+                Ok((listeners, port)) => self.start_client(&client.name, listeners, client.port, port),
+                Err(e) => self.client_failed(&client.name, e.message),
+            }
+        }
+        self.refresh_proxy_ports();
     }
 
     fn start_proxy(self: &Arc<Self>, listeners: Vec<std::net::TcpListener>, configured: u16, port: u16) {
+        let cancel = self.accept_proxy(listeners, ClientPort { client: None, port });
+        self.har.set_proxy_on(true);
+        self.problems.lock().unwrap().proxy.clear();
+        if let Some(old) = self.proxy_listener.lock().unwrap().replace(ProxyHandle { configured, port, cancel }) {
+            old.cancel.cancel();
+        }
+        tracing::info!("forward proxy on 127.0.0.1:{port} and [::1]:{port}");
+    }
+
+    /// Start one proxy client's port (ADR 09). A handle with the same name
+    /// is replaced, and its connections closed.
+    fn start_client(self: &Arc<Self>, name: &str, listeners: Vec<std::net::TcpListener>, configured: u16, port: u16) {
+        let cancel = self.accept_proxy(listeners, ClientPort { client: Some(Arc::from(name)), port });
+        self.problems.lock().unwrap().proxy_clients.remove(name);
+        if let Some(old) = self.client_listeners.lock().unwrap().insert(name.to_string(), ProxyHandle { configured, port, cancel }) {
+            old.cancel.cancel();
+        }
+        tracing::info!("proxy client {name} on 127.0.0.1:{port} and [::1]:{port}");
+    }
+
+    fn client_failed(&self, name: &str, why: String) {
+        tracing::error!("proxy client {name} is not listening: {why}");
+        self.problems.lock().unwrap().proxy_clients.insert(name.to_string(), why);
+    }
+
+    /// Close one proxy client's port and its open connections.
+    fn stop_client(&self, name: &str) {
+        if let Some(handle) = self.client_listeners.lock().unwrap().remove(name) {
+            handle.cancel.cancel();
+            tracing::info!("proxy client {name} off");
+        }
+        self.problems.lock().unwrap().proxy_clients.remove(name);
+    }
+
+    /// The ports the loop check knows, and the viewer's client menu: from
+    /// the config and the bound handles. Called after every change.
+    fn refresh_proxy_ports(&self) {
+        let main = self.proxy_listener.lock().unwrap().as_ref().map(|h| h.port);
+        let clients: Vec<(String, Option<u16>)> = {
+            let bound = self.client_listeners.lock().unwrap();
+            self.config().proxy_clients.iter().map(|c| (c.name.clone(), bound.get(&c.name).map(|h| h.port))).collect()
+        };
+        *self.shared.proxy_ports.write().unwrap() = main.into_iter().chain(clients.iter().filter_map(|c| c.1)).collect();
+        let mut menu = vec![ClientInfo { name: DEFAULT_CLIENT.to_string(), port: main }];
+        menu.extend(clients.into_iter().map(|(name, port)| ClientInfo { name, port }));
+        self.har.set_clients(menu);
+    }
+
+    /// Accept on one proxy port until the returned token is cancelled.
+    fn accept_proxy(self: &Arc<Self>, listeners: Vec<std::net::TcpListener>, at: ClientPort) -> CancellationToken {
         let cancel = self.shutdown.child_token();
         for l in listeners {
             let Ok(listener) = TcpListener::from_std(l) else { continue };
             let this = self.clone();
             let cancel = cancel.clone();
+            let at = at.clone();
             tokio::spawn(async move {
                 loop {
                     let (stream, peer) = tokio::select! {
@@ -504,28 +570,28 @@ impl Daemon {
                         continue;
                     }
                     let _ = stream.set_nodelay(true);
-                    tokio::spawn(this.forward.clone().serve(stream, peer, cancel.child_token()));
+                    tokio::spawn(this.forward.clone().serve(stream, peer, at.clone(), cancel.child_token()));
                 }
             });
         }
-        self.shared.proxy_port.store(port, Ordering::Relaxed);
-        self.har.set_proxy_on(true);
-        self.problems.lock().unwrap().proxy.clear();
-        if let Some(old) = self.proxy_listener.lock().unwrap().replace(ProxyHandle { configured, port, cancel }) {
-            old.cancel.cancel();
-        }
-        tracing::info!("forward proxy on 127.0.0.1:{port} and [::1]:{port}");
+        cancel
     }
 
-    /// Close the proxy listeners and every open proxy connection (I2).
+    /// Close the proxy listeners, the clients' too, and every open proxy
+    /// connection (I2).
     fn stop_proxy(&self) {
         if let Some(handle) = self.proxy_listener.lock().unwrap().take() {
             handle.cancel.cancel();
             tracing::info!("forward proxy off");
         }
-        self.shared.proxy_port.store(0, Ordering::Relaxed);
+        let names: Vec<String> = self.client_listeners.lock().unwrap().keys().cloned().collect();
+        for name in names {
+            self.stop_client(&name);
+        }
         self.har.set_proxy_on(false);
-        self.problems.lock().unwrap().proxy.clear();
+        let mut problems = self.problems.lock().unwrap();
+        problems.proxy.clear();
+        problems.proxy_clients.clear();
     }
 
     // ---- owner processes
@@ -651,7 +717,28 @@ impl Daemon {
             bound,
             errors,
             inspect_ca: self.inspect_ca_status().await,
+            clients: self.client_statuses(&config),
         }
+    }
+
+    /// Each proxy client of the config with its bound port (ADR 09).
+    fn client_statuses(&self, config: &Config) -> Vec<ProxyClientStatus> {
+        let bound = self.client_listeners.lock().unwrap();
+        let problems = self.problems.lock().unwrap();
+        config
+            .proxy_clients
+            .iter()
+            .map(|c| {
+                let port = bound.get(&c.name).map(|h| h.port);
+                ProxyClientStatus {
+                    name: c.name.clone(),
+                    configured: c.port,
+                    port,
+                    bound: port.map_or_else(Vec::new, |p| vec![format!("127.0.0.1:{p}"), format!("[::1]:{p}")]),
+                    errors: problems.proxy_clients.get(&c.name).cloned().into_iter().collect(),
+                }
+            })
+            .collect()
     }
 
     /// `None` until the inspection CA exists (I5).
@@ -932,6 +1019,10 @@ impl Daemon {
         if new.proxy_port != 0 && (new.proxy_port == new.http_port || new.proxy_port == new.https_port) {
             return Err(err(ErrorCode::InvalidRequest, "proxy_port must differ from http_port and https_port"));
         }
+        if let Some(list) = &p.proxy_clients {
+            new.proxy_clients = list.clone();
+        }
+        check_clients(&new).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
 
         // The proxy port: bind the new pair before anything is written, so a
         // taken port changes nothing (I12). Only when the call names a proxy
@@ -944,6 +1035,33 @@ impl Daemon {
                 stop_listener = current.is_some();
             } else if current != Some(new.proxy_port) {
                 new_listener = Some(bind_proxy(new.proxy_port)?);
+            }
+        }
+        // The clients' ports (ADR 09), only when the call names the proxy or
+        // the clients. A client this call adds or moves must bind, as above;
+        // the others bind if they can, and a failure is reported in status.
+        let mut client_binds: Vec<(String, u16, Result<Bound, ApiError>)> = vec![];
+        let mut client_stops: Vec<String> = vec![];
+        if p.proxy_enabled.is_some() || p.proxy_clients.is_some() {
+            let old = self.config().proxy_clients;
+            let bound: HashMap<String, u16> =
+                self.client_listeners.lock().unwrap().iter().map(|(n, h)| (n.clone(), h.configured)).collect();
+            let wanted: &[ProxyClient] = if new.proxy_enabled { &new.proxy_clients } else { &[] };
+            for name in bound.keys() {
+                if !wanted.iter().any(|c| c.name == *name && bound.get(name) == Some(&c.port)) {
+                    client_stops.push(name.clone());
+                }
+            }
+            for c in wanted {
+                if bound.get(&c.name) == Some(&c.port) {
+                    continue;
+                }
+                let named = p.proxy_clients.is_some() && !old.contains(c);
+                let bind = bind_proxy(c.port);
+                if named && let Err(e) = bind {
+                    return Err(err(e.code, format!("proxy client {}: {}", c.name, e.message)));
+                }
+                client_binds.push((c.name.clone(), c.port, bind));
             }
         }
 
@@ -974,6 +1092,16 @@ impl Daemon {
         } else if stop_listener {
             self.stop_proxy();
         }
+        for name in client_stops {
+            self.stop_client(&name);
+        }
+        for (name, configured, bind) in client_binds {
+            match bind {
+                Ok((listeners, port)) => self.start_client(&name, listeners, configured, port),
+                Err(e) => self.client_failed(&name, e.message),
+            }
+        }
+        self.refresh_proxy_ports();
         let restart_needed = (new.http_port, new.https_port) != self.start_ports;
         Ok(SetConfigResult { config: new, restart_needed })
     }
@@ -990,10 +1118,22 @@ impl Daemon {
     }
 
     /// Everything a client needs to use the forward proxy (ADR 06, change 3).
-    pub async fn get_proxy(&self) -> GetProxyResult {
+    pub async fn get_proxy(&self, p: GetProxyParams) -> Result<GetProxyResult, ApiError> {
         let config = self.config();
         let status = self.proxy_status().await;
-        let port = status.port.unwrap_or(config.proxy_port);
+        // A client's reply has its port, its own Chrome profile and its page
+        // of the viewer (ADR 09). `default` is the main port.
+        let client = match p.client.as_deref() {
+            None | Some(DEFAULT_CLIENT) => None,
+            Some(name) => Some(status.clients.iter().find(|c| c.name == name).cloned().ok_or_else(|| {
+                err(ErrorCode::NotFound, format!("no proxy client {name}; add it: {} proxy client add {name}", self.instance.cli()))
+            })?),
+        };
+        let (port, bound, errors) = match &client {
+            None => (status.port.unwrap_or(config.proxy_port), status.bound.clone(), status.errors.clone()),
+            Some(c) => (c.port.unwrap_or(c.configured), c.bound.clone(), c.errors.clone()),
+        };
+        let name = client.as_ref().map(|c| c.name.clone());
         let url = format!("http://127.0.0.1:{port}");
         let cli = self.instance.cli();
         let mut env = std::collections::BTreeMap::new();
@@ -1020,7 +1160,7 @@ impl Daemon {
             }
         }
         let chrome_args = vec![
-            format!("--user-data-dir={}", self.paths.chrome_profile().display()),
+            format!("--user-data-dir={}", self.paths.chrome_profile_for(name.as_deref()).display()),
             format!("--proxy-server={url}"),
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
@@ -1032,8 +1172,8 @@ impl Daemon {
         let mut notes = vec![];
         if !config.proxy_enabled {
             notes.push(format!("The proxy is off. Programs that use it cannot connect. Turn it on: {cli} proxy on"));
-        } else if status.port.is_none() {
-            notes.push(format!("The proxy port is not bound: {}", status.errors.join("; ")));
+        } else if bound.is_empty() {
+            notes.push(format!("The proxy port is not bound: {}", errors.join("; ")));
         }
         match &status.inspect_ca {
             Some(ca) if ca.state == CaState::Broken => notes.push(format!(
@@ -1050,12 +1190,17 @@ impl Daemon {
                 "The inspect set holds '*': every HTTPS host is inspected, none is tunnelled. Programs that do not trust the inspection CA, and apps that pin certificates, fail on every host. It comes from inspect_hosts ({cli} proxy inspect rm '*') or a script rule with host '*'."
             ));
         }
-        GetProxyResult {
+        let mut log = self.proxy_log_status();
+        if let Some(name) = &name {
+            log.url = format!("{}/{name}", log.url);
+        }
+        Ok(GetProxyResult {
             enabled: config.proxy_enabled,
+            client: name,
             url,
             port,
-            bound: status.bound,
-            errors: status.errors,
+            bound,
+            errors,
             inspect_hosts: config.inspect_hosts,
             inspect_set,
             inspect_ca: status.inspect_ca,
@@ -1063,8 +1208,9 @@ impl Daemon {
             chrome_args,
             notes,
             script_rules: self.scripts.views(),
-            log: Some(self.proxy_log_status()),
-        }
+            log: Some(log),
+            clients: status.clients,
+        })
     }
 
     /// The `log` block of `get_proxy` (ADR 08, change 3).
@@ -1453,8 +1599,35 @@ async fn check_trust(pem: std::path::PathBuf, cache: &TrustCache) -> Option<bool
     value
 }
 
+/// The proxy clients of a new config (ADR 09): valid names, one entry per
+/// name, and no port shared with another client or another listener of the
+/// daemon (`0`, any free port, is for tests).
+fn check_clients(config: &Config) -> Result<(), String> {
+    let others = [("http_port", config.http_port), ("https_port", config.https_port), ("proxy_port", config.proxy_port)];
+    for (i, c) in config.proxy_clients.iter().enumerate() {
+        ProxyClient::check_name(&c.name)?;
+        let earlier = &config.proxy_clients[..i];
+        if earlier.iter().any(|e| e.name == c.name) {
+            return Err(format!("proxy client {} is in the list twice", c.name));
+        }
+        if c.port == 0 {
+            continue;
+        }
+        if let Some(e) = earlier.iter().find(|e| e.port == c.port) {
+            return Err(format!("proxy clients {} and {} both have port {}", e.name, c.name, c.port));
+        }
+        if let Some((field, _)) = others.iter().find(|(_, p)| *p == c.port) {
+            return Err(format!("proxy client {} has port {}, which is the {field}", c.name, c.port));
+        }
+    }
+    Ok(())
+}
+
+/// The listeners of one proxy port and the port they got.
+type Bound = (Vec<std::net::TcpListener>, u16);
+
 /// Bind the proxy port on 127.0.0.1 and ::1, both or neither (I1).
-fn bind_proxy(port: u16) -> Result<(Vec<std::net::TcpListener>, u16), ApiError> {
+fn bind_proxy(port: u16) -> Result<Bound, ApiError> {
     tcp_listen::bind_loopback(port).map_err(|e| {
         let why = if e.kind() == std::io::ErrorKind::AddrInUse {
             format!("port {port} is in use by another program")

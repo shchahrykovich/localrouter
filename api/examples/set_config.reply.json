@@ -14,7 +14,8 @@
       "proxy_log": false,
       "proxy_log_file_mb": 5,
       "proxy_log_file_requests": 200,
-      "lan_networks": []
+      "lan_networks": [],
+      "proxy_clients": []
     },
     "restart_needed": false
   }

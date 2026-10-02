@@ -44,7 +44,8 @@ fn params(method: &str, params: Value, file: &str) {
         "set_config" => check::<SetConfigParams>(params, file),
         "set_script_rule" => check::<SetScriptRuleParams>(params, file),
         "remove_script_rule" => check::<IdParams>(params, file),
-        "status" | "list_script_rules" | "list_routes" | "get_config" | "reset_ca" | "get_proxy" | "reset_inspect_ca" => {
+        "get_proxy" => check::<GetProxyParams>(params, file),
+        "status" | "list_script_rules" | "list_routes" | "get_config" | "reset_ca" | "reset_inspect_ca" => {
             check::<Empty>(params, file)
         }
         other => panic!("{file}: unknown method {other}"),

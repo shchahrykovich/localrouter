@@ -1,12 +1,13 @@
 {
-  "id": 14,
+  "id": 16,
   "result": {
     "enabled": true,
-    "url": "http://127.0.0.1:8877",
-    "port": 8877,
+    "client": "chrome",
+    "url": "http://127.0.0.1:8878",
+    "port": 8878,
     "bound": [
-      "127.0.0.1:8877",
-      "[::1]:8877"
+      "127.0.0.1:8878",
+      "[::1]:8878"
     ],
     "errors": [],
     "inspect_hosts": [
@@ -25,79 +26,31 @@
     },
     "env": {
       "CURL_CA_BUNDLE": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/bundle.pem",
-      "HTTPS_PROXY": "http://127.0.0.1:8877",
-      "HTTP_PROXY": "http://127.0.0.1:8877",
+      "HTTPS_PROXY": "http://127.0.0.1:8878",
+      "HTTP_PROXY": "http://127.0.0.1:8878",
       "NODE_EXTRA_CA_CERTS": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem",
       "NODE_USE_ENV_PROXY": "1",
       "NO_PROXY": "localhost,127.0.0.1,::1,.localhost",
       "REQUESTS_CA_BUNDLE": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/bundle.pem",
       "SSL_CERT_FILE": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/bundle.pem",
-      "http_proxy": "http://127.0.0.1:8877",
-      "https_proxy": "http://127.0.0.1:8877",
+      "http_proxy": "http://127.0.0.1:8878",
+      "https_proxy": "http://127.0.0.1:8878",
       "no_proxy": "localhost,127.0.0.1,::1,.localhost"
     },
     "chrome_args": [
-      "--user-data-dir=/Users/me/Library/Caches/LocalRouter/chrome-proxy",
-      "--proxy-server=http://127.0.0.1:8877",
+      "--user-data-dir=/Users/me/Library/Caches/LocalRouter/chrome-proxy-chrome",
+      "--proxy-server=http://127.0.0.1:8878",
       "--no-first-run",
       "--no-default-browser-check"
     ],
     "notes": [
       "The inspection CA is not trusted in the login keychain: Chrome will refuse inspected hosts. Run: localrouter proxy trust"
     ],
-    "script_rules": [
-      {
-        "id": "claude-capture",
-        "host": "api.anthropic.com",
-        "path": "/v1/messages",
-        "methods": [
-          "POST"
-        ],
-        "script": "/Users/me/scripts/capture.lua",
-        "output_dir": "/Users/me/lr-captures",
-        "order": 100,
-        "enabled": true,
-        "note": "record Claude API calls for the eval",
-        "owner_pid": 4242,
-        "kind": "log",
-        "matched": 12,
-        "answered": 0,
-        "errors": 1,
-        "last_error": {
-          "message": "capture.lua:12: attempt to index a nil value (global 'jsn')",
-          "time_ms": 1790000003000
-        },
-        "dropped": 0,
-        "bytes_written": 48211,
-        "script_loaded_at": 1790000000000,
-        "script_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-      },
-      {
-        "id": "add-trace",
-        "host": "shop.localhost",
-        "script": "/Users/me/shop/scripts/add-trace.lua",
-        "order": 10,
-        "on_error": "pass",
-        "enabled": false,
-        "persistent": true,
-        "kind": "intercept",
-        "matched": 40,
-        "answered": 2,
-        "errors": 20,
-        "last_error": {
-          "message": "disabled after 20 failed calls in a row; the last: add-trace.lua:9: boom",
-          "time_ms": 1790000004000
-        },
-        "dropped": 0,
-        "bytes_written": 0,
-        "script_loaded_at": 1790000000500,
-        "script_sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"
-      }
-    ],
+    "script_rules": [],
     "log": {
       "enabled": true,
       "folder": "/Users/me/Library/Logs/LocalRouter/proxy",
-      "url": "http://proxy.localhost",
+      "url": "http://proxy.localhost/chrome",
       "file_mb": 20,
       "file_requests": 5000,
       "keep_files": 5,

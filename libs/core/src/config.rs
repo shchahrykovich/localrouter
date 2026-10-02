@@ -39,6 +39,45 @@ pub struct Config {
     /// MAC address (ADR 08, change 4). On any other network only this Mac
     /// reaches ports 80 and 443.
     pub lan_networks: Vec<LanNetwork>,
+    /// More proxy ports, one per client, each with its own name (ADR 09).
+    /// They bind and close with the main proxy port; the log marks each
+    /// request with the name of the port that carried it.
+    pub proxy_clients: Vec<ProxyClient>,
+}
+
+/// The name of the main proxy port in the log and the viewer (ADR 09).
+pub const DEFAULT_CLIENT: &str = "default";
+
+/// Names a proxy client may not have: the main port's name, and the paths
+/// of the viewer (`proxy.localhost/<name>` is the client's page).
+const RESERVED_CLIENTS: [&str; 4] = [DEFAULT_CLIENT, "all", "api", "files"];
+
+/// One more proxy port, for one client (ADR 09).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyClient {
+    /// `chrome`, `agent-1`: 1 to 32 of `a-z`, `0-9` and `-`.
+    pub name: String,
+    /// `0` means "any free port" (tests).
+    pub port: u16,
+}
+
+impl ProxyClient {
+    /// The rule for a client name. The message names the rule.
+    pub fn check_name(name: &str) -> Result<(), String> {
+        let ok = (1..=32).contains(&name.len())
+            && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !name.starts_with('-')
+            && !name.ends_with('-');
+        if !ok {
+            return Err(format!(
+                "proxy client name '{name}' must be 1 to 32 characters of a-z, 0-9 and '-', not starting or ending with '-'"
+            ));
+        }
+        if RESERVED_CLIENTS.contains(&name) {
+            return Err(format!("proxy client name '{name}' is reserved"));
+        }
+        Ok(())
+    }
 }
 
 /// One network where LAN access is allowed.
@@ -108,6 +147,7 @@ impl Default for Config {
             proxy_log_file_mb: crate::har::DEFAULT_FILE_MB,
             proxy_log_file_requests: crate::har::DEFAULT_FILE_REQUESTS,
             lan_networks: vec![],
+            proxy_clients: vec![],
         }
     }
 }
@@ -178,6 +218,30 @@ mod tests {
         assert!(Config::check_proxy_log_limits(0, 5000).unwrap_err().contains("1 to 200"));
         assert!(Config::check_proxy_log_limits(201, 5000).is_err());
         assert!(Config::check_proxy_log_limits(20, 99).unwrap_err().contains("100 to 1000000"));
+    }
+
+    // ADR 09: an old config.json has no clients; the list round-trips.
+    #[test]
+    fn proxy_clients_default_and_round_trip() {
+        let old = Config::parse(r#"{"version":1,"proxy_enabled":true}"#, &dev()).unwrap();
+        assert!(old.proxy_clients.is_empty());
+        let mut c = Config::defaults_for(&dev());
+        c.proxy_clients = vec![ProxyClient { name: "chrome".into(), port: 7878 }];
+        let text = serde_json::to_string(&c).unwrap();
+        assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
+    }
+
+    #[test]
+    fn proxy_client_names() {
+        for good in ["a", "chrome", "agent-1", "x9", &"a".repeat(32)] {
+            assert!(ProxyClient::check_name(good).is_ok(), "{good}");
+        }
+        for bad in ["", "Chrome", "-a", "a-", "a_b", "a.b", "a/b", &"a".repeat(33)] {
+            assert!(ProxyClient::check_name(bad).unwrap_err().contains("a-z, 0-9"), "{bad}");
+        }
+        for reserved in ["default", "all", "api", "files"] {
+            assert!(ProxyClient::check_name(reserved).unwrap_err().contains("reserved"), "{reserved}");
+        }
     }
 
     #[test]

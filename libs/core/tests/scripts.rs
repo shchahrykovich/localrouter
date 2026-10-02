@@ -827,14 +827,15 @@ async fn proxy_traffic_in_absolute_form_runs_rules_for_its_host() {
         log: h.log.clone(),
         local_certs: Arc::new(tls::CertStore::new(Some(ca), Arc::new(|_: &str| false))),
         inspect_certs: Arc::new(tls::CertStore::inspection(None, Arc::new(|_: &str| false))),
-        own_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
+        own_ports: Arc::new(std::sync::RwLock::new(vec![])),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
             let (stream, peer) = listener.accept().await.unwrap();
-            tokio::spawn(forward.clone().serve(stream, peer, tokio_util::sync::CancellationToken::new()));
+            let at = localrouter_core::forward::ClientPort { client: None, port: addr.port() };
+            tokio::spawn(forward.clone().serve(stream, peer, at, tokio_util::sync::CancellationToken::new()));
         }
     });
     h.rule("api", "api.test.example", r#"

@@ -84,6 +84,15 @@ impl ClientScheme {
     }
 }
 
+/// A request that came through the forward proxy: how, and on which
+/// client's port (ADR 06, ADR 09).
+#[derive(Debug, Clone)]
+pub struct FromProxy {
+    pub mode: ProxyMode,
+    /// `None` for the main proxy port.
+    pub client: Option<Arc<str>>,
+}
+
 impl Proxy {
     /// Serve one accepted client connection until it closes.
     pub async fn serve<IO>(self: Arc<Self>, io: IO, scheme: ClientScheme, peer: SocketAddr)
@@ -95,12 +104,13 @@ impl Proxy {
 
     /// [`Proxy::serve`] for a connection that came through the forward proxy
     /// (`CONNECT shop.localhost:443`): log entries say `via proxy` (ADR 06).
-    pub async fn serve_as<IO>(self: Arc<Self>, io: IO, scheme: ClientScheme, peer: SocketAddr, via: Option<ProxyMode>)
+    pub async fn serve_as<IO>(self: Arc<Self>, io: IO, scheme: ClientScheme, peer: SocketAddr, via: Option<FromProxy>)
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let service = hyper::service::service_fn(move |req| {
             let proxy = self.clone();
+            let via = via.clone();
             async move { Ok::<_, Infallible>(proxy.handle(req, scheme, peer, via).await) }
         });
         let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
@@ -116,7 +126,7 @@ impl Proxy {
         req: Request<Incoming>,
         scheme: ClientScheme,
         peer: SocketAddr,
-        via: Option<ProxyMode>,
+        via: Option<FromProxy>,
     ) -> Response<Body> {
         let start = Instant::now();
         let host = request_host(&req).unwrap_or_default();
@@ -131,9 +141,11 @@ impl Proxy {
         }
         // Through the forward proxy: what the client sent, before scripts.
         // router.localhost never reaches the HAR (I7).
-        let mut har = match (&self.har, via) {
-            (Some(har), Some(mode)) if har.enabled() && key.as_deref() != Some(HELP_HOST) => {
-                Some((har, HarRecord::start(&req, format!("{}://{host}{path}", scheme.as_str()), mode)))
+        let mut har = match (&self.har, &via) {
+            (Some(har), Some(via)) if har.enabled() && key.as_deref() != Some(HELP_HOST) => {
+                let mut record = HarRecord::start(&req, format!("{}://{host}{path}", scheme.as_str()), via.mode);
+                record.client = via.client.clone();
+                Some((har, record))
             }
             _ => None,
         };
@@ -203,8 +215,8 @@ impl Proxy {
         let mut entry = LogEntry::http(&method, &host, &path, status, millis)
             .with_route(answered_by)
             .with_scripts(scripts.0, scripts.1);
-        if let Some(mode) = via {
-            entry = entry.via_proxy(mode);
+        if let Some(via) = &via {
+            entry = entry.via_proxy(via.mode);
         }
         self.log.push(entry);
         response

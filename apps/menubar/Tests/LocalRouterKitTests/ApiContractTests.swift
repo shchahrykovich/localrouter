@@ -62,7 +62,8 @@ final class ApiContractTests: XCTestCase {
         case "set_config": try roundTrip(SetConfigParams.self, json, file)
         case "set_script_rule": try roundTrip(SetScriptRuleParams.self, json, file)
         case "remove_script_rule": try roundTrip(IdParams.self, json, file)
-        case "status", "list_routes", "get_config", "reset_ca", "get_proxy", "reset_inspect_ca", "list_script_rules":
+        case "get_proxy": try roundTrip(GetProxyParams.self, json, file)
+        case "status", "list_routes", "get_config", "reset_ca", "reset_inspect_ca", "list_script_rules":
             try roundTrip(Empty.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
@@ -118,6 +119,28 @@ final class ApiContractTests: XCTestCase {
             }
         }
         for m in Self.methods { XCTAssertTrue(seen.contains(m), "no request example for \(m)") }
+    }
+
+    /// ADR 09: the proxy clients decode from config, status and get_proxy,
+    /// and a reply for one client names it.
+    func testProxyClientsDecode() throws {
+        let result = { (file: String) throws -> Data in
+            let reply = try JSONSerialization.jsonObject(with: Data(contentsOf: self.examples.appendingPathComponent(file))) as? [String: Any]
+            return try JSONSerialization.data(withJSONObject: reply?["result"] ?? [:])
+        }
+        let config = try Api.decoder.decode(Config.self, from: result("get_config.reply.json"))
+        XCTAssertEqual(config.proxyClients, [ProxyClient(name: "chrome", port: 8878), ProxyClient(name: "agent-1", port: 8879)])
+        let status = try Api.decoder.decode(StatusResult.self, from: result("status.reply.json"))
+        XCTAssertEqual(status.proxy?.clients?.map(\.port), [8878, nil])
+        let one = try Api.decoder.decode(GetProxyResult.self, from: result("get_proxy_client.reply.json"))
+        XCTAssertEqual(one.client, "chrome")
+        XCTAssertEqual(one.url, "http://127.0.0.1:8878")
+        XCTAssertEqual(one.log?.url, "http://proxy.localhost/chrome")
+        let main = try Api.decoder.decode(GetProxyResult.self, from: result("get_proxy.reply.json"))
+        XCTAssertNil(main.client)
+        XCTAssertEqual(main.clients?.first?.errors, [])
+        let params = try JSONSerialization.jsonObject(with: Api.encoder.encode(GetProxyParams(client: "chrome"))) as? [String: String]
+        XCTAssertEqual(params, ["client": "chrome"])
     }
 
     /// ADR 06: proxy log entries decode with their mode and bytes, and the

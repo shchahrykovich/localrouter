@@ -137,8 +137,27 @@ function isError(r) {
 
 // ---- state
 
+const DEFAULT_CLIENT = "default"; // the main proxy port: its entries have no _client
+
+/** The proxy client in the page's address: proxy.localhost/<name>, or
+ *  router.localhost/proxy-log/<name>. Empty for all clients. */
+function clientFromPath() {
+  const last = location.pathname.split("/").pop() || "";
+  return /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(last) ? last : "";
+}
+
+/** The name of the proxy port that carried an entry. */
+function clientOf(e) {
+  return e._client || DEFAULT_CLIENT;
+}
+
+function clientMatch(e) {
+  return !S.client || clientOf(e) === S.client;
+}
+
 const saved = load();
 const S = {
+  client: clientFromPath(), // "" for every proxy port
   q: "",
   inv: false,
   type: "all",
@@ -195,7 +214,7 @@ function rowOf(e, f) {
     start: isNaN(start) ? 0 : start,
     method: e.request.method, status,
     url: e.request.url, scheme: u.scheme, host: u.host, path: u.path,
-    type, mode: e._mode || "",
+    type, mode: e._mode || "", client: clientOf(e),
     wait: (e.timings && e.timings.wait) || 0,
     receive: (e.timings && e.timings.receive) || 0,
     ms: e.time || 0,
@@ -262,7 +281,7 @@ function olderThan(name) {
 /** Read everything again, as after a lag of the live feed. Requests still
  *  open belong to the live feed, not to a file: they stay. */
 function restart() {
-  rows = rows.filter((x) => x.open);
+  rows = rows.filter((x) => x.open && clientMatch(x.e));
   byKey.clear();
   for (const x of rows) byKey.set(x.key, x);
   if (S.sel && !byKey.has(S.sel)) S.sel = null;
@@ -279,10 +298,13 @@ async function loadEntries() {
   loadingMore = true;
   try {
     let got = 0;
+    let calls = 0;
     while (reading && got < PAGE) {
       const from = reading;
       let url = "api/entries?file=" + encodeURIComponent(from.file) + "&limit=" + (PAGE - got);
       if (from.before !== null) url += "&before=" + from.before;
+      if (S.client) url += "&client=" + encodeURIComponent(S.client);
+      calls += 1;
       const r = await fetch(url, { cache: "no-store" });
       // Deleted since the last /api/files: so are the older ones.
       if (r.status === 404) {
@@ -295,9 +317,11 @@ async function loadEntries() {
       for (const e of page.entries) upsert(rowOf(e, from.file));
       got += page.entries.length;
       if (page.before !== null) {
-        // The server stopped inside the file: at the limit, or at its byte cap.
+        // The server stopped inside the file: at the limit, or at its byte
+        // cap. With a client filter a page can be empty: read on, a little.
         reading = { file: from.file, before: page.before };
-        break;
+        if (got > 0 || calls >= 8) break;
+        continue;
       }
       reading = olderThan(from.file);
     }
@@ -364,6 +388,7 @@ function liveEntry(e) {
   const f = info.files.find((x) => x.name === e._file);
   if (f) f.entries = (f.entries || 0) + 1;
   else loadFiles().catch(failure);
+  if (!clientMatch(e)) return;
   const r = rowOf(e, e._file);
   // The open row of this request becomes the row of its entry.
   const open = e._id !== undefined ? byKey.get("o" + e._id) : null;
@@ -382,6 +407,7 @@ function liveEntry(e) {
 }
 
 function liveOpen(e) {
+  if (!clientMatch(e)) return;
   const r = upsert(rowOf(e, null));
   fresh.add(r.key);
   sortRows();
@@ -421,7 +447,7 @@ function rangeTimes(span) {
 
 function textMatch(r, q) {
   if (!q) return true;
-  const hay = [r.method, String(r.status), r.url, r.mode, r.type].join(" ").toLowerCase();
+  const hay = [r.method, String(r.status), r.url, r.mode, r.type, r.client].join(" ").toLowerCase();
   return q.every((w) => hay.includes(w));
 }
 
@@ -519,12 +545,13 @@ const COLS = [
   ["host", "Host", "minmax(100px, 0.6fr)"],
   ["request", "Path", "minmax(120px, 1fr)"],
   ["mode", "Mode", "84px"],
+  ["client", "Proxy", "90px"],
   ["ms", "Duration", "84px"],
   ["bar", "Waterfall", "minmax(80px, 140px)"],
   ["size", "Size", "64px"],
 ];
 // Columns that step aside while the details are open, to leave the request room.
-const AUTO_HIDE = new Set(["type", "host", "mode", "bar"]);
+const AUTO_HIDE = new Set(["type", "host", "mode", "client", "bar"]);
 // Columns sorted largest first on the first click.
 const NUMERIC = new Set(["time", "ms", "size"]);
 
@@ -539,7 +566,29 @@ function columns(sel) {
   const list = tree
     ? [["request", "Request", sel ? "minmax(140px, 1fr)" : "minmax(200px, 1fr)"], ...COLS.filter(([k]) => k !== "request" && k !== "host")]
     : COLS;
-  return list.filter(([k]) => userOn(k) && !(sel && AUTO_HIDE.has(k)));
+  return list.filter(([k]) => userOn(k) && !(sel && AUTO_HIDE.has(k)) && (k !== "client" || manyClients()));
+}
+
+/** The Proxy column, group and menu are shown only when they tell
+ *  something: all clients on the page, and more than one proxy port. */
+function manyClients() {
+  return !S.client && !!info && (info.clients || []).length > 1;
+}
+
+/** Show one proxy client's requests, or every client's (""). The address
+ *  follows, so the page can be bookmarked: proxy.localhost/<name>. */
+function setClient(name) {
+  S.pop = null;
+  if (name === S.client) return render();
+  S.client = name;
+  if (S.group === "client" && name) S.group = "none";
+  try {
+    history.replaceState(null, "", name || "./");
+  } catch (e) {
+    // A page opened from a file has no history to change.
+  }
+  held = held.filter(([, data]) => !data.request || clientMatch(data));
+  restart();
 }
 
 let lastVis = [];         // the rows the last draw showed, for Expand all
@@ -594,6 +643,11 @@ function drawToolbar(vis) {
   $("cols-btn").classList.toggle("active", S.pop === "cols");
   $("menu-btn").classList.toggle("active", S.pop === "menu");
   $("group-label").textContent = (GROUPS.find((g) => g[0] === S.group) || GROUPS[0])[1];
+  // The client menu: once there is a second proxy port, or a page for one.
+  $("client-anchor").hidden = !(S.client || (info && (info.clients || []).length > 1));
+  $("client-label").textContent = S.client || "All";
+  $("client-btn").classList.toggle("active", S.pop === "client" || !!S.client);
+  document.title = S.client ? "Proxy log: " + S.client : "Proxy log";
   const tree = S.view === "tree";
   // One button for each pair: the icon shows the state, the title the click.
   setToggle("view-btn", "icon-tree", "icon-list", tree, tree ? "Tree view. Click for the list view" : "List view. Click for the tree view");
@@ -768,8 +822,9 @@ const GROUP_KEYS = {
   status: (r) => statusGroup(r),
   mode: (r) => r.mode || "(none)",
   method: (r) => r.method,
+  client: (r) => r.client,
 };
-const GROUPS = [["none", "None"], ["host", "Host"], ["type", "Type"], ["status", "Status class"], ["method", "Method"], ["mode", "Mode"]];
+const GROUPS = [["none", "None"], ["host", "Host"], ["type", "Type"], ["status", "Status class"], ["method", "Method"], ["mode", "Mode"], ["client", "Proxy"]];
 
 function svg(attrs, ...kids) {
   const el = document.createElementNS("http://www.w3.org/2000/svg", attrs.tag || "svg");
@@ -1000,6 +1055,7 @@ function rowEl(r, ctx, opts) {
     else if (k === "type") cells.push(h("div", null, h("span", { class: "tpill" + (ws ? " ws" : ""), text: r.type })));
     else if (k === "host") cells.push(h("div", { class: "c-host", title: r.host, text: r.host }));
     else if (k === "mode") cells.push(h("div", { class: "c-mode" + (r.mode !== "inspect" ? " other" : ""), text: r.mode }));
+    else if (k === "client") cells.push(h("div", { class: "c-client", title: r.client, text: r.client }));
     else if (k === "ms") {
       let text;
       let cls = "c-ms r";
@@ -1415,7 +1471,7 @@ function scrim(z) {
 }
 
 function drawPops(vis) {
-  for (const id of ["menu", "filters", "group", "cols"]) {
+  for (const id of ["menu", "filters", "group", "cols", "client"]) {
     const pop = $(id);
     pop.hidden = S.pop !== id;
     pop.textContent = "";
@@ -1426,7 +1482,25 @@ function drawPops(vis) {
   if (S.pop === "filters") drawFilters($("filters"), vis);
   if (S.pop === "group") drawGroup($("group"));
   if (S.pop === "cols") drawCols($("cols"));
+  if (S.pop === "client") drawClient($("client"));
   drawCtx();
+}
+
+/** The proxy ports: all, the main one, then one per client. A client that
+ *  was removed keeps its page, for its old entries. */
+function drawClient(p) {
+  const list = info ? (info.clients || []).slice() : [];
+  if (S.client && !list.some((c) => c.name === S.client)) list.push({ name: S.client, port: null, removed: true });
+  const item = (name, label, hint) =>
+    h("button", { class: "item" + (S.client === name ? " picked" : ""), type: "button", onClick: () => setClient(name) },
+      h("span", { text: label }), h("span", { class: "hint", text: S.client === name ? "✓" : hint }));
+  p.append(item("", "All", ""));
+  p.append(h("div", { class: "pop-sep" }));
+  for (const c of list) {
+    const hint = c.removed ? "removed" : c.port ? ":" + c.port : "off";
+    p.append(item(c.name, c.name, hint));
+  }
+  p.append(h("div", { class: "pop-sep" }), h("div", { class: "note", text: "One proxy port per client. Add one: " + (info ? info.cli : "") + " proxy client add <name>" }));
 }
 
 function drawMenu(m) {
@@ -1487,11 +1561,12 @@ function drawFilters(p, vis) {
 
 function drawGroup(p) {
   for (const [k, label] of GROUPS) {
+    if (k === "client" && !manyClients()) continue;
     p.append(h("button", { class: "item" + (S.group === k ? " picked" : ""), type: "button", onClick: () => { S.group = k; S.collapsed = {}; S.pop = null; save(); render(); } },
       h("span", { text: label }), S.group === k ? h("span", { class: "hint", text: "✓" }) : null));
   }
   if (S.group !== "none") {
-    const keys = new Set(rows.map(GROUP_KEYS[S.group]));
+    const keys = new Set(rows.map(GROUP_KEYS[S.group] || GROUP_KEYS.host));
     p.append(h("div", { class: "pop-sep" }), h("div", { class: "split" },
       h("button", { type: "button", text: "Expand all", onClick: () => { S.collapsed = {}; render(); } }),
       h("button", { type: "button", text: "Collapse all", onClick: () => { S.collapsed = Object.fromEntries([...keys].map((k) => [k, true])); render(); } })));
@@ -1501,6 +1576,7 @@ function drawGroup(p) {
 function drawCols(p) {
   const sel = S.sel && byKey.get(S.sel);
   for (const [k, label] of COLS) {
+    if (k === "client" && !manyClients()) continue;
     const locked = k === "request";
     const on = userOn(k);
     const note = locked ? "always" : k === "host" && S.view === "tree" ? "list view only" : sel && on && AUTO_HIDE.has(k) ? "hidden with details" : "";
@@ -1782,6 +1858,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("filters-btn").addEventListener("click", toggle("filters"));
   $("group-btn").addEventListener("click", toggle("group"));
   $("cols-btn").addEventListener("click", toggle("cols"));
+  $("client-btn").addEventListener("click", toggle("client"));
   $("menu-btn").addEventListener("click", toggle("menu"));
   $("view-btn").addEventListener("click", () => { S.view = S.view === "tree" ? "list" : "tree"; save(); render(); });
   $("tree-btn").addEventListener("click", () => setAllNodes(!treeAllOpen(lastVis)));

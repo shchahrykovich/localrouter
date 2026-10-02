@@ -287,6 +287,25 @@ servers it calls. It is off by default and listens on
 - `{{CLI}} proxy off` closes the port. Programs started with the proxy
   settings then fail to connect until they are started again without them.
 
+### Proxy clients: one port per program
+
+To tell programs apart in the log, give each one a **proxy client**: one
+more proxy port with a name. The log marks each request with the name of the
+port that carried it (`_client`; the main port is `default` and writes no
+`_client`).
+
+1. `{{CLI}} proxy client add agent-1` (names: `a-z`, `0-9`, `-`). It takes
+   the next free port after the main one; `--port 8890` picks one.
+2. Start the program on it: `eval "$({{CLI}} proxy env --client agent-1)" && npm test`,
+   or `{{CLI}} proxy chrome --client agent-1` (a Chrome profile of its own).
+   MCP `get_proxy` with `client` gives the same values.
+3. The user sees only its requests at {{PROXY_LOG_URL}}/agent-1, or picks it
+   in the "Proxy" menu of the log viewer.
+
+`{{CLI}} proxy client` lists the clients, `{{CLI}} proxy client rm agent-1`
+closes the port; the entries stay in the log. Client ports open and close with
+`{{CLI}} proxy on` and `off`.
+
 ## Proxy log: what a program sent, in HAR files
 
 The proxy writes every request it carries to HAR files (the format Chrome
@@ -310,6 +329,7 @@ is on; `{{CLI}} proxy log` shows its state, `{{CLI}} proxy log off` stops it.
 f=$(ls -t "$({{CLI}} proxy log path)"/proxy-*.har | head -1)
 jq -r '.log.entries[] | select(.response.status >= 400 or .response.status == 0) | "\(.response.status) \(.request.method) \(.request.url)"' "$f"
 jq '.log.entries[] | select(.request.url | contains("api.example.com")) | {url: .request.url, status: .response.status, headers: .response.headers}' "$f" | head -c 20000
+jq -r '.log.entries[] | select(._client == "agent-1") | "\(.response.status) \(.request.url)"' "$f"
 ```
 
 The whole loop, on your own:

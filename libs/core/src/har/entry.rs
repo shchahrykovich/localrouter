@@ -46,6 +46,9 @@ pub struct HarRecord {
     pub response_version: Version,
     pub response_headers: HeaderMap,
     pub mode: ProxyMode,
+    /// The proxy client whose port carried the request (ADR 09); `None` for
+    /// the main port. Written as `_client`.
+    pub client: Option<Arc<str>>,
     /// The route that answered a `.localhost` name.
     pub route: Option<String>,
     /// Ids of the script rules that ran, and the one that failed (ADR 07).
@@ -84,6 +87,7 @@ impl HarRecord {
             response_version: Version::HTTP_11,
             response_headers: HeaderMap::new(),
             mode,
+            client: None,
             route: None,
             scripts: vec![],
             script_error: None,
@@ -202,6 +206,9 @@ impl HarRecord {
         entry.insert("cache".into(), json!({}));
         entry.insert("timings".into(), json!({ "send": 0, "wait": self.wait_ms, "receive": self.receive_ms }));
         entry.insert("_mode".into(), mode(self.mode).into());
+        if let Some(client) = &self.client {
+            entry.insert("_client".into(), client.as_ref().into());
+        }
         if let Some(messages) = &self.ws_messages {
             entry.insert("_resourceType".into(), "websocket".into());
             entry.insert("_webSocketMessages".into(), serde_json::to_value(messages).unwrap_or_default());
@@ -397,7 +404,16 @@ mod tests {
         assert_eq!(e["response"]["redirectURL"], "");
         assert_eq!(e["_mode"], "http");
         assert!(e.get("_route").is_none() && e.get("_scripts").is_none() && e.get("_bytesIn").is_none());
+        assert!(e.get("_client").is_none(), "the main port writes no _client (ADR 09)");
         assert!(e["response"].get("content").unwrap().get("text").is_none(), "U1: no bodies");
+    }
+
+    // ADR 09: a request on a client's port names the client.
+    #[test]
+    fn a_client_port_names_its_client() {
+        let mut r = get();
+        r.client = Some(Arc::from("chrome"));
+        assert_eq!(r.to_entry()["_client"], "chrome");
     }
 
     // T1: inspect and .localhost through the proxy.

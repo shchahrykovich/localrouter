@@ -92,6 +92,10 @@ default.
 - Never write proxy settings into project files (`.env`,
   `.claude/settings.json`, test configs): other people on the project may not
   have {{APP}}.
+- To tell programs apart, give each a proxy client, a port of its own:
+  `{{CLI}} proxy client add agent-1`, then
+  `eval "$({{CLI}} proxy env --client agent-1)" && npm test`. Its requests
+  carry `_client` in the log and are at {{PROXY_LOG_URL}}/agent-1.
 
 ## Proxy log
 

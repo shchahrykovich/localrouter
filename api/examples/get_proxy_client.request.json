@@ -1,0 +1,7 @@
+{
+  "id": 16,
+  "method": "get_proxy",
+  "params": {
+    "client": "chrome"
+  }
+}

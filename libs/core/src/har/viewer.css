@@ -93,8 +93,6 @@ code { font-family: var(--mono); font-size: 12px; background: var(--hover); padd
 }
 .brand { display: flex; align-items: baseline; gap: 10px; flex: none; }
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
-.brand-page { font-weight: 500; font-size: 15px; }
-.slash { color: var(--faint); }
 .find { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 720px; margin-left: 12px; }
 .live-btn { position: relative; color: var(--ink); }
 .live-mark { position: absolute; top: -3px; right: -3px; border-radius: 50%; background: var(--surface); padding: 2px; display: flex; }
@@ -276,6 +274,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--hover); padd
 .c-req .path-query { color: var(--query); }
 .c-host { font-family: var(--sans); font-size: 13px; }
 .c-mode { color: var(--mute); }
+.c-client { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-mode.other { color: var(--post); }
 .c-ms.slow { color: var(--bad); }
 .c-ms.live { color: var(--teal); }

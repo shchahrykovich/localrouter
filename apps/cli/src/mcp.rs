@@ -132,6 +132,15 @@ pub struct LogsArgs {
 #[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyArgs {
+    /// A proxy client's name, for example "agent-1": the URL, env and Chrome flags are then for its own port, and
+    /// its requests are marked with its name in the log. Without it, the main port.
+    #[serde(default)]
+    pub client: Option<String>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptRuleArgs {
@@ -283,9 +292,9 @@ the route without a path.")]
 Claude Code and Node.js, Chrome flags, which hosts are inspected, and whether the inspection CA is trusted. A program \
 reads the proxy settings when it starts: pass env to a program you start, never write them into project files. Also \
 lists every script rule with its counters and last error (script_rules), and the HAR log of proxy traffic: log.folder \
-holds the files (read them with jq, never whole), log.url is the viewer for the user.")]
-    async fn get_proxy(&self, Parameters(_): Parameters<NoArgs>) -> Result<CallToolResult, ErrorData> {
-        Ok(self.call("get_proxy", api::Empty {}).await)
+holds the files (read them with jq, never whole), log.url is the viewer for the user. clients lists the proxy clients: more proxy ports, one per program, whose requests carry _client in the log.")]
+    async fn get_proxy(&self, Parameters(args): Parameters<ProxyArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self.call("get_proxy", api::GetProxyParams { client: args.client }).await)
     }
 
     #[tool(description = "Run a Lua script on the HTTP traffic of a host: an intercept script changes or answers \

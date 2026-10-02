@@ -10,7 +10,11 @@
 <body>
 <div class="app">
   <header class="top">
-    <div class="brand"><span class="brand-name">LocalRouter</span><span class="slash">/</span><span class="brand-page">Proxy log</span></div>
+    <div class="brand"><span class="brand-name">LocalRouter</span></div>
+    <div id="client-anchor" class="anchor" hidden>
+      <button id="client-btn" class="btn" type="button" title="Which proxy port: one per client"><span class="muted">Proxy</span><span id="client-label">All</span><span class="caret">▾</span></button>
+      <div id="client" class="pop narrow" hidden></div>
+    </div>
     <div class="find">
       <label class="search"><input id="q" type="search" placeholder="Filter by URL, method, status, mode" autocomplete="off" spellcheck="false"></label>
       <button id="inv" class="check" type="button" title="Show the requests that do not match the text"><span class="box"></span>Invert</button>

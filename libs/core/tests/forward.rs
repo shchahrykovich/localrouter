@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use bytes::Bytes;
@@ -21,7 +21,7 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use localrouter_core::forward::ForwardProxy;
+use localrouter_core::forward::{ClientPort, ForwardProxy};
 use localrouter_core::har::{HarLog, HarSettings};
 use localrouter_core::inspect::InspectSet;
 use localrouter_core::instance::Instance;
@@ -192,6 +192,8 @@ fn ready(load: CaLoad) -> LocalCa {
 
 struct Harness {
     proxy: SocketAddr,
+    /// A second port of the same proxy, for the proxy client `agent` (ADR 09).
+    agent: SocketAddr,
     log: Arc<RequestLog>,
     resolver: Arc<TestResolver>,
     /// Certificate of the inspection CA: the client trusts it.
@@ -272,6 +274,8 @@ async fn harness() -> Harness {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = listener.local_addr().unwrap();
+    let agent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let agent = agent_listener.local_addr().unwrap();
     let forward = Arc::new(ForwardProxy {
         instance: Instance::release(),
         router,
@@ -279,15 +283,19 @@ async fn harness() -> Harness {
         log: log.clone(),
         local_certs: local_store.clone(),
         inspect_certs: inspect_store,
-        own_port: Arc::new(AtomicU16::new(proxy.port())),
+        own_ports: Arc::new(RwLock::new(vec![proxy.port(), agent.port()])),
     });
-    tokio::spawn(async move {
-        loop {
-            let (stream, peer) = listener.accept().await.unwrap();
-            tokio::spawn(forward.clone().serve(stream, peer, CancellationToken::new()));
-        }
-    });
-    Harness { proxy, log, resolver, inspection_ca, internet_ca, local_store, echo, self_signed_served, har, scripts, _dir: dir }
+    for (listener, client) in [(listener, None), (agent_listener, Some(Arc::from("agent")))] {
+        let forward = forward.clone();
+        let at = ClientPort { client, port: listener.local_addr().unwrap().port() };
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer) = listener.accept().await.unwrap();
+                tokio::spawn(forward.clone().serve(stream, peer, at.clone(), CancellationToken::new()));
+            }
+        });
+    }
+    Harness { proxy, agent, log, resolver, inspection_ca, internet_ca, local_store, echo, self_signed_served, har, scripts, _dir: dir }
 }
 
 /// Send one request to the proxy as written: `uri` may be absolute.
@@ -602,6 +610,47 @@ async fn har_records_each_mode() {
     assert_eq!(entries[3]["request"]["url"], format!("https://127.0.0.1:{}", echo.port()));
     assert_eq!(entries[3]["_mode"], "tunnel");
     assert_eq!(entries[3]["_bytesIn"], 4);
+    assert!(entries.iter().all(|e| e.get("_client").is_none()), "the main port writes no _client (ADR 09)");
+}
+
+// ADR 09: every mode on a proxy client's port names the client: absolute
+// form, inspected, .localhost by absolute form and by CONNECT, a tunnel, and
+// the proxy's own 508.
+#[tokio::test]
+async fn har_marks_every_mode_on_a_client_port() {
+    let h = harness().await;
+    let (status, _) = send(h.agent, &format!("http://127.0.0.1:{}/a", h.echo.port()), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let stream = connect(h.agent, "test.example:443").await.unwrap();
+    let tls = tls_over(stream, "test.example", &h.inspection_ca).await.unwrap();
+    assert_eq!(get_over(tls, "test.example", "/in").await.0, StatusCode::OK);
+
+    let (status, _) = send(h.agent, "http://shop.localhost/x", &[("host", "shop.localhost")]).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let stream = connect(h.agent, "shop.localhost:443").await.unwrap();
+    let local_ca = h.local_store.cert_for("shop.localhost").unwrap().cert[1].clone();
+    let tls = tls_over(stream, "shop.localhost", &local_ca).await.unwrap();
+    assert_eq!(get_over(tls, "shop.localhost", "/y").await.0, StatusCode::OK);
+
+    let echo = tcp_echo().await;
+    let mut stream = connect(h.agent, &format!("127.0.0.1:{}", echo.port())).await.unwrap();
+    stream.write_all(b"ping").await.unwrap();
+    let mut back = [0u8; 4];
+    stream.read_exact(&mut back).await.unwrap();
+    drop(stream);
+
+    // The main port is an address of the same proxy: a loop.
+    let (status, _) = send(h.agent, &format!("http://127.0.0.1:{}/", h.proxy.port()), &[]).await;
+    assert_eq!(status, StatusCode::LOOP_DETECTED);
+
+    let entries = har_entries(&h, 6).await;
+    let modes: Vec<&str> = entries.iter().map(|e| e["_mode"].as_str().unwrap()).collect();
+    assert_eq!(modes.len(), 6, "{entries:?}");
+    for e in &entries {
+        assert_eq!(e["_client"], "agent", "{e}");
+    }
 }
 
 // T4, I1: with the log off nothing is recorded and no writer starts.

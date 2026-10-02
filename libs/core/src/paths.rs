@@ -94,6 +94,15 @@ impl Paths {
     pub fn chrome_profile(&self) -> PathBuf {
         self.caches.join("chrome-proxy")
     }
+    /// A proxy client's own Chrome profile (ADR 09): Chrome sends a new
+    /// window to the instance that already runs with the same profile, and
+    /// that one uses the other port.
+    pub fn chrome_profile_for(&self, client: Option<&str>) -> PathBuf {
+        match client {
+            Some(name) => self.caches.join(format!("chrome-proxy-{name}")),
+            None => self.chrome_profile(),
+        }
+    }
     pub fn daemon_log(&self) -> PathBuf {
         self.logs.join("daemon.log")
     }
@@ -121,6 +130,8 @@ mod tests {
         assert_eq!(dev.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter-dev"));
         assert_eq!(dev.logs, PathBuf::from("/Users/u/Library/Logs/LocalRouter-dev"));
         assert_eq!(dev.chrome_profile(), PathBuf::from("/Users/u/Library/Caches/LocalRouter-dev/chrome-proxy"));
+        assert_eq!(dev.chrome_profile_for(None), dev.chrome_profile());
+        assert_eq!(dev.chrome_profile_for(Some("agent")), PathBuf::from("/Users/u/Library/Caches/LocalRouter-dev/chrome-proxy-agent"));
         let release = Paths::resolve(&Instance::release(), None, home);
         assert_eq!(release.data, PathBuf::from("/Users/u/Library/Application Support/LocalRouter"));
         assert_eq!(release.logs, PathBuf::from("/Users/u/Library/Logs/LocalRouter"));

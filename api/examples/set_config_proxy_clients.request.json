@@ -1,0 +1,16 @@
+{
+  "id": 15,
+  "method": "set_config",
+  "params": {
+    "proxy_clients": [
+      {
+        "name": "chrome",
+        "port": 8878
+      },
+      {
+        "name": "agent-1",
+        "port": 8879
+      }
+    ]
+  }
+}

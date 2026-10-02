@@ -4,8 +4,11 @@
 
 use anyhow::{Context, bail};
 use clap::Subcommand;
-use localrouter_core::api::{self, CaState, GetProxyResult, ResetCaResult, SetConfigParams, SetConfigResult};
-use localrouter_core::config::Config;
+use localrouter_core::api::{
+    self, CaState, FindFreePortParams, FindFreePortResult, GetProxyParams, GetProxyResult, ResetCaResult, SetConfigParams,
+    SetConfigResult,
+};
+use localrouter_core::config::{Config, DEFAULT_CLIENT, ProxyClient};
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
 
@@ -21,12 +24,24 @@ pub enum ProxyCommand {
     /// Move the proxy to another port.
     Port { port: u16 },
     /// Print `export` lines: eval "$(<this command>)" before starting a program.
-    Env,
+    Env {
+        /// For this proxy client's port instead of the main one.
+        #[arg(long)]
+        client: Option<String>,
+    },
     /// Open a separate Chrome window that uses the proxy (its own profile).
     Chrome {
         /// Print the command instead of running it.
         #[arg(long)]
         print: bool,
+        /// Use this proxy client's port, with a Chrome profile of its own.
+        #[arg(long)]
+        client: Option<String>,
+    },
+    /// Proxy clients: one more proxy port per program, so the log shows which one sent what. Without a subcommand: the list.
+    Client {
+        #[command(subcommand)]
+        command: Option<ClientCommand>,
     },
     /// Hosts whose HTTPS is read (inspected) instead of passed through.
     Inspect {
@@ -67,9 +82,28 @@ pub enum LogCommand {
         requests: Option<u64>,
     },
     /// Open the log viewer in the browser.
-    Open,
+    Open {
+        /// Open the page of one proxy client.
+        #[arg(long)]
+        client: Option<String>,
+    },
     /// Print the folder of the HAR files, for scripts.
     Path,
+}
+
+#[derive(Subcommand)]
+pub enum ClientCommand {
+    /// Add a proxy client with its own port: chrome, agent-1 (a-z, 0-9, '-').
+    Add {
+        name: String,
+        /// The port; without it, the next free port after the proxy port.
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// Remove a proxy client and close its port. Its log entries stay.
+    Rm { name: String },
+    /// List the proxy clients and their ports.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -125,6 +159,7 @@ pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instan
             let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
             print!("{}", describe(&p, instance));
         }
+        Some(ProxyCommand::Client { command }) => clients(&mut c, command.unwrap_or(ClientCommand::List), instance).await?,
         Some(ProxyCommand::On) => {
             set(&mut c, SetConfigParams { proxy_enabled: Some(true), ..Default::default() }).await?;
             let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
@@ -149,8 +184,8 @@ pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instan
             let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
             println!("The proxy port is {}. Programs that use the old port must be started again.", p.port);
         }
-        Some(ProxyCommand::Env) => {
-            let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
+        Some(ProxyCommand::Env { client }) => {
+            let p = get_proxy(&mut c, client).await?;
             for line in env_lines(&p) {
                 println!("{line}");
             }
@@ -159,15 +194,15 @@ pub async fn run(command: Option<ProxyCommand>, paths: &Paths, instance: &Instan
                 eprintln!("# {note}");
             }
         }
-        Some(ProxyCommand::Chrome { print }) => {
-            let mut p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
+        Some(ProxyCommand::Chrome { print, client }) => {
+            let mut p = get_proxy(&mut c, client.clone()).await?;
             if print {
                 println!("{}", shell_line(&chrome_command(&p.chrome_args)));
                 return Ok(());
             }
             if !p.enabled {
                 set(&mut c, SetConfigParams { proxy_enabled: Some(true), ..Default::default() }).await?;
-                p = c.call("get_proxy", api::Empty {}).await?;
+                p = get_proxy(&mut c, client).await?;
                 println!("Turned the proxy on.");
             }
             let command = chrome_command(&p.chrome_args);
@@ -260,8 +295,8 @@ async fn log(c: &mut Client, command: Option<LogCommand>, instance: &Instance) -
             }
             Some(SetConfigParams { proxy_log_file_mb: mb, proxy_log_file_requests: requests, ..Default::default() })
         }
-        Some(LogCommand::Open) => {
-            let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
+        Some(LogCommand::Open { client }) => {
+            let p = get_proxy(c, client).await?;
             let Some(log) = p.log else { bail!("this daemon has no proxy log; update it") };
             let out = std::process::Command::new("open").arg(&log.url).output().context("cannot run open")?;
             if !out.status.success() {
@@ -328,6 +363,109 @@ async fn set(c: &mut Client, params: SetConfigParams) -> anyhow::Result<SetConfi
     Ok(c.call("set_config", params).await?)
 }
 
+/// `get_proxy` for the main port or one proxy client's. A daemon before API
+/// 1.6 ignores `client` and answers for the main port: refuse that.
+async fn get_proxy(c: &mut Client, client: Option<String>) -> anyhow::Result<GetProxyResult> {
+    let client = client.filter(|n| n != DEFAULT_CLIENT);
+    let p: GetProxyResult = c.call("get_proxy", GetProxyParams { client: client.clone() }).await?;
+    if client.is_some() && p.client != client {
+        bail!("the daemon does not know proxy clients; update it");
+    }
+    Ok(p)
+}
+
+/// `proxy client …` (ADR 09).
+async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) -> anyhow::Result<()> {
+    let cli = instance.cli();
+    let config: Config = c.call("get_config", api::Empty {}).await?;
+    let mut list = config.proxy_clients.clone();
+    match command {
+        ClientCommand::List => {
+            let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
+            print!("{}", describe_clients(&p, &config, instance));
+            return Ok(());
+        }
+        ClientCommand::Add { name, port } => {
+            ProxyClient::check_name(&name).map_err(anyhow::Error::msg)?;
+            if list.iter().any(|x| x.name == name) {
+                bail!("proxy client {name} exists; remove it first: {cli} proxy client rm {name}");
+            }
+            let port = match port {
+                Some(port) => port,
+                None => next_port(c, &config).await?,
+            };
+            list.push(ProxyClient { name: name.clone(), port });
+            set(c, SetConfigParams { proxy_clients: Some(list), ..Default::default() }).await?;
+            let p = get_proxy(c, Some(name.clone())).await?;
+            println!("Proxy client {name}: {}", p.url);
+            println!("Use it: eval \"$({cli} proxy env --client {name})\" && claude, or {cli} proxy chrome --client {name}");
+            if let Some(log) = &p.log {
+                println!("Its requests: {}", log.url);
+            }
+            for note in &p.notes {
+                println!("Note: {note}");
+            }
+        }
+        ClientCommand::Rm { name } => {
+            let before = list.len();
+            list.retain(|x| x.name != name);
+            if list.len() == before {
+                bail!("there is no proxy client {name}");
+            }
+            set(c, SetConfigParams { proxy_clients: Some(list), ..Default::default() }).await?;
+            println!("Removed proxy client {name}. Its port is closed; its log entries stay.");
+        }
+    }
+    Ok(())
+}
+
+/// The first free port after the proxy port and the clients' ports. A port
+/// in the config is skipped even when it is not bound (the proxy is off).
+async fn next_port(c: &mut Client, config: &Config) -> anyhow::Result<u16> {
+    if config.proxy_port == 0 {
+        // Tests: the main port is "any free port", so is the client's.
+        return Ok(0);
+    }
+    let used: Vec<u16> =
+        [config.http_port, config.https_port, config.proxy_port].into_iter().chain(config.proxy_clients.iter().map(|x| x.port)).collect();
+    let mut near = config.proxy_clients.iter().map(|x| x.port).chain([config.proxy_port]).max().unwrap_or(config.proxy_port);
+    for _ in 0..50 {
+        near = near.checked_add(1).context("no free port above the proxy port")?;
+        let free: FindFreePortResult = c.call("find_free_port", FindFreePortParams { near: Some(near) }).await?;
+        if !used.contains(&free.port) {
+            return Ok(free.port);
+        }
+        near = free.port;
+    }
+    bail!("no free port found; give one with --port")
+}
+
+/// The proxy clients as text: name, port, state.
+pub fn describe_clients(p: &GetProxyResult, config: &Config, instance: &Instance) -> String {
+    let cli = instance.cli();
+    if p.clients.is_empty() {
+        return format!(
+            "No proxy clients. Every program uses the main port {}.\nAdd one: {cli} proxy client add <name> (a port of its own, and its own page in the log viewer)\n",
+            p.port
+        );
+    }
+    let mut out = format!("{:<20} {}\n", DEFAULT_CLIENT, describe_port(p.enabled, &p.bound, p.port, &p.errors));
+    for client in &p.clients {
+        let port = client.port.unwrap_or(client.configured);
+        out.push_str(&format!("{:<20} {}\n", client.name, describe_port(config.proxy_enabled, &client.bound, port, &client.errors)));
+    }
+    out.push_str(&format!("\nA shell:   eval \"$({cli} proxy env --client <name>)\" && claude\nChrome:    {cli} proxy chrome --client <name>\n"));
+    out
+}
+
+fn describe_port(enabled: bool, bound: &[String], port: u16, errors: &[String]) -> String {
+    match (enabled, bound.is_empty()) {
+        (true, false) => format!("http://127.0.0.1:{port}"),
+        (true, true) => format!("port {port}, not listening: {}", errors.join("; ")),
+        (false, _) => format!("port {port} (the proxy is off)"),
+    }
+}
+
 /// `export NAME='value'` lines in a fixed order.
 pub fn env_lines(p: &GetProxyResult) -> Vec<String> {
     let mut names: Vec<&String> = p.env.keys().collect();
@@ -388,6 +526,17 @@ pub fn describe(p: &GetProxyResult, instance: &Instance) -> String {
     }
     if let Some(log) = &p.log {
         out.push_str(&format!("Log            {} ({})\n", if log.enabled { "on" } else { "off" }, log.url));
+    }
+    if !p.clients.is_empty() {
+        let names: Vec<String> = p
+            .clients
+            .iter()
+            .map(|c| match c.port {
+                Some(port) => format!("{} ({port})", c.name),
+                None => format!("{} ({}, not listening)", c.name, c.configured),
+            })
+            .collect();
+        out.push_str(&format!("Clients        {}\n", names.join(", ")));
     }
     out.push_str(&format!("\nA shell:   eval \"$({cli} proxy env)\" && claude\nChrome:    {cli} proxy chrome\n"));
     if let Some(line) = log_line(p, instance) {

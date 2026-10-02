@@ -9,11 +9,15 @@
 //!
 //! `Proxy-Authorization` and `Proxy-Connection` never reach the server, and
 //! nothing is added: no `Via`, no `X-Forwarded-*` (I10).
+//!
+//! Every proxy port is served here: the main one and one per proxy client
+//! (ADR 09). A connection knows its port ([`ClientPort`]), and the log marks
+//! its requests with the client's name.
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
@@ -35,7 +39,7 @@ use crate::har::websocket::{self, WsTap};
 use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
-use crate::proxy::{Body, ClientScheme, Proxy, escape, is_upgrade, page, remove_hop_headers};
+use crate::proxy::{Body, ClientScheme, FromProxy, Proxy, escape, is_upgrade, page, remove_hop_headers};
 use crate::scripts::Ctx;
 use crate::routes::host_key;
 use crate::tls::CertStore;
@@ -56,14 +60,23 @@ pub struct ForwardProxy {
     /// The inspection CA. It gives a leaf only for a name in the inspect set,
     /// so a leaf from it is the decision to inspect.
     pub inspect_certs: Arc<CertStore>,
-    /// The proxy port, for the loop check. `0` until bound.
-    pub own_port: Arc<AtomicU16>,
+    /// Every bound proxy port, the main one and the clients', for the loop
+    /// check. Empty while the proxy is off.
+    pub own_ports: Arc<RwLock<Vec<u16>>>,
+}
+
+/// The proxy port a connection came in on (ADR 09).
+#[derive(Debug, Clone)]
+pub struct ClientPort {
+    /// The proxy client's name; `None` for the main port.
+    pub client: Option<Arc<str>>,
+    pub port: u16,
 }
 
 impl ForwardProxy {
     /// Serve one accepted connection until it closes or `cancel` fires (the
     /// proxy was turned off, I2).
-    pub async fn serve<IO>(self: Arc<Self>, io: IO, peer: SocketAddr, cancel: CancellationToken)
+    pub async fn serve<IO>(self: Arc<Self>, io: IO, peer: SocketAddr, at: ClientPort, cancel: CancellationToken)
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -72,7 +85,8 @@ impl ForwardProxy {
         let service = hyper::service::service_fn(move |req| {
             let this = this.clone();
             let cancel = child.clone();
-            async move { Ok::<_, Infallible>(this.handle(req, peer, cancel).await) }
+            let at = at.clone();
+            async move { Ok::<_, Infallible>(this.handle(req, peer, &at, cancel).await) }
         });
         let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
         let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
@@ -82,22 +96,22 @@ impl ForwardProxy {
         }
     }
 
-    async fn handle(self: &Arc<Self>, mut req: Request<Incoming>, peer: SocketAddr, cancel: CancellationToken) -> Response<Body> {
+    async fn handle(self: &Arc<Self>, mut req: Request<Incoming>, peer: SocketAddr, at: &ClientPort, cancel: CancellationToken) -> Response<Body> {
         if req.method() == Method::CONNECT {
-            return self.connect(req, peer, cancel).await;
+            return self.connect(req, peer, at, cancel).await;
         }
         let start = Instant::now();
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let Some(authority) = req.uri().authority().cloned() else {
             let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-            let seen = self.seen(&req, || if host.is_empty() { path.clone() } else { format!("http://{host}{path}") }, ProxyMode::Http);
-            let resp = self.not_a_proxy_request();
+            let seen = self.seen(&req, || if host.is_empty() { path.clone() } else { format!("http://{host}{path}") }, ProxyMode::Http, at);
+            let resp = self.not_a_proxy_request(at.port);
             self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default(), seen);
             return resp;
         };
         if req.uri().scheme_str() != Some("http") {
-            let seen = self.seen(&req, || req.uri().to_string(), ProxyMode::Http);
+            let seen = self.seen(&req, || req.uri().to_string(), ProxyMode::Http, at);
             let resp = https_needs_connect(authority.as_str());
             self.log_http(&method, authority.as_str(), &path, &resp, start, ProxyMode::Http, Default::default(), seen);
             return resp;
@@ -113,10 +127,11 @@ impl ForwardProxy {
                 req.headers_mut().insert(header::HOST, value);
             }
             req.headers_mut().remove(header::PROXY_AUTHORIZATION);
-            return self.router.handle(req, ClientScheme::Http, peer, Some(ProxyMode::Http)).await;
+            let via = FromProxy { mode: ProxyMode::Http, client: at.client.clone() };
+            return self.router.handle(req, ClientScheme::Http, peer, Some(via)).await;
         }
         // What the client sent, before script rules (ADR 08).
-        let seen = self.seen(&req, || req.uri().to_string(), ProxyMode::Http);
+        let seen = self.seen(&req, || req.uri().to_string(), ProxyMode::Http, at);
         if self.is_own_address(&host, port) {
             let resp = loop_detected(&host, port);
             self.log_http(&method, &host, &path, &resp, start, ProxyMode::Http, Default::default(), seen);
@@ -144,15 +159,22 @@ impl ForwardProxy {
 
     /// A HAR record of what the client sent, only while the log is on: with
     /// it off nothing is copied (ADR 08, I1).
-    fn seen<B>(&self, req: &Request<B>, url: impl FnOnce() -> String, mode: ProxyMode) -> Option<HarRecord> {
+    fn seen<B>(&self, req: &Request<B>, url: impl FnOnce() -> String, mode: ProxyMode, at: &ClientPort) -> Option<HarRecord> {
         let har = self.router.har.as_ref()?;
-        har.enabled().then(|| HarRecord::start(req, url(), mode))
+        har.enabled().then(|| {
+            let mut record = HarRecord::start(req, url(), mode);
+            record.client = at.client.clone();
+            record
+        })
     }
 
     /// One closed tunnel, or a `CONNECT` the proxy answered itself.
-    fn record_tunnel(&self, started: SystemTime, host: &str, port: u16, status: u16, millis: u64, bytes: (u64, u64)) {
+    #[allow(clippy::too_many_arguments)]
+    fn record_tunnel(&self, at: &ClientPort, started: SystemTime, host: &str, port: u16, status: u16, millis: u64, bytes: (u64, u64)) {
         if let Some(har) = self.router.har.as_ref().filter(|h| h.enabled()) {
-            har.record(HarRecord::tunnel(started, host, port, status, millis, bytes));
+            let mut record = HarRecord::tunnel(started, host, port, status, millis, bytes);
+            record.client = at.client.clone();
+            har.record(record);
         }
     }
 
@@ -187,7 +209,7 @@ impl ForwardProxy {
         }
     }
 
-    async fn connect(self: &Arc<Self>, req: Request<Incoming>, peer: SocketAddr, cancel: CancellationToken) -> Response<Body> {
+    async fn connect(self: &Arc<Self>, req: Request<Incoming>, peer: SocketAddr, at: &ClientPort, cancel: CancellationToken) -> Response<Body> {
         let start = Instant::now();
         let started = SystemTime::now();
         let Some(authority) = req.uri().authority().cloned() else {
@@ -198,7 +220,7 @@ impl ForwardProxy {
         if self.is_own_address(&host, port) {
             let resp = loop_detected(&host, port);
             self.log.push(LogEntry::tunnel(&host, resp.status().as_u16(), 0, 0, 0));
-            self.record_tunnel(started, &host, port, resp.status().as_u16(), 0, (0, 0));
+            self.record_tunnel(at, started, &host, port, resp.status().as_u16(), 0, (0, 0));
             return resp;
         }
 
@@ -207,13 +229,14 @@ impl ForwardProxy {
         if host_key(&host).is_some() {
             let upgrade = hyper::upgrade::on(req);
             let this = self.clone();
+            let via = FromProxy { mode: ProxyMode::Inspect, client: at.client.clone() };
             tokio::spawn(async move {
                 let Ok(upgraded) = upgrade.await else { return };
                 let io = TokioIo::new(upgraded);
                 let router = this.router.clone();
                 let serve = async move {
                     if port == 80 {
-                        router.serve_as(io, ClientScheme::Http, peer, Some(ProxyMode::Inspect)).await;
+                        router.serve_as(io, ClientScheme::Http, peer, Some(via)).await;
                         return;
                     }
                     let Some(cert) = this.local_certs.cert_for(&host) else {
@@ -221,7 +244,7 @@ impl ForwardProxy {
                         return;
                     };
                     if let Some(tls) = accept_tls(io, cert).await {
-                        router.serve_as(tls, ClientScheme::Https, peer, Some(ProxyMode::Inspect)).await;
+                        router.serve_as(tls, ClientScheme::Https, peer, Some(via)).await;
                     }
                 };
                 tokio::select! { _ = serve => {}, _ = cancel.cancelled() => {} }
@@ -234,6 +257,7 @@ impl ForwardProxy {
         if let Some(cert) = self.inspect_certs.cert_for(&host) {
             let upgrade = hyper::upgrade::on(req);
             let this = self.clone();
+            let at = at.clone();
             tokio::spawn(async move {
                 let Ok(upgraded) = upgrade.await else { return };
                 let Some(tls) = accept_tls(TokioIo::new(upgraded), cert).await else { return };
@@ -241,7 +265,8 @@ impl ForwardProxy {
                 let service = hyper::service::service_fn(move |req| {
                     let session = session.clone();
                     let host = host.clone();
-                    async move { Ok::<_, Infallible>(session.inspected(req, &host, port).await) }
+                    let at = at.clone();
+                    async move { Ok::<_, Infallible>(session.inspected(req, &host, port, &at).await) }
                 });
                 let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
                 let conn = builder.serve_connection_with_upgrades(TokioIo::new(tls), service);
@@ -261,12 +286,13 @@ impl ForwardProxy {
                 let resp = bad_gateway(&host, &e);
                 let millis = start.elapsed().as_millis() as u64;
                 self.log.push(LogEntry::tunnel(&host, resp.status().as_u16(), millis, 0, 0));
-                self.record_tunnel(started, &host, port, resp.status().as_u16(), millis, (0, 0));
+                self.record_tunnel(at, started, &host, port, resp.status().as_u16(), millis, (0, 0));
                 return resp;
             }
         };
         let upgrade = hyper::upgrade::on(req);
         let this = self.clone();
+        let at = at.clone();
         tokio::spawn(async move {
             let (bytes_in, bytes_out) = match upgrade.await {
                 Ok(client) => tunnel(client, server, cancel).await,
@@ -274,20 +300,20 @@ impl ForwardProxy {
             };
             let millis = start.elapsed().as_millis() as u64;
             this.log.push(LogEntry::tunnel(&host, 200, millis, bytes_in, bytes_out));
-            this.record_tunnel(started, &host, port, 200, millis, (bytes_in, bytes_out));
+            this.record_tunnel(&at, started, &host, port, 200, millis, (bytes_in, bytes_out));
         });
         empty(StatusCode::OK)
     }
 
     /// One request inside an inspected `CONNECT`: sent to the same host and
     /// port over a new, verified TLS connection.
-    async fn inspected(&self, req: Request<Incoming>, host: &str, port: u16) -> Response<Body> {
+    async fn inspected(&self, req: Request<Incoming>, host: &str, port: u16, at: &ClientPort) -> Response<Body> {
         let start = Instant::now();
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let name = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
         let authority = if port == 443 { name } else { format!("{name}:{port}") };
-        let seen = self.seen(&req, || format!("https://{authority}{path}"), ProxyMode::Inspect);
+        let seen = self.seen(&req, || format!("https://{authority}{path}"), ProxyMode::Inspect, at);
         let req = req.map(|b| b.map_err(Into::into).boxed_unsync());
         let (req, rec) = self.recording(seen, req);
         let ctx = Ctx { source: "proxy", route: None, scheme: "https", host: host.to_string(), port };
@@ -336,14 +362,11 @@ impl ForwardProxy {
     }
 
     /// The destination is this proxy itself: a loopback address or
-    /// `localhost`, on the proxy port.
+    /// `localhost`, on any of its ports (the main one or a client's).
     fn is_own_address(&self, host: &str, port: u16) -> bool {
-        let own = self.own_port.load(Ordering::Relaxed);
-        if own == 0 || port != own {
-            return false;
-        }
-        host == "localhost"
-            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified() || ip.to_canonical().is_loopback())
+        let local = host == "localhost"
+            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified() || ip.to_canonical().is_loopback());
+        local && self.own_ports.read().unwrap().contains(&port)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -392,8 +415,7 @@ impl ForwardProxy {
         }
     }
 
-    fn not_a_proxy_request(&self) -> Response<Body> {
-        let port = self.own_port.load(Ordering::Relaxed);
+    fn not_a_proxy_request(&self, port: u16) -> Response<Body> {
         let cli = escape(&self.instance.cli());
         page(
             StatusCode::BAD_REQUEST,

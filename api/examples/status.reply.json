@@ -44,7 +44,28 @@
         "pem_path": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem",
         "common_name": "LocalRouter Inspection 5e6f7a8b",
         "trusted": false
-      }
+      },
+      "clients": [
+        {
+          "name": "chrome",
+          "configured": 8878,
+          "port": 8878,
+          "bound": [
+            "127.0.0.1:8878",
+            "[::1]:8878"
+          ],
+          "errors": []
+        },
+        {
+          "name": "agent-1",
+          "configured": 8879,
+          "port": null,
+          "bound": [],
+          "errors": [
+            "cannot listen on 127.0.0.1:8879 and [::1]:8879: port 8879 is in use by another program"
+          ]
+        }
+      ]
     },
     "network": {
       "id": "mac:18:35:d1:15:d1:a8",

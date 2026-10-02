@@ -20,7 +20,7 @@ use crate::scripts::engine::{LastError, ScriptKind};
 use crate::scripts::rules::ScriptRule;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.5";
+pub const API_VERSION: &str = "1.6";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
@@ -219,6 +219,23 @@ pub struct ProxyStatus {
     pub errors: Vec<String>,
     /// `None` until the inspection CA exists (it is made on first need).
     pub inspect_ca: Option<CaStatus>,
+    /// The proxy clients' ports (ADR 09). Absent before API 1.6.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<ProxyClientStatus>,
+}
+
+/// One proxy client's port (ADR 09).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProxyClientStatus {
+    pub name: String,
+    /// Port from the config (`0` = any free port).
+    pub configured: u16,
+    /// Port actually bound, if bound.
+    pub port: Option<u16>,
+    /// `127.0.0.1:8878` and `[::1]:8878`, or none.
+    pub bound: Vec<String>,
+    /// Why the port is not bound while the proxy is on.
+    pub errors: Vec<String>,
 }
 
 // ---- routes
@@ -342,6 +359,10 @@ pub struct SetConfigParams {
     /// Replaces the whole list of networks where LAN access applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_networks: Option<Vec<crate::config::LanNetwork>>,
+    /// Replaces the whole list of proxy clients (ADR 09). While the proxy is
+    /// on, a new or moved port binds before anything is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_clients: Option<Vec<crate::config::ProxyClient>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -361,10 +382,22 @@ pub struct ResetCaResult {
 
 // ---- forward proxy (ADR 06)
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GetProxyParams {
+    /// A proxy client's name (ADR 09): `url`, `port`, `env` and
+    /// `chrome_args` are then for its port. Without it, the main port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
 /// Everything a client needs to use the forward proxy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GetProxyResult {
     pub enabled: bool,
+    /// The proxy client this reply is for; absent for the main port. A
+    /// daemon before API 1.6 never sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
     /// `http://127.0.0.1:<port>`, the value for `HTTPS_PROXY`.
     pub url: String,
     /// The bound port, or the configured one while not bound.
@@ -391,6 +424,9 @@ pub struct GetProxyResult {
     /// The HAR log of proxy traffic (ADR 08). Absent before API 1.5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<ProxyLogStatus>,
+    /// Every proxy client's port (ADR 09). Absent before API 1.6.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<ProxyClientStatus>,
 }
 
 /// The proxy log: where the HAR files are and how the writer is doing.
@@ -400,7 +436,8 @@ pub struct ProxyLogStatus {
     pub enabled: bool,
     /// The folder of the HAR files.
     pub folder: String,
-    /// The viewer, for the user: `http://proxy.localhost` on this instance.
+    /// The viewer, for the user: `http://proxy.localhost` on this instance,
+    /// or `http://proxy.localhost/<client>` in a reply for a client.
     pub url: String,
     pub file_mb: u64,
     pub file_requests: u64,
