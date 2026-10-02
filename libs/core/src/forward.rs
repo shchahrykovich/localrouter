@@ -328,6 +328,13 @@ impl ForwardProxy {
         let wants_upgrade = is_upgrade(req.headers());
         let client_upgrade = wants_upgrade.then(|| hyper::upgrade::on(&mut req));
         let (mut parts, body) = req.into_parts();
+        // `Host` from an HTTP/1.1 client: the upstream client writes it
+        // again from the URI for an HTTP/1.1 server, and an HTTP/2 server
+        // gets `:authority` only. Some servers reset an HTTP/2 stream
+        // that has both, and the client got a 502.
+        if parts.headers.get(header::HOST).is_some_and(|h| same_authority(h, &uri)) {
+            parts.headers.remove(header::HOST);
+        }
         parts.uri = uri;
         parts.version = Version::HTTP_11;
         remove_hop_headers(&mut parts.headers, wants_upgrade);
@@ -430,6 +437,15 @@ impl ForwardProxy {
     }
 }
 
+/// `Host` names the URI's host and port (the scheme's port when absent),
+/// case aside.
+fn same_authority(host: &HeaderValue, uri: &Uri) -> bool {
+    let (Ok(host), Some(authority)) = (host.to_str(), uri.authority()) else { return false };
+    let Ok(host) = host.parse::<hyper::http::uri::Authority>() else { return false };
+    let default = if uri.scheme_str() == Some("https") { 443 } else { 80 };
+    host.host().eq_ignore_ascii_case(authority.host()) && host.port_u16().unwrap_or(default) == authority.port_u16().unwrap_or(default)
+}
+
 /// A TLS server handshake with one fixed leaf, ALPN `h2` and `http/1.1`.
 async fn accept_tls<IO>(io: IO, cert: Arc<CertifiedKey>) -> Option<tokio_rustls::server::TlsStream<IO>>
 where
@@ -521,6 +537,19 @@ fn bad_gateway(host: &str, error: &str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_authority_compares_host_and_port() {
+        let yes = |host: &str, uri: &str| same_authority(&HeaderValue::from_str(host).unwrap(), &uri.parse().unwrap());
+        assert!(yes("api.example.com", "https://api.example.com/a"));
+        assert!(yes("Example.COM:443", "https://example.com/"));
+        assert!(yes("example.com", "http://example.com:80/"));
+        assert!(yes("example.com:8443", "https://example.com:8443/"));
+        assert!(yes("[::1]:8080", "http://[::1]:8080/"));
+        assert!(!yes("example.com", "https://example.com:8443/"));
+        assert!(!yes("other.example", "https://example.com/"));
+        assert!(!yes("not a host", "https://example.com/"));
+    }
 
     #[test]
     fn loop_and_gateway_pages_name_the_host() {

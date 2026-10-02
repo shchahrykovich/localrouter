@@ -168,6 +168,44 @@ async fn tls_server(names: &[&str], issuer: Option<&rcgen::Issuer<'static, rcgen
     (addr, served)
 }
 
+/// A TLS server that speaks HTTP/2 (ALPN `h2`) and, like some real servers,
+/// resets an HTTP/2 stream that has a `host` header next to `:authority`. It
+/// answers the HTTP version and the `host` header it got.
+async fn h2_server(name: &str, issuer: &rcgen::Issuer<'static, rcgen::KeyPair>) -> SocketAddr {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap().signed_by(&key, issuer).unwrap();
+    let mut config = rustls::ServerConfig::builder_with_provider(tls::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+        .unwrap();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(stream).await else { return };
+                let svc = hyper::service::service_fn(|req: Request<Incoming>| async move {
+                    let host = req.headers().get("host").map(|v| v.to_str().unwrap_or("").to_string());
+                    if req.version() == hyper::Version::HTTP_2 && host.is_some() {
+                        return Err(io::Error::other("host header in an HTTP/2 request"));
+                    }
+                    let json = serde_json::json!({ "version": format!("{:?}", req.version()), "host": host });
+                    Ok(Response::new(Full::new(Bytes::from(json.to_string()))))
+                });
+                let builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+                let _ = builder.serve_connection(TokioIo::new(tls), svc).await;
+            });
+        }
+    });
+    addr
+}
+
 fn route(host: &str, target: String) -> Route {
     Route {
         host: host.into(),
@@ -215,8 +253,10 @@ async fn harness() -> Harness {
     let (internet_issuer, internet_ca) = test_ca();
     let (secure, _) = tls_server(&["test.example", "plain.example"], Some(&internet_issuer)).await;
     let (self_signed, self_signed_served) = tls_server(&["selfsigned.example"], None).await;
+    let h2 = h2_server("h2.example", &internet_issuer).await;
     let resolver = Arc::new(TestResolver {
         names: HashMap::from([
+            ("h2.example".to_string(), h2),
             ("test.example".to_string(), secure),
             ("plain.example".to_string(), secure),
             ("selfsigned.example".to_string(), self_signed),
@@ -260,7 +300,7 @@ async fn harness() -> Harness {
     let local_store = Arc::new(CertStore::new(Some(local), Arc::new(move |n: &str| r.0.read().unwrap().serves(n, true))));
     let inspection = ready(LocalCa::load_or_create_kind(&paths, &Instance::release(), CaKind::Inspection));
     let inspection_ca = inspection.cert_der().clone();
-    let set = InspectSet::new(&["test.example".into(), "selfsigned.example".into()]);
+    let set = InspectSet::new(&["test.example".into(), "selfsigned.example".into(), "h2.example".into()]);
     let inspect_store = Arc::new(CertStore::inspection(Some(inspection), Arc::new(move |n: &str| set.matches(n))));
 
     let mut roots = rustls::RootCertStore::empty();
@@ -569,6 +609,26 @@ async fn har_entries(h: &Harness, n: usize) -> Vec<serde_json::Value> {
 
 fn header<'a>(list: &'a serde_json::Value, name: &str) -> Option<&'a str> {
     list.as_array()?.iter().find(|h| h["name"] == name).and_then(|h| h["value"].as_str())
+}
+
+// An HTTP/1.1 client sends `Host`; the proxy talks HTTP/2 to the server.
+// The server must get `:authority` only: some servers reset a stream
+// that also has `host`, and the client got a 502. An HTTP/1.1 server still
+// gets its `Host`.
+#[tokio::test]
+async fn an_http1_client_reaches_an_http2_server_without_a_host_header() {
+    let h = harness().await;
+    let stream = connect(h.proxy, "h2.example:443").await.unwrap();
+    let tls = tls_over(stream, "h2.example", &h.inspection_ca).await.unwrap();
+    let (status, body) = get_over(tls, "h2.example", "/in").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json(&body), serde_json::json!({"version": "HTTP/2.0", "host": null}));
+
+    let stream = connect(h.proxy, "test.example:443").await.unwrap();
+    let tls = tls_over(stream, "test.example", &h.inspection_ca).await.unwrap();
+    let (status, body) = get_over(tls, "test.example", "/in").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json(&body)["host"], "test.example");
 }
 
 // T4: one absolute-form GET, one inspected request, one .localhost GET and
