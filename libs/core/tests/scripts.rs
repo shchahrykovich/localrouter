@@ -894,6 +894,14 @@ async fn a_client_that_goes_away_ends_a_quiet_stream() {
     reader.abort();
     let lines = h.lines("x.jsonl", 1).await;
     assert_eq!(lines[0]["path"], "/sse-open");
+    // The script writes its line before the queue item that holds the copy
+    // is dropped: wait for the bytes to come back.
+    for _ in 0..200 {
+        if h.scripts.budget.used() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(h.scripts.budget.used(), 0);
 }
 
