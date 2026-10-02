@@ -1,6 +1,9 @@
 import LocalRouterKit
 import SwiftUI
 
+/// The Settings window, laid out like the settings of a JetBrains IDE: a
+/// tree of pages with a search field on the left, the selected page on the
+/// right. The tree and the search are `SettingsTree`.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var fallback = true
@@ -12,108 +15,19 @@ struct SettingsView: View {
     @State private var openAtLogin = false
     @State private var loginNote: String?
     @State private var confirmReveal: ScriptRuleView?
+    @State private var query = ""
+    /// Parents the person closed. Every parent is open while a search runs.
+    @State private var collapsed: Set<SettingsPage> = []
+    static let pageKey = "settingsPage"
+    @AppStorage(SettingsView.pageKey) private var page: SettingsPage = .general
     @AppStorage("autoUpdate") private var autoUpdate = true
 
     var body: some View {
-        Form {
-            Section("General") {
-                Toggle("Open at login", isOn: $openAtLogin)
-                    .disabled(!model.inBundle)
-                    .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
-                Text(model.inBundle
-                    ? "Starts LocalRouter when you log in, so it works after a restart. The daemon starts at login either way."
-                    : "Only an app bundle can open at login.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let note = loginNote {
-                    Text(note).font(.caption)
-                    Button("Open Login Items") { model.openLoginItems() }
-                }
-            }
-            Section("Routing") {
-                Toggle("Subdomain fallback", isOn: $fallback)
-                    .onChange(of: fallback) { _, on in if loaded { Task { await model.setFallback(on) } } }
-                Text("feat-x.shop.localhost uses the shop route when it has no route of its own.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("Allow LAN access", isOn: $allowLan)
-                    .onChange(of: allowLan) { _, on in if loaded { Task { await model.setAllowLan(on) } } }
-                Text("Off: only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes are always this Mac only.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("HTTPS certificate authority") {
-                if let ca = model.status?.ca {
-                    LabeledContent("CA", value: ca.commonName ?? "?")
-                    LabeledContent("Trusted", value: ca.trusted == true ? "yes" : ca.trusted == false ? "no" : "unknown")
-                    if let problem = ca.problem { Text(problem).foregroundStyle(.red).font(.caption) }
-                    HStack {
-                        let actions = TrustActions.for(trusted: ca.trusted)
-                        if actions.contains(.trust) {
-                            Button("Trust…") { Task { await model.trustCA() } }.disabled(model.busy)
-                        }
-                        if actions.contains(.untrust) {
-                            Button("Untrust") { Task { await model.untrustCA() } }.disabled(model.busy)
-                        }
-                        Button("Show ca.pem") { model.revealCA() }
-                    }
-                } else {
-                    Text("Start the daemon to create the CA.").foregroundStyle(.secondary)
-                }
-            }
-            if model.status?.proxy != nil { proxySection }
-            if model.proxy != nil { scriptsSection }
-            // Shown when the ports are not 80 and 443, or something is wrong (ADR 04, I12).
-            let errors = (model.status?.http.errors ?? []) + (model.status?.https.errors ?? [])
-            let routesFileProblem = model.status?.routesFileProblem
-            let daemon = DaemonSection.decide(
-                bound: boundPorts,
-                file: DaemonSection.filePorts(configURL: configURL, instance: .current),
-                hasProblem: model.status == nil || !errors.isEmpty || routesFileProblem != nil || model.serviceNote != nil)
-            if daemon.visible {
-                Section("Daemon") {
-                    if let s = model.status {
-                        LabeledContent("Version", value: s.daemonVersion)
-                        LabeledContent("HTTP", value: s.http.port.map(String.init) ?? "not listening")
-                        LabeledContent("HTTPS", value: s.https.port.map(String.init) ?? "not listening")
-                    } else {
-                        Text(model.daemonProblem ?? "Not running").foregroundStyle(.secondary)
-                    }
-                    if let pending = daemon.pendingPorts {
-                        Text("Restart the daemon to use ports \(pending.http) and \(pending.https):").font(.caption)
-                        CopyLine(text: DaemonSection.restartCommand(for: .current))
-                    }
-                    HStack {
-                        Text("Ports are set in config.json.").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Show config.json") { NSWorkspace.shared.activateFileViewerSelecting([configURL]) }
-                    }
-                    ForEach(errors, id: \.self) { e in
-                        Text(e).foregroundStyle(.red).font(.caption)
-                    }
-                    if let p = routesFileProblem { Text(p).foregroundStyle(.orange).font(.caption) }
-                    if let note = model.serviceNote {
-                        Text(note).font(.caption)
-                        Button("Open Login Items") { model.openLoginItems() }
-                    }
-                }
-            }
-            Section("Updates") {
-                LabeledContent("This version", value: model.version)
-                if let off = Updater.disabledReason(for: .current) {
-                    Text(off).font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Toggle("Check for updates automatically", isOn: $autoUpdate)
-                    Button("Check for Updates…") { Task { await model.checkForUpdates(manual: true) } }
-                }
-            }
-            Section {
-                Button("Uninstall \(Instance.current.appName)…", role: .destructive) { confirmUninstall = true }
-                    .confirmationDialog("Uninstall \(Instance.current.appName)?", isPresented: $confirmUninstall) {
-                        Button("Uninstall", role: .destructive) { Task { await model.uninstall() } }
-                    } message: {
-                        Text("This untrusts the CA, stops the daemon and deletes all routes and settings.")
-                    }
-            }
+        HStack(spacing: 0) {
+            sidebar.frame(width: 220)
+            Divider()
+            detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .formStyle(.grouped)
         .task {
             readOpenAtLogin()
             if let c = await model.config {
@@ -123,19 +37,190 @@ struct SettingsView: View {
             }
             loaded = true
         }
+        .onChange(of: query) { _, q in
+            // Keep the selection inside the tree the search shows.
+            let nodes = SettingsTree.filter(q)
+            if !SettingsTree.contains(page, in: nodes), let first = SettingsTree.firstPage(in: nodes, query: q) {
+                page = first
+            }
+        }
     }
 
-    /// The forward proxy (ADR 06): on and off, the inspect list, and trust
-    /// for the inspection CA.
-    @ViewBuilder private var proxySection: some View {
-        Section("Proxy") {
-            Toggle("Forward proxy", isOn: $proxyOn)
-                .onChange(of: proxyOn) { _, on in if loaded { Task { await model.setProxyEnabled(on) } } }
-            Text("Chrome or a program you start with the proxy settings sends its traffic through LocalRouter, and Logs shows it. Only this Mac can reach the port.")
+    // MARK: Tree
+
+    private var sidebar: some View {
+        let nodes = SettingsTree.filter(query)
+        return VStack(spacing: 0) {
+            searchField.padding(8)
+            if nodes.isEmpty {
+                Text("No settings match").font(.callout).foregroundStyle(.secondary).padding()
+                Spacer()
+            } else {
+                List(selection: Binding(get: { page }, set: { if let p = $0 { page = p } })) {
+                    ForEach(nodes) { node in
+                        if node.children.isEmpty {
+                            row(node.page)
+                        } else {
+                            DisclosureGroup(isExpanded: expanded(node.page)) {
+                                ForEach(node.children) { row($0.page) }
+                            } label: {
+                                row(node.page)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search", text: $query).textFieldStyle(.plain)
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Clear the search")
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
+    }
+
+    private func row(_ page: SettingsPage) -> some View {
+        Label(page.title, systemImage: page.symbol).tag(page)
+    }
+
+    private func expanded(_ page: SettingsPage) -> Binding<Bool> {
+        Binding(
+            get: { !query.isEmpty || !collapsed.contains(page) },
+            set: { open in if open { collapsed.remove(page) } else { collapsed.insert(page) } })
+    }
+
+    // MARK: Pages
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                if let parent = SettingsTree.parent(of: page) {
+                    Text(parent.title).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(page.title)
+            }
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            if page == .help {
+                HelpView()
+            } else {
+                Form { content }
+                    .formStyle(.grouped)
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch page {
+        case .general: generalPage
+        case .routing: routingPage
+        case .certificates: certificatesPage
+        case .proxy: proxyPage
+        case .inspection: inspectionPage
+        case .scripts: scriptsPage
+        case .daemon: daemonPage
+        case .updates: updatesPage
+        case .help: EmptyView() // HelpView, outside the Form
+        }
+    }
+
+    @ViewBuilder private var generalPage: some View {
+        Section {
+            Toggle("Open at login", isOn: $openAtLogin)
+                .disabled(!model.inBundle)
+                .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
+            Text(model.inBundle
+                ? "Starts LocalRouter when you log in, so it works after a restart. The daemon starts at login either way."
+                : "Only an app bundle can open at login.")
                 .font(.caption).foregroundStyle(.secondary)
-            if let p = model.proxy {
-                LabeledContent("Address", value: p.bound.isEmpty ? (p.enabled ? "not listening" : "off, port \(p.port)") : p.url)
-                ForEach(p.errors, id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
+            if let note = loginNote {
+                Text(note).font(.caption)
+                Button("Open Login Items") { model.openLoginItems() }
+            }
+        }
+        Section {
+            Button("Uninstall \(Instance.current.appName)…", role: .destructive) { confirmUninstall = true }
+                .confirmationDialog("Uninstall \(Instance.current.appName)?", isPresented: $confirmUninstall) {
+                    Button("Uninstall", role: .destructive) { Task { await model.uninstall() } }
+                } message: {
+                    Text("This untrusts the CA, stops the daemon and deletes all routes and settings.")
+                }
+        }
+    }
+
+    @ViewBuilder private var routingPage: some View {
+        Section {
+            Toggle("Subdomain fallback", isOn: $fallback)
+                .onChange(of: fallback) { _, on in if loaded { Task { await model.setFallback(on) } } }
+            Text("feat-x.shop.localhost uses the shop route when it has no route of its own.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Allow LAN access", isOn: $allowLan)
+                .onChange(of: allowLan) { _, on in if loaded { Task { await model.setAllowLan(on) } } }
+            Text("Off: only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes are always this Mac only.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var certificatesPage: some View {
+        Section("HTTPS certificate authority") {
+            if let ca = model.status?.ca {
+                LabeledContent("CA", value: ca.commonName ?? "?")
+                LabeledContent("Trusted", value: ca.trusted == true ? "yes" : ca.trusted == false ? "no" : "unknown")
+                if let problem = ca.problem { Text(problem).foregroundStyle(.red).font(.caption) }
+                HStack {
+                    let actions = TrustActions.for(trusted: ca.trusted)
+                    if actions.contains(.trust) {
+                        Button("Trust…") { Task { await model.trustCA() } }.disabled(model.busy)
+                    }
+                    if actions.contains(.untrust) {
+                        Button("Untrust") { Task { await model.untrustCA() } }.disabled(model.busy)
+                    }
+                    Button("Show ca.pem") { model.revealCA() }
+                }
+            } else {
+                Text("Start the daemon to create the CA.").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The forward proxy (ADR 06): on and off, its address, Chrome.
+    @ViewBuilder private var proxyPage: some View {
+        if model.status?.proxy == nil {
+            noProxy
+        } else {
+            Section {
+                Toggle("Forward proxy", isOn: $proxyOn)
+                    .onChange(of: proxyOn) { _, on in if loaded { Task { await model.setProxyEnabled(on) } } }
+                Text("Chrome or a program you start with the proxy settings sends its traffic through LocalRouter, and Logs shows it. Only this Mac can reach the port.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let p = model.proxy {
+                    LabeledContent("Address", value: p.bound.isEmpty ? (p.enabled ? "not listening" : "off, port \(p.port)") : p.url)
+                    ForEach(p.errors, id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
+                    if model.chromeInstalled {
+                        Button("Open Chrome via Proxy") { Task { await model.openChromeViaProxy() } }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The hosts whose HTTPS the proxy reads, and trust for the inspection CA.
+    @ViewBuilder private var inspectionPage: some View {
+        if let p = model.proxy {
+            Section("Inspected hosts") {
                 ForEach(p.inspectHosts, id: \.self) { host in
                     HStack {
                         Text(host).font(.callout.monospaced())
@@ -144,14 +229,16 @@ struct SettingsView: View {
                     }
                 }
                 HStack {
-                    TextField("Inspect host: api.example.com, *.example.com or *", text: $newInspectHost)
+                    TextField("Host", text: $newInspectHost, prompt: Text("api.example.com, *.example.com or *"))
                         .onSubmit(addInspectHost)
                     Button("Inspect", action: addInspectHost).disabled(newInspectHost.isEmpty)
                 }
                 Text("Other HTTPS hosts pass through unread: Logs shows only their name.")
                     .font(.caption).foregroundStyle(.secondary)
-                if let ca = p.inspectCa {
-                    LabeledContent("Inspection CA", value: ca.commonName ?? "?")
+            }
+            if let ca = p.inspectCa {
+                Section("Inspection CA") {
+                    LabeledContent("CA", value: ca.commonName ?? "?")
                     LabeledContent("Trusted", value: ca.trusted == true ? "yes" : ca.trusted == false ? "no" : "unknown")
                     if let problem = ca.problem { Text(problem).foregroundStyle(.red).font(.caption) }
                     HStack {
@@ -166,34 +253,91 @@ struct SettingsView: View {
                     Text("Trust lets \(Instance.current.appName) read HTTPS traffic for the hosts you list.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if model.chromeInstalled {
-                    Button("Open Chrome via Proxy") { Task { await model.openChromeViaProxy() } }
-                }
             }
+        } else {
+            noProxy
         }
     }
 
     /// Script rules (ADR 07): what each rule did, its last error, and the
     /// switches. Rules are set with the command line tool or by an agent.
-    @ViewBuilder private var scriptsSection: some View {
-        Section("Scripts") {
-            let rules = model.proxy?.scriptRules ?? []
-            if rules.isEmpty {
-                Text("No script rules. A Lua script can change or record the traffic of a host: \(Instance.current.cli) rules api")
-                    .font(.caption).foregroundStyle(.secondary)
+    @ViewBuilder private var scriptsPage: some View {
+        if model.proxy == nil {
+            noProxy
+        } else {
+            Section {
+                let rules = model.proxy?.scriptRules ?? []
+                if rules.isEmpty {
+                    Text("No script rules. A Lua script can change or record the traffic of a host: \(Instance.current.cli) rules api")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(rules) { view in ScriptRuleRow(view: view, confirmReveal: $confirmReveal) }
             }
-            ForEach(rules) { view in ScriptRuleRow(view: view, confirmReveal: $confirmReveal) }
+            .confirmationDialog(
+                "Let \(confirmReveal?.id ?? "this rule") see secrets?",
+                isPresented: Binding(get: { confirmReveal != nil }, set: { if !$0 { confirmReveal = nil } })
+            ) {
+                Button("Show API keys and cookies", role: .destructive) {
+                    if let view = confirmReveal { Task { await model.revealSecrets(view, true) } }
+                    confirmReveal = nil
+                }
+            } message: {
+                Text("The script will see API keys and cookies of \(confirmReveal?.rule.host ?? "its host"), and may write them to its files.")
+            }
         }
-        .confirmationDialog(
-            "Let \(confirmReveal?.id ?? "this rule") see secrets?",
-            isPresented: Binding(get: { confirmReveal != nil }, set: { if !$0 { confirmReveal = nil } })
-        ) {
-            Button("Show API keys and cookies", role: .destructive) {
-                if let view = confirmReveal { Task { await model.revealSecrets(view, true) } }
-                confirmReveal = nil
+    }
+
+    /// The daemon has no proxy: it is not running, or it is older than ADR 06.
+    private var noProxy: some View {
+        Section {
+            Text(model.status == nil ? "Start the daemon to use the proxy." : "This daemon has no forward proxy. Restart it after an update.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var daemonPage: some View {
+        let errors = (model.status?.http.errors ?? []) + (model.status?.https.errors ?? [])
+        let daemon = DaemonSection.decide(
+            bound: boundPorts,
+            file: DaemonSection.filePorts(configURL: configURL, instance: .current),
+            hasProblem: model.status == nil || !errors.isEmpty || model.status?.routesFileProblem != nil || model.serviceNote != nil)
+        Section {
+            if let s = model.status {
+                LabeledContent("Version", value: s.daemonVersion)
+                LabeledContent("HTTP", value: s.http.port.map(String.init) ?? "not listening")
+                LabeledContent("HTTPS", value: s.https.port.map(String.init) ?? "not listening")
+            } else {
+                Text(model.daemonProblem ?? "Not running").foregroundStyle(.secondary)
             }
-        } message: {
-            Text("The script will see API keys and cookies of \(confirmReveal?.rule.host ?? "its host"), and may write them to its files.")
+            if let pending = daemon.pendingPorts {
+                Text("Restart the daemon to use ports \(pending.http) and \(pending.https):").font(.caption)
+                CopyLine(text: DaemonSection.restartCommand(for: .current))
+            }
+            HStack {
+                Text("Ports are set in config.json.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Show config.json") { NSWorkspace.shared.activateFileViewerSelecting([configURL]) }
+            }
+            ForEach(errors, id: \.self) { e in
+                Text(e).foregroundStyle(.red).font(.caption)
+            }
+            if let p = model.status?.routesFileProblem { Text(p).foregroundStyle(.orange).font(.caption) }
+            if let note = model.serviceNote {
+                Text(note).font(.caption)
+                Button("Open Login Items") { model.openLoginItems() }
+            }
+        }
+    }
+
+    @ViewBuilder private var updatesPage: some View {
+        Section {
+            LabeledContent("This version", value: model.version)
+            if let off = Updater.disabledReason(for: .current) {
+                Text(off).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Toggle("Check for updates automatically", isOn: $autoUpdate)
+                Button("Check for Updates…") { Task { await model.checkForUpdates(manual: true) } }
+            }
         }
     }
 

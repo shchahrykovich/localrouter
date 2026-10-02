@@ -284,6 +284,12 @@ public enum LogEntry: Codable, Equatable, Sendable, Identifiable {
         }
     }
 
+    /// Traffic of the forward proxy (ADR 06), for the Proxy tab.
+    public var isProxied: Bool {
+        if case let .http(_, _, _, _, _, _, _, proxy, _) = self { return proxy != nil }
+        return false
+    }
+
     enum CodingKeys: String, CodingKey {
         case kind, timeMs, method, host, path, status, durationMs, route, listenPort, bytesIn, bytesOut, failed, via, mode
         case rules, scriptError

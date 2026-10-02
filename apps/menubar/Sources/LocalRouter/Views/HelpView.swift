@@ -8,8 +8,24 @@ struct HelpView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                let apps = AgentApp.allCases.filter(\.isInstalled)
+                if !apps.isEmpty {
+                    Text("Ask an agent").font(.headline)
+                    Text("Opens a new session with a prompt that reads the help page first. Type your question at the end.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        ForEach(apps, id: \.self) { app in
+                            Button("Help with \(app.name)") { model.askForHelp(app) }
+                        }
+                    }
+                    .padding(.bottom, 6)
+                }
+
                 Text("Give a coding agent access").font(.headline)
-                Text("Install the command line tool from the ⋯ menu, then run:")
+                HStack {
+                    Text("Install the command line tool, then run:")
+                    Button("Install Command Line Tool…") { model.installCLI() }.controlSize(.small)
+                }
                 CopyLine(text: model.mcpCommand)
                 Text("Then ask the agent, in your project folder, to set up LocalRouter:")
                 CopyLine(text: model.agentPrompt)

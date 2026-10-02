@@ -22,22 +22,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Never shown; it gives text fields ⌘A, ⌘C, ⌘V, ⌘X and ⌘Z.
+        NSApp.mainMenu = MainMenu.make(appName: Instance.current.appName)
         statusItem = StatusItemController(model: model)
         model.start()
     }
 }
 
 enum Tab: String, CaseIterable, Identifiable {
-    case domains = "Domains"
+    case router = "Router"
     case logs = "Logs"
-    case settings = "Settings"
-    case help = "Help"
+    case proxy = "Proxy"
     var id: String { rawValue }
 }
 
 struct MainView: View {
     @Environment(AppModel.self) private var model
-    @State private var tab: Tab = .domains
+    @State private var tab: Tab = .router
+    /// Opens the Settings window (SettingsWindowController), at a page or
+    /// at the last one shown.
+    let openSettings: (SettingsPage?) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,10 +56,9 @@ struct MainView: View {
             Divider()
             Group {
                 switch tab {
-                case .domains: DomainsView()
+                case .router: DomainsView()
                 case .logs: LogsView()
-                case .settings: SettingsView()
-                case .help: HelpView()
+                case .proxy: ProxyView(openSettings: openSettings)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,6 +76,11 @@ struct MainView: View {
             } else {
                 Label("not running", systemImage: "exclamationmark.circle").foregroundStyle(.orange).font(.caption)
             }
+            Button { openSettings(nil) } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings")
         }
         .padding(12)
     }
@@ -90,6 +98,8 @@ struct MainView: View {
                 Button("Install Codex Instructions…") { model.installCodex() }
                 Button("Check for Updates…") { Task { await model.checkForUpdates(manual: true) } }
                 Divider()
+                Button("Help") { openSettings(.help) }
+                Button("Settings…") { openSettings(nil) }
                 Button("Quit LocalRouter") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis.circle")

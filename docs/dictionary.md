@@ -337,7 +337,7 @@ user, at a terminal, can let a rule see the values (`reveal_secrets`).
 | **daemon**, `localrouterd` | The background program, written in Rust. One per user and instance. The release listens on ports 80 and 443 (a suffixed instance on 7080 and 7443 by default), holds the route table, and is the only program that writes the data folder. |
 | **CLI**, `localrouter` | The command-line tool, written in Rust. Holds no state. |
 | **MCP shim**, `localrouter mcp` | The same binary, started by a coding agent. It turns MCP tool calls into socket calls. Holds no state. It never starts a daemon. |
-| **app**, `LocalRouter.app` | The menu bar app, written in Swift. Shows Domains, Logs, Settings and Help. Starts the daemon at login. Holds no state. |
+| **app**, `LocalRouter.app` | The menu bar app, written in Swift. Shows Router, Logs and Proxy tabs, and a Settings window that also holds Help. Starts the daemon at login. Holds no state. |
 | **core**, `localrouter-core` | The Rust library in `libs/core` with routes, proxy, TLS, request log and API types. |
 | **client** | Any program that talks to the daemon over the socket: the CLI, the MCP shim, the app. |
 | **data folder** | `~/Library/Application Support/LocalRouter<suffix>/`, or `$LOCALROUTER_HOME` when that is set (tests use it). |

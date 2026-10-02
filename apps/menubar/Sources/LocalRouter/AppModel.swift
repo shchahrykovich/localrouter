@@ -399,6 +399,15 @@ final class AppModel {
 
     var agentPrompt: String { AgentHelp.prompt(url: agentHelpURL) }
 
+    /// "Help with Claude" and "Help with Codex": a new agent session with the
+    /// help prompt typed in, not sent.
+    func askForHelp(_ app: AgentApp) {
+        let prompt = AgentHelp.helpPrompt(url: agentHelpURL, app: Instance.current.appName)
+        if !NSWorkspace.shared.open(app.link(prompt: prompt)) {
+            message = "Could not open \(app.name)."
+        }
+    }
+
     // MARK: Updates
 
     func checkForUpdates(manual: Bool) async {

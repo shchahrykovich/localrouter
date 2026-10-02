@@ -17,4 +17,10 @@ public enum AgentHelp {
     public static func prompt(url: String) -> String {
         "Run curl -s \(url) and follow it to add LocalRouter to this project."
     }
+
+    /// The prompt for "Help with Claude" and "Help with Codex": the agent
+    /// reads the help page first, then the person asks their question.
+    public static func helpPrompt(url: String, app: String) -> String {
+        "Run curl -s \(url) and read it. It describes \(app) on this Mac: what it does, its routes, its status and its commands. Then help me with \(app). My question: "
+    }
 }

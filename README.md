@@ -24,7 +24,7 @@ that project by itself, and write a note that says what the domain is for.
 3. The icon appears next to the clock. macOS may say that a background item was
    added: that is the daemon. If the menu says "not running", allow LocalRouter
    in **System Settings → General → Login Items**.
-4. **Settings → Trust…** trusts the local CA (macOS asks for your password), so
+4. **Settings → Trust…** (the gear at the top right) trusts the local CA (macOS asks for your password), so
    `https://` names show no warning.
 5. **⋯ → Install Command Line Tool…** links `~/.local/bin/localrouter`. Then give
    your coding agent access:
@@ -61,7 +61,9 @@ must be in `/Applications` or `~/Applications` to replace itself.
 5. **MCP server.** Agents can register, list and remove routes, find a free port,
    and read request logs.
 6. **Menu bar only.** No Dock icon and no main window. The icon sits next to the
-   clock. The menu has four sections: Domains, Logs, Settings, Help.
+   clock. The menu has three tabs: Router, Logs, Proxy. The gear at the top
+   right, or **Settings…** in the right-click menu, opens the Settings window,
+   which also holds Help.
 
 ## How it works
 
@@ -164,8 +166,8 @@ Run curl -s http://router.localhost and follow it to add LocalRouter to this pro
 `router.localhost` is a page the daemon serves itself. It is Markdown for
 agents: setup steps, the status of HTTP, HTTPS and the local CA, how to turn
 each on in the app, and the current routes. The host key `router` is reserved
-for it. The app copies this prompt from the Domains and Help tabs, and from
-the menu that opens on a right-click of the menu bar icon.
+for it. The app copies this prompt from the Router tab and the Help page of
+Settings, and from the menu that opens on a right-click of the menu bar icon.
 
 Example of what an agent does when it starts a worktree:
 
@@ -316,10 +318,11 @@ The full tree is in [ADR 01, components](docs/adr/01-project-setup-2026-09-26/08
 
 | Section | Contents |
 |---|---|
-| Domains | List of routes with status dot (upstream up / down), note, "open in browser", "copy URL", remove. |
-| Logs | Live request log, filter by host. |
-| Settings | Subdomain fallback, allow LAN access, trust or untrust the CA, daemon status, install the command line tool, updates, uninstall. |
-| Help | How to add the MCP server to Claude Code, how to trust the CA in Firefox and Node. |
+| Router (tab) | List of routes with status dot (upstream up / down), note, "open in browser", "copy URL", remove. |
+| Logs (tab) | Live request log, filter by host. |
+| Proxy (tab) | Forward proxy on or off, its address, the command to start a program through it, Open Chrome via Proxy, the requests it carried. |
+| Settings (window: gear button, or **Settings…** in the right-click menu) | A tree of pages with a search field, as in JetBrains IDEs: General (open at login, uninstall), Routing (subdomain fallback, LAN access), HTTPS Certificates, Proxy (Inspection, Scripts), Daemon, Updates, Help. |
+| Help (Settings page, or **Help** in the right-click menu) | How to add the MCP server to a coding agent, how to trust the CA in Firefox and Node. **Help with Claude** and **Help with Codex** (only when the app is installed) open a new agent session with a prompt that reads the help page first. |
 
 ## Development
 

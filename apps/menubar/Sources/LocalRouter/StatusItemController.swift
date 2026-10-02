@@ -12,6 +12,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private unowned let model: AppModel
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
+    private let settings: SettingsWindowController
     /// When the popover last closed. A click on the icon first closes a
     /// transient popover, then reaches `clicked`; without this check the same
     /// click would open it again.
@@ -19,10 +20,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     init(model: AppModel) {
         self.model = model
+        settings = SettingsWindowController(model: model)
         super.init()
         popover.behavior = .transient
         popover.delegate = self
-        let content = NSHostingController(rootView: MainView().environment(model).frame(width: 480, height: 540))
+        let main = MainView(openSettings: { [weak self] page in self?.showSettings(page) })
+        let content = NSHostingController(rootView: main.environment(model).frame(width: 480, height: 540))
         content.sizingOptions = .preferredContentSize
         // After the controller: setting it resets contentSize.
         popover.contentViewController = content
@@ -85,6 +88,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.contentViewController?.view.window?.makeKey()
     }
 
+    /// The popover closes first: it is transient and would sit over the window.
+    func showSettings(_ page: SettingsPage? = nil) {
+        popover.performClose(nil)
+        settings.show(page: page)
+    }
+
     func popoverDidClose(_ notification: Notification) {
         closedAt = Date()
     }
@@ -112,6 +121,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         menu.addItem(menuItem("Install Codex Instructions…", #selector(installCodex)))
         menu.addItem(menuItem("Check for Updates…", #selector(checkForUpdates)))
         menu.addItem(.separator())
+        menu.addItem(menuItem("Help", #selector(openHelp)))
+        // Only the agent apps that are installed, checked at each open.
+        for app in AgentApp.allCases where app.isInstalled {
+            let item = menuItem("Help with \(app.name)", #selector(askForHelp(_:)))
+            item.representedObject = app.rawValue
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Settings…", #selector(openSettings)))
         menu.addItem(menuItem("Quit LocalRouter", #selector(quit)))
         item.menu = menu
         item.button?.performClick(nil)
@@ -127,6 +145,19 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Menu actions run while the menu is closing; open the window after it.
     @objc private func openWindow() {
         DispatchQueue.main.async { self.showWindow() }
+    }
+
+    @objc private func openSettings() {
+        DispatchQueue.main.async { self.showSettings() }
+    }
+
+    @objc private func openHelp() {
+        DispatchQueue.main.async { self.showSettings(.help) }
+    }
+
+    @objc private func askForHelp(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let app = AgentApp(rawValue: raw) else { return }
+        model.askForHelp(app)
     }
 
     /// The window opens to show the result: the proxy address, or why
