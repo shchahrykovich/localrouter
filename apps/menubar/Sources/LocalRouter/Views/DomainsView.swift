@@ -22,19 +22,33 @@ struct DomainsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             List(RouteGroup.group(model.routes)) { group in
+                let isCollapsed = collapsed.contains(group.project)
                 Section {
-                    ForEach(group.routes) { view in RouteRow(view: view) }
-                } header: {
-                    HStack {
-                        Text(group.project)
-                        Spacer()
-                        Text("\(group.routes.count)").foregroundStyle(.secondary)
+                    if !isCollapsed {
+                        ForEach(group.routes) { view in RouteRow(view: view) }
                     }
+                } header: {
+                    Button { collapsed.toggle(group.project) } label: {
+                        HStack {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                                .frame(width: 10)
+                            Text(group.project)
+                            Spacer()
+                            Text("\(group.routes.count)").foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(isCollapsed ? "Show the routes of \(group.project)" : "Hide the routes of \(group.project)")
                 }
             }
             .listStyle(.inset)
         }
     }
+
+    @AppStorage("collapsedProjects") private var collapsed = CollapsedProjects()
 }
 
 struct RouteRow: View {

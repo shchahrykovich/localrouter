@@ -37,4 +37,25 @@ final class RouteGroupsTests: XCTestCase {
     func testNoRoutesNoGroups() {
         XCTAssertEqual(RouteGroup.group([]), [])
     }
+
+    func testToggleCollapsesAndExpandsAProject() {
+        var collapsed = CollapsedProjects()
+        XCTAssertFalse(collapsed.contains("shop"))
+        collapsed.toggle("shop")
+        XCTAssertTrue(collapsed.contains("shop"))
+        XCTAssertFalse(collapsed.contains("blog"))
+        collapsed.toggle("shop")
+        XCTAssertFalse(collapsed.contains("shop"))
+    }
+
+    func testCollapsedProjectsRoundTripThroughTheSavedString() {
+        let collapsed = CollapsedProjects(["supplements-app", "lmsdk-private"])
+        XCTAssertEqual(collapsed.rawValue, "lmsdk-private\nsupplements-app")
+        XCTAssertEqual(CollapsedProjects(rawValue: collapsed.rawValue), collapsed)
+    }
+
+    func testAnEmptySavedStringMeansNothingCollapsed() {
+        XCTAssertEqual(CollapsedProjects().rawValue, "")
+        XCTAssertEqual(CollapsedProjects(rawValue: ""), CollapsedProjects())
+    }
 }

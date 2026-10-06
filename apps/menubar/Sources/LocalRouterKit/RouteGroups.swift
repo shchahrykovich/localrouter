@@ -28,3 +28,24 @@ public struct RouteGroup: Equatable, Sendable, Identifiable {
         return order.sorted().map { RouteGroup(project: $0, routes: byProject[$0]!) }
     }
 }
+
+/// The projects whose routes the Domains tab hides. Saved in `UserDefaults`
+/// as one string, project names joined by newlines: a project is a host
+/// label, so it never holds a newline.
+public struct CollapsedProjects: Equatable, Sendable, RawRepresentable {
+    public private(set) var projects: Set<String>
+
+    public init(_ projects: Set<String> = []) { self.projects = projects }
+
+    public init?(rawValue: String) {
+        projects = Set(rawValue.split(separator: "\n").map(String.init))
+    }
+
+    public var rawValue: String { projects.sorted().joined(separator: "\n") }
+
+    public func contains(_ project: String) -> Bool { projects.contains(project) }
+
+    public mutating func toggle(_ project: String) {
+        if projects.remove(project) == nil { projects.insert(project) }
+    }
+}
