@@ -14,7 +14,9 @@ decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
 `docs/adr/08-proxy-har-log-2026-10-02/` (the proxy log in HAR files, its viewer at
 `proxy.localhost`, LAN access per network) and
 `docs/adr/09-proxy-clients-2026-10-02/` (one more proxy port per client, `_client`
-in the log, `proxy.localhost/<client>`).
+in the log, `proxy.localhost/<client>`) and
+`docs/adr/10-phone-proxy-qr-2026-10-06/` (proposed, not built: a LAN proxy client
+for an iPhone, with a password and a QR code in the Proxy tab).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 

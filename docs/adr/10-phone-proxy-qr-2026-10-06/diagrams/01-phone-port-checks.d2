@@ -1,0 +1,27 @@
+...@_palette
+direction: down
+title: "The phone port: checks before a request leaves the Mac" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+loop: "Connection to the phone port:\npeer is this Mac?" { class: dec }
+lan: "LAN access on, and\nthis network allowed?" { class: dec }
+closed: "Close,\nnothing read" { class: del }
+setup: "Path is /setup/\nwith the password?" { class: dec }
+page: "Setup page or CA profile\n(not logged)" { class: ins }
+auth: "Proxy password\nright?" { class: dec }
+p407: "407: password\nneeded" { class: del }
+dest: "Target is this Mac's\nloopback or own address?" { class: dec }
+p403: "403: refused" { class: del }
+fwd: "Forward as today (.localhost to the routes),\nlogged with _client: iphone" { class: upd }
+
+loop -> fwd: "yes: as ADR 09,\nsetup page too" { style.stroke-dash: 4 }
+loop -> lan: "no"
+lan -> closed: "no"
+lan -> setup: "yes"
+setup -> page: "yes"
+setup -> auth: "no"
+auth -> p407: "no"
+auth -> dest: "yes"
+dest -> p403: "yes"
+dest -> fwd: "no"
+
+legend: "green = new answer, red = refused, blue = the existing forward path" { near: bottom-center; shape: text; style.font-size: 13 }

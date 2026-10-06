@@ -1,0 +1,22 @@
+...@_palette
+title: "Setting up a phone: from the button to the QR code to Settings" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+flow: "" { grid-columns: 4; grid-gap: 70; style.fill: transparent; style.stroke: transparent
+  click: "1. User clicks\nSet up a phone" { class: term }
+  qr: "5. App draws the QR code\n(Core Image)" { class: ins }
+  add: "2. App: set_config adds\nclient iphone, lan: true" { class: upd }
+  scan: "6. Phone camera opens\n/setup/<password> in Safari" { class: step }
+  bind: "3. Daemon makes a password,\nbinds 0.0.0.0:8878 and [::]:8878" { class: ins }
+  page: "7. Setup page: values to type,\nCA profile, how to stop" { class: ins }
+  get: "4. App: get_proxy client=iphone\ngives the setup URL" { class: upd }
+  done: "8. User types the values in\nSettings, Wi-Fi, Proxy" { class: term }
+}
+
+stores: "" { grid-columns: 3; grid-gap: 60; style.fill: transparent; style.stroke: transparent
+  cfg: "config.json\n(written in 3)" { class: write }
+  pw: "proxy-passwords.json\n(written in 3, read in 4 and 7)" { class: write }
+  ca: "inspect-ca/ca.pem\n(read in 7)" { class: tbl }
+}
+flow -> stores: "the daemon owns every file" { style.stroke-dash: 4 }
+
+legend: "green = new step, blue = an existing call with new fields, purple = written, navy = read" { near: bottom-center; shape: text; style.font-size: 13 }

@@ -1,0 +1,36 @@
+...@_palette
+direction: right
+title: "A phone on the proxy: the parts and what they say to each other" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+phone: "iPhone" {
+  safari: "Safari\n(QR, setup page,\nprofile)" { class: ext }
+  apps: "Apps and Safari,\nWi-Fi proxy: Manual" { class: ext }
+}
+
+mac: "Mac" {
+  app: "LocalRouter.app\nProxy tab: QR code\n(grows)" { class: upd }
+  daemon: "localrouterd" {
+    phoneport: "Phone port\n0.0.0.0:8878\n(new)" { class: ins }
+    setup: "Setup page and\nCA profile (new)" { class: ins }
+    fwd: "Forward proxy\n(reused, grows:\npassword, 403)" { class: upd }
+    main: "Main port\n127.0.0.1:8877\n(unchanged)" { class: skip }
+  }
+  cfg: "config.json\n(grows: lan)" { class: write }
+  pw: "proxy-passwords.json\n(new, mode 0600)" { class: write }
+  har: "Proxy log (HAR)\n(reused)" { class: write }
+}
+
+net: "Servers on\nthe internet" { class: ext }
+
+mac.app -> mac.daemon: "socket API:\nset_config, get_proxy"
+phone.safari -> mac.daemon.phoneport: "HTTP GET /setup/..."
+phone.apps -> mac.daemon.phoneport: "HTTP proxy,\nBasic password"
+mac.daemon.phoneport -> mac.daemon.setup
+mac.daemon.phoneport -> mac.daemon.fwd
+mac.daemon.main -> mac.daemon.fwd
+mac.daemon.fwd -> net: "HTTP, TLS"
+mac.daemon -> mac.cfg
+mac.daemon -> mac.pw
+mac.daemon.fwd -> mac.har
+
+legend: "green = new, blue = grows, grey = unchanged, purple = written by the daemon, hexagon = outside LocalRouter" { near: bottom-center; shape: text; style.font-size: 13 }
