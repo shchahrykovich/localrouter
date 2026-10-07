@@ -174,7 +174,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Allow LAN access", isOn: $allowLan)
                 .onChange(of: allowLan) { _, on in if loaded { Task { await model.setAllowLan(on) } } }
-            Text("On: other machines reach ports \(ports.http) and \(ports.https) only on the networks below. On other networks only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes, the proxy and the proxy log are always this Mac only.")
+            Text("On: other machines reach ports \(ports.http) and \(ports.https) only on the networks below. On other networks only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes, the proxy and the proxy log are always this Mac only, except a phone client (Proxy tab, Phone…).")
                 .font(.caption).foregroundStyle(.secondary)
         }
         lanNetworksSection

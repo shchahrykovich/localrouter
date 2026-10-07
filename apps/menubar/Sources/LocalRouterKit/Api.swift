@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.5"
+public let apiVersion = "1.7"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -230,13 +230,16 @@ public struct ProxyStatus: Codable, Equatable, Sendable {
 public struct ProxyClient: Codable, Equatable, Sendable, Identifiable {
     public var name: String
     public var port: UInt16
+    /// A phone client: its port listens on the LAN (ADR 10). Nil means false.
+    public var lan: Bool?
     public var id: String { name }
-    public init(name: String, port: UInt16) {
+    public init(name: String, port: UInt16, lan: Bool? = nil) {
         self.name = name
         self.port = port
+        self.lan = lan
     }
 
-    enum CodingKeys: String, CodingKey { case name, port }
+    enum CodingKeys: String, CodingKey { case name, port, lan }
 }
 
 /// One proxy client's port and whether it is bound (ADR 09).
@@ -246,6 +249,58 @@ public struct ProxyClientStatus: Codable, Equatable, Sendable {
     public var port: UInt16?
     public var bound: [String]
     public var errors: [String]
+    /// A phone client (ADR 10). Nil means false.
+    public var lan: Bool?
+    /// Devices waiting for Allow or Deny (ADR 10). Nil when none.
+    public var pending: [PendingDevice]?
+}
+
+/// A device that asked to use a phone client and is not allowed yet.
+public struct PendingDevice: Codable, Equatable, Sendable, Identifiable {
+    public var address: String
+    /// The host it asked for, to help the user recognise it.
+    public var host: String
+    public var atMs: UInt64
+    public var id: String { address }
+}
+
+/// What a phone needs to use its proxy client (ADR 10).
+public struct LanProxyInfo: Codable, Equatable, Sendable {
+    /// This Mac's IPv4 address on the current network; nil when unknown.
+    public var address: String?
+    public var port: UInt16
+    /// What the QR code holds: opening it allows the device. Nil when the
+    /// address is unknown.
+    public var setupUrl: String?
+    public var devices: [String]
+    public var pending: [PendingDevice]
+    public var problems: [String]
+}
+
+public struct NewSetupCodeParams: Codable, Equatable, Sendable {
+    public var client: String
+    public init(client: String) {
+        self.client = client
+    }
+}
+
+public struct NewSetupCodeResult: Codable, Equatable, Sendable {
+    public var setupUrl: String?
+}
+
+public struct SetPhoneDeviceParams: Codable, Equatable, Sendable {
+    public var client: String
+    public var address: String
+    public var allow: Bool
+    public init(client: String, address: String, allow: Bool) {
+        self.client = client
+        self.address = address
+        self.allow = allow
+    }
+}
+
+public struct SetPhoneDeviceResult: Codable, Equatable, Sendable {
+    public var devices: [String]
 }
 
 public struct RegisterRouteResult: Codable, Equatable, Sendable {
@@ -277,6 +332,9 @@ public struct ListRoutesResult: Codable, Equatable, Sendable {
 
 public struct FindFreePortParams: Codable, Equatable, Sendable {
     public var near: UInt16?
+    public init(near: UInt16? = nil) {
+        self.near = near
+    }
 }
 
 public struct FindFreePortResult: Codable, Equatable, Sendable {
@@ -527,10 +585,12 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
     public var log: ProxyLogStatus?
     /// Every proxy client's port (ADR 09). Nil when there are none.
     public var clients: [ProxyClientStatus]?
+    /// For a phone client (ADR 10); nil otherwise.
+    public var lan: LanProxyInfo?
 
     enum CodingKeys: String, CodingKey {
         case enabled, client, url, port, bound, errors, inspectHosts, inspectSet, inspectCa, env, chromeArgs, notes, scriptRules, log,
-             clients
+             clients, lan
     }
 
     public init(from decoder: Decoder) throws {
@@ -550,6 +610,7 @@ public struct GetProxyResult: Codable, Equatable, Sendable {
         scriptRules = try c.decodeIfPresent([ScriptRuleView].self, forKey: .scriptRules) ?? []
         log = try c.decodeIfPresent(ProxyLogStatus.self, forKey: .log)
         clients = try c.decodeIfPresent([ProxyClientStatus].self, forKey: .clients)
+        lan = try c.decodeIfPresent(LanProxyInfo.self, forKey: .lan)
     }
 }
 

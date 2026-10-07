@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use localrouter_core::api::{
     ApiError, Empty, ErrorCode, Event, FindFreePortParams, GetLogsParams, GetProxyParams, HelloParams, HostParams, IdParams, Request,
-    Response, SetConfigParams, SetScriptRuleParams, SubscribeLogsParams, SubscribeLogsResult,
+    NewSetupCodeParams, Response, SetPhoneDeviceParams, SetConfigParams, SetScriptRuleParams, SubscribeLogsParams, SubscribeLogsResult,
 };
 use localrouter_core::routes::Route;
 use serde::de::DeserializeOwned;
@@ -143,6 +143,12 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, write: &Arc<Mutex<OwnedWri
         "reset_ca" => json(daemon.reset_ca().await?),
         "get_proxy" => {
             json(daemon.get_proxy(params::<GetProxyParams>(req.params)?).await?)
+        }
+        "new_setup_code" => {
+            json(daemon.new_setup_code(params::<NewSetupCodeParams>(req.params)?).await?)
+        }
+        "set_phone_device" => {
+            json(daemon.set_phone_device(params::<SetPhoneDeviceParams>(req.params)?).await?)
         }
         "reset_inspect_ca" => {
             let _: Empty = params(req.params)?;

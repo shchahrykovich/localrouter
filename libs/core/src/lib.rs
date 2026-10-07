@@ -12,6 +12,7 @@ pub mod inspect;
 pub mod instance;
 pub mod logs;
 pub mod paths;
+pub mod phone;
 pub mod proxy;
 pub mod routes;
 pub mod scripts;

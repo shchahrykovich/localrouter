@@ -59,6 +59,14 @@ pub struct ProxyClient {
     pub name: String,
     /// `0` means "any free port" (tests).
     pub port: u16,
+    /// A phone client (ADR 10): its port listens on the LAN, takes only the
+    /// allowed devices, and serves the setup page.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lan: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl ProxyClient {
@@ -226,7 +234,7 @@ mod tests {
         let old = Config::parse(r#"{"version":1,"proxy_enabled":true}"#, &dev()).unwrap();
         assert!(old.proxy_clients.is_empty());
         let mut c = Config::defaults_for(&dev());
-        c.proxy_clients = vec![ProxyClient { name: "chrome".into(), port: 7878 }];
+        c.proxy_clients = vec![ProxyClient { name: "chrome".into(), port: 7878, lan: false }];
         let text = serde_json::to_string(&c).unwrap();
         assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
     }

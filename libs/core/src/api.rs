@@ -20,13 +20,13 @@ use crate::scripts::engine::{LastError, ScriptKind};
 use crate::scripts::rules::ScriptRule;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.6";
+pub const API_VERSION: &str = "1.7";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
 }
 
-pub const METHODS: [&str; 16] = [
+pub const METHODS: [&str; 18] = [
     "hello",
     "status",
     "register_route",
@@ -43,6 +43,8 @@ pub const METHODS: [&str; 16] = [
     "set_script_rule",
     "remove_script_rule",
     "list_script_rules",
+    "new_setup_code",
+    "set_phone_device",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,10 +234,33 @@ pub struct ProxyClientStatus {
     pub configured: u16,
     /// Port actually bound, if bound.
     pub port: Option<u16>,
-    /// `127.0.0.1:8878` and `[::1]:8878`, or none.
+    /// `127.0.0.1:8878` and `[::1]:8878`, or `0.0.0.0:8878` and
+    /// `[::]:8878` for a phone client, or none.
     pub bound: Vec<String>,
     /// Why the port is not bound while the proxy is on.
     pub errors: Vec<String>,
+    /// A phone client: its port listens on the LAN (ADR 10).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lan: bool,
+    /// Devices that asked to use a phone client and wait for Allow or Deny.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<PendingDevice>,
+}
+
+/// A device that sent a proxy request to a phone port and is not allowed
+/// yet (ADR 10). Kept in memory only; the newest request wins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDevice {
+    /// `192.168.0.23`.
+    pub address: String,
+    /// The host it asked for, to help the user recognise it.
+    pub host: String,
+    /// Unix time in milliseconds of its last request.
+    pub at_ms: u64,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 // ---- routes
@@ -427,6 +452,53 @@ pub struct GetProxyResult {
     /// Every proxy client's port (ADR 09). Absent before API 1.6.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clients: Vec<ProxyClientStatus>,
+    /// For a phone client (ADR 10): what the phone needs. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<LanProxyInfo>,
+}
+
+/// How a phone reaches its proxy client (ADR 10). The MCP tool removes
+/// `setup_url`: its token allows a device (I8).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LanProxyInfo {
+    /// This Mac's IPv4 address on the current network; `None` when unknown.
+    pub address: Option<String>,
+    pub port: u16,
+    /// `http://<address>:<port>/setup/<token>`: what the QR code holds.
+    /// Opening it allows the device that opens it.
+    pub setup_url: Option<String>,
+    /// The allowed devices.
+    pub devices: Vec<String>,
+    /// Devices waiting for Allow or Deny.
+    pub pending: Vec<PendingDevice>,
+    /// Why a phone cannot use it now, in plain sentences.
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NewSetupCodeParams {
+    pub client: String,
+}
+
+/// A new setup token: the old QR code stops allowing devices. Devices
+/// already allowed stay allowed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewSetupCodeResult {
+    pub setup_url: Option<String>,
+}
+
+/// Allow a device on a phone client, or deny it: a denied device leaves
+/// the allowed list and the waiting list, and its connections close.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SetPhoneDeviceParams {
+    pub client: String,
+    pub address: String,
+    pub allow: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetPhoneDeviceResult {
+    pub devices: Vec<String>,
 }
 
 /// The proxy log: where the HAR files are and how the writer is doing.

@@ -18,6 +18,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::client::Client;
 
@@ -241,9 +242,14 @@ impl LocalRouterMcp {
     }
 
     async fn call(&self, method: &str, params: impl serde::Serialize) -> CallToolResult {
+        self.call_then(method, params, |v| v).await
+    }
+
+    /// `call`, with the reply changed before the agent sees it.
+    async fn call_then(&self, method: &str, params: impl serde::Serialize, change: impl FnOnce(Value) -> Value) -> CallToolResult {
         match Client::connect(&self.socket, "mcp").await {
             Ok(mut c) => match c.call_value(method, params).await {
-                Ok(v) => text_result(v),
+                Ok(v) => text_result(change(v)),
                 Err(e) => error_result(e),
             },
             Err(e) => error_result(e),
@@ -294,7 +300,7 @@ reads the proxy settings when it starts: pass env to a program you start, never 
 lists every script rule with its counters and last error (script_rules), and the HAR log of proxy traffic: log.folder \
 holds the files (read them with jq, never whole), log.url is the viewer for the user. clients lists the proxy clients: more proxy ports, one per program, whose requests carry _client in the log.")]
     async fn get_proxy(&self, Parameters(args): Parameters<ProxyArgs>) -> Result<CallToolResult, ErrorData> {
-        Ok(self.call("get_proxy", api::GetProxyParams { client: args.client }).await)
+        Ok(self.call_then("get_proxy", api::GetProxyParams { client: args.client }, without_phone_secrets).await)
     }
 
     #[tool(description = "Run a Lua script on the HTTP traffic of a host: an intercept script changes or answers \
@@ -329,4 +335,43 @@ pub async fn run(socket: PathBuf, instance: Instance) -> anyhow::Result<()> {
     let service = LocalRouterMcp::new(socket, instance).serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+/// A phone client's setup URL never reaches an agent (ADR 10, I8): opening
+/// it allows a device. The user sets up a phone in the app.
+fn without_phone_secrets(mut v: Value) -> Value {
+    if let Some(lan) = v.get_mut("lan").and_then(Value::as_object_mut) {
+        lan.remove("setup_url");
+        lan.insert(
+            "note".into(),
+            Value::String(
+                "A phone is set up in the app: Proxy tab, Phone. The proxy address 127.0.0.1 does not work from a phone: \
+                 it is the phone itself. An agent cannot set up a phone or allow a device."
+                    .into(),
+            ),
+        );
+    }
+    v
+}
+
+#[cfg(test)]
+mod phone_tests {
+    use super::*;
+
+    // T15, I8: an agent never sees a phone's password or setup URL.
+    #[test]
+    fn get_proxy_reply_loses_the_phone_secrets() {
+        let reply = serde_json::json!({
+            "url": "http://127.0.0.1:8880",
+            "lan": {"address": "192.168.0.10", "port": 8880, "setup_url": "http://192.168.0.10:8880/setup/k7mq-2xph",
+                    "devices": [], "pending": [], "problems": []}
+        });
+        let out = without_phone_secrets(reply);
+        assert!(!out.to_string().contains("k7mq-2xph"), "{out}");
+        assert_eq!(out["lan"]["address"], "192.168.0.10");
+        assert!(out["lan"]["note"].as_str().unwrap().contains("Proxy tab"));
+        // A reply without a phone client is unchanged.
+        let plain = serde_json::json!({"url": "http://127.0.0.1:8877"});
+        assert_eq!(without_phone_secrets(plain.clone()), plain);
+    }
 }

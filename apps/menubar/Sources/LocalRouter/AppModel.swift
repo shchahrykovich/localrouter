@@ -288,6 +288,100 @@ final class AppModel {
         lanNetworks = (await config)?.lanNetworks ?? list
     }
 
+    // MARK: A phone on the proxy (ADR 10)
+
+    /// The config when the phone panel last loaded: its proxy clients.
+    var phoneConfig: Config?
+    /// `get_proxy` for the phone client: its `lan` block holds the QR URL.
+    var phone: GetProxyResult?
+
+    var phoneSetup: PhoneSetup {
+        PhoneSetup(proxyEnabled: phoneConfig?.proxyEnabled ?? false, allowLan: phoneConfig?.allowLan ?? false,
+                   network: status?.network, lanNetworks: lanNetworks, clients: phoneConfig?.proxyClients ?? [])
+    }
+
+    /// Devices waiting for Allow or Deny. `status` is read every 3 s, so a
+    /// phone that asks shows up within seconds.
+    var waitingDevices: [(client: String, device: PendingDevice)] {
+        PhoneSetup.waiting(status?.proxy?.clients ?? [])
+    }
+
+    func loadPhone() async {
+        await refresh()
+        phoneConfig = await config
+        lanNetworks = phoneConfig?.lanNetworks ?? []
+        if let name = phoneSetup.client {
+            phone = try? await client.call("get_proxy", GetProxyParams(client: name))
+        } else {
+            phone = nil
+        }
+    }
+
+    func fixPhone(_ fix: PhoneSetup.Fix) async {
+        switch fix {
+        case .turnOnProxy: await setConfig(SetConfigParams(proxyEnabled: true))
+        case .turnOnLan: await setConfig(SetConfigParams(allowLan: true))
+        case .allowNetwork:
+            let name = status?.network.flatMap { n in lanNetworks.first { $0.id == n.id }?.name } ?? ""
+            await allowThisNetwork(name: name)
+        }
+        await loadPhone()
+    }
+
+    /// Adds a phone client on the next free port after the proxy ports.
+    func setUpPhone() async {
+        guard let cfg = await config else { return }
+        var list = cfg.proxyClients ?? []
+        let name = PhoneSetup.nextName(list.map(\.name))
+        let port = await nextProxyPort(cfg) ?? 0
+        list.append(ProxyClient(name: name, port: port, lan: true))
+        await setConfig(SetConfigParams(proxyClients: list))
+        await loadPhone()
+    }
+
+    func setPhoneDevice(client name: String, address: String, allow: Bool) async {
+        do {
+            let _: SetPhoneDeviceResult = try await client.call("set_phone_device",
+                                                                 SetPhoneDeviceParams(client: name, address: address, allow: allow))
+        } catch {
+            message = error.localizedDescription
+        }
+        await loadPhone()
+    }
+
+    func newSetupCode() async {
+        guard let name = phoneSetup.client else { return }
+        do {
+            let _: NewSetupCodeResult = try await client.call("new_setup_code", NewSetupCodeParams(client: name))
+        } catch {
+            message = error.localizedDescription
+        }
+        await loadPhone()
+    }
+
+    func removePhone() async {
+        guard let name = phoneSetup.client, let cfg = await config else { return }
+        await setConfig(SetConfigParams(proxyClients: (cfg.proxyClients ?? []).filter { $0.name != name }))
+        await loadPhone()
+    }
+
+    /// The first free port above the proxy port and the clients' ports, as
+    /// `proxy client add` picks it.
+    private func nextProxyPort(_ cfg: Config) async -> UInt16? {
+        guard let main = cfg.proxyPort, main != 0 else { return nil }
+        let clients = (cfg.proxyClients ?? []).map(\.port)
+        let used = Set([cfg.httpPort, cfg.httpsPort, main] + clients)
+        var near = (clients + [main]).max() ?? main
+        for _ in 0..<50 {
+            guard near < UInt16.max else { return nil }
+            near += 1
+            guard let free: FindFreePortResult = try? await client.call("find_free_port", FindFreePortParams(near: near)) else { return nil }
+            if !used.contains(free.port) { return free.port }
+            near = free.port
+        }
+        return nil
+    }
+
     /// Starts a separate Chrome that uses the proxy, turning the proxy on
     /// first if needed. The result goes to the window footer.
     func openChromeViaProxy() async {

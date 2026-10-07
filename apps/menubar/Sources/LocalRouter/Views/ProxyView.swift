@@ -7,6 +7,8 @@ import SwiftUI
 struct ProxyView: View {
     @Environment(AppModel.self) private var model
     let openSettings: (SettingsPage?) -> Void
+    /// The phone panel (ADR 10) replaces the request list while it is open.
+    @State private var showingPhone = false
 
     var body: some View {
         if model.status?.proxy == nil {
@@ -15,9 +17,16 @@ struct ProxyView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             VStack(alignment: .leading, spacing: 0) {
+                if !model.waitingDevices.isEmpty {
+                    VStack(spacing: 6) { WaitingDevicesBanner() }.padding([.horizontal, .top], 12)
+                }
                 controls.padding(12)
                 Divider()
-                traffic
+                if showingPhone {
+                    PhoneView { showingPhone = false }
+                } else {
+                    traffic
+                }
             }
         }
     }
@@ -53,6 +62,8 @@ struct ProxyView: View {
                 if model.chromeInstalled {
                     Button("Open Chrome via Proxy") { Task { await model.openChromeViaProxy() } }
                 }
+                Button("Phone…") { showingPhone.toggle() }
+                    .help("Send an iPhone's traffic through the proxy: a QR code to scan")
                 Spacer()
                 let hosts = p?.inspectHosts ?? []
                 Button(hosts.isEmpty ? "Inspect HTTPS…" : "Inspecting \(hosts.count) host\(hosts.count == 1 ? "" : "s")…") {

@@ -306,6 +306,29 @@ port that carried it (`_client`; the main port is `default` and writes no
 closes the port; the entries stay in the log. Client ports open and close with
 `{{CLI}} proxy on` and `off`.
 
+### A phone: an iPhone through the proxy
+
+`127.0.0.1` does not work from a phone: on the phone it is the phone itself.
+A **phone client** is a proxy client whose port listens on the LAN:
+
+1. In the app: Proxy tab, **Phone…**. It turns on what is missing (the proxy,
+   LAN access, this network) and shows a QR code.
+2. The user scans it with the iPhone camera. The page that opens allows this
+   iPhone and shows two values for Settings → Wi-Fi → (i) → Configure Proxy →
+   Manual: the server and the port. Its **Install CA** button gives the
+   inspection CA for HTTPS.
+3. The phone's requests carry `_client` (`iphone`) in the log. To stop:
+   Configure Proxy → Off.
+
+The port takes another machine only on an allowed network (as ports
+{{HTTP_PORT}} and {{HTTPS_PORT}}) and only an allowed device: one that opened
+the setup page, or one the user allowed. A device that is not allowed gets 403,
+and the app asks the user to Allow or Deny it. The port answers 403 for this
+Mac's own addresses too: a phone reaches the routes, not the Mac's other
+servers. From a terminal: `{{CLI}} proxy client add iphone --lan`,
+`{{CLI}} proxy client setup iphone`, `{{CLI}} proxy client allow iphone <ip>`.
+An agent cannot set up a phone: MCP `get_proxy` never returns the setup URL.
+
 ## Proxy log: what a program sent, in HAR files
 
 The proxy writes every request it carries to HAR files (the format Chrome

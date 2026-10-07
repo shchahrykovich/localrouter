@@ -2,6 +2,10 @@
 
 This ADR is proposed. Every test below is to be written; none exists yet.
 
+**M0 runs first, before any code.** It answers U4, U5, U6, U7 and U2 on a
+real iPhone with a hand-made profile and a test proxy. Its results decide the
+fields of the phone profile (task 1), and U4 can stop the whole design.
+
 ## What the repo can run today
 
 | Kind | Tool | Where |
@@ -51,17 +55,18 @@ E1 only.
 | T6 | integration | binding: a LAN client on `0.0.0.0`/`[::]`; the main port and a plain client on loopback, also with `allow_lan` | `localrouterd` | none | `cargo test -p localrouterd --test api lan_client_binds` |
 | T7 | integration | the password file (`0600`, life), `get_proxy.lan`, `new_proxy_password` closes a tunnel, restart makes a missing password, no reply or log holds the password | `localrouterd` | the network (`LOCALROUTER_TEST_NETWORK`) | `cargo test -p localrouterd --test api lan_client` |
 | T8 | integration | the setup page on a LAN client; 400 for a wrong password, on the main port and on a plain client; the headers | `ForwardProxy` | the peer | `cargo test -p localrouter-core --test forward setup_page` |
-| T9 | unit | the `.mobileconfig`: one root payload, the DER of `ca.pem`, no key; it parses with `plutil` | `phone.rs`, `/usr/bin/plutil` | none | `cargo test -p localrouter-core --lib phone::tests::mobileconfig` |
+| T9 | unit | the phone profile: one Wi-Fi payload with the proxy fields, the CA payload only when inspecting, no key, no Wi-Fi password; the CA profile: one root payload; both parse with `plutil` | `phone.rs`, `/usr/bin/plutil` | none | `cargo test -p localrouter-core --lib phone::tests::profile` |
 | T10 | integration | setup requests are in neither log; a wrong one is logged as `/setup/…`; no HAR entry holds the password | `ForwardProxy`, `HarLog` | the peer | `cargo test -p localrouter-core --test forward setup_not_logged` |
 | T11 | unit + integration | the setup URL from the interface address; `null` with a reason when the network is unknown | `network.rs`, `localrouterd` | the network and its address (`LOCALROUTER_TEST_NETWORK` gets a 4th field) | `cargo test -p localrouterd --test api setup_url` |
-| T12 | unit (Swift) | the panel's checklist state for each case; the QR image decodes back to the setup URL | `PhoneSetup.swift`, Core Image | the status (decoded from JSON) | `swift test --package-path apps/menubar --filter PhoneSetupTests` |
+| T12 | unit (Swift) | the panel's checklist state for each case, the Wi-Fi name row included; the QR image decodes back to the setup URL | `PhoneSetup.swift`, Core Image | the status (decoded from JSON), the Wi-Fi name source | `swift test --package-path apps/menubar --filter PhoneSetupTests` |
 | T13 | contract | the new fields and method in both languages | `api_examples.rs`, `ApiContractTests.swift` | none | `cargo test -p localrouter-core --test api_examples` and `swift test --package-path apps/menubar --filter ApiContractTests` |
 | T14 | integration | the CLI: `add --lan`, `setup`, `password --new` | `localrouter`, `localrouterd` | the network | `cargo test -p localrouter --test cli proxy_client_lan` |
 | T15 | integration | MCP `get_proxy` has no password and no setup URL; still nine tools | `localrouter mcp` | none | `cargo test -p localrouter --test mcp` |
 | E1 | end-to-end | the phone journey through the real accept path from a non-loopback address | `localrouter`, `localrouterd`, the Mac's own LAN address | the network id (`LOCALROUTER_TEST_NETWORK`), the phone (a Rust client) | `cargo test -p localrouter --test e2e phone` |
-| M1 | manual | the panel in each state | the app | none | by hand |
-| M2 | manual | a real iPhone through the proxy, with the password, HTTP and HTTPS | iPhone, Wi-Fi | none | by hand |
-| M3 | manual | the setup page and the CA profile on the iPhone | iPhone | none | by hand |
+| M0 | manual, first | what iOS does with a Wi-Fi profile that carries a proxy (U4, U5, U6, U7, U2) | iPhone, home Wi-Fi | LocalRouter (a test proxy with a password instead) | by hand, before task 1 |
+| M1 | manual | the panel in each state, the Location Services request | the app | none | by hand |
+| M2 | manual | a real iPhone through LocalRouter after scan and Install, HTTP and HTTPS | iPhone, Wi-Fi | none | by hand |
+| M3 | manual | the setup page, the phone profile, the manual fallback | iPhone | none | by hand |
 | M4 | manual | another machine without the password; a network not allowed | a second Mac | none | by hand |
 | M5 | manual | the phone cannot reach the Mac's loopback | iPhone | none | by hand |
 | M6 | manual | what iOS does with `*.localhost` through the proxy (U1) | iPhone | none | by hand |
@@ -75,7 +80,9 @@ E1 only.
 | `fake_peer` (T3, T8, T10) | that `accept_proxy` passes the real peer and runs the LAN check | E1, M2 |
 | the local-target rule (T3) | that the real rule allows a `.localhost` route and refuses the rest | T4 (unit), E1, M5 |
 | `LOCALROUTER_TEST_NETWORK` (T7, T11, T14, E1) | that `network.rs` reads the real network and address | M2, M4 |
-| the Rust client in E1 | how iOS answers 407, `CONNECT` with Basic, the profile | M2, M3 (U4) |
+| the Rust client in E1 | how iOS answers 407, `CONNECT` with Basic, the profile | M0 (with a test proxy), then M2, M3 with LocalRouter |
+| the test proxy in M0 | LocalRouter's own 407 and `Proxy-Authenticate` text | M2 |
+| the Wi-Fi name source in T12 | CoreWLAN and the Location Services dialog | M1 |
 | no test for timing | that the compare is constant-time | review in task 1 (I4) |
 
 ## 1. Automated tests (CI)
@@ -88,7 +95,10 @@ E1 only.
 | `phone::tests::password_format` (T2) | 19 characters, four groups of four, only the 32 allowed characters; 100 calls give 100 different passwords |
 | `phone::tests::same_password` (T2, I4) | equal → true; one wrong last character → false; shorter, longer, empty → false |
 | `phone::tests::basic_header` (T2) | `Basic aXBob25lOms3bXE...` for `iphone` and its password decodes to true; wrong user name → false; not Basic → false |
-| `phone::tests::mobileconfig` (T9, I10) | `plutil -convert json` reads it; one payload of type `com.apple.security.root`; its content equals the DER of the test CA; the text holds no `PRIVATE KEY`; the identifier holds the CA fingerprint |
+| `phone::tests::profile_phone` (T9, I10) | `plutil -convert json` reads it; one `com.apple.wifi.managed` payload with `SSID_STR` the given name, `AutoJoin` true, `ProxyType` `Manual`, `ProxyServer`, `ProxyServerPort`, `ProxyUsername` the client, `ProxyPassword` the password, and no `Password` key; one `com.apple.security.root` payload with the DER of the test CA; no `PRIVATE KEY` text; the identifier holds the bundle id and the client name |
+| `phone::tests::profile_phone_without_ca` (T9, I10) | with no inspection CA, or an empty inspect list: the Wi-Fi payload only |
+| `phone::tests::profile_phone_auto` (T9) | with the Auto option (if M0 picks it): `ProxyType` `Auto`, `ProxyPACURL` on the setup path, `ProxyPACFallbackAllowed` true; the PAC text is `PROXY <address>:<port>; DIRECT` |
+| `phone::tests::profile_ca` (T9, I10) | the CA profile: one root payload, the identifier holds the CA fingerprint |
 | `phone::tests::setup_page_escapes` (T8) | a client name and address are HTML-escaped |
 
 ### Core library: `libs/core/src/upstream.rs` (unit)
@@ -113,7 +123,7 @@ client port.
 | `local_target_is_allowed_for_a_loopback_peer` (T4) | the same requests from `127.0.0.1` → as today |
 | `setup_page_on_a_lan_client` (T8, I13) | `GET /setup/<password>` → 200, the four values, `Cache-Control: no-store`, the CSP, `Referrer-Policy: no-referrer` |
 | `setup_page_refusals` (T8, I13) | wrong password, old password after a change, `/setup/` alone → 400 "This port is a proxy"; on the main port and on a plain client the right path → 400 |
-| `setup_profile` (T9) | `/setup/<password>/ca.mobileconfig` → 200, `application/x-apple-aspen-config` |
+| `setup_profile` (T9) | `/setup/<password>/phone.mobileconfig` and `/ca.mobileconfig` → 200, `application/x-apple-aspen-config`; with no Wi-Fi name, `phone.mobileconfig` → 400 and the page shows only the manual way (I15) |
 | `setup_not_logged` (T10, I9, I6) | after the setup page and the profile: no request log entry and no HAR entry; after a wrong `/setup/x`: one entry with path `/setup/…`; no entry anywhere holds the password text |
 
 ### Daemon: `apps/daemon` (unit and integration)
@@ -127,12 +137,13 @@ client port.
 | `api.rs::new_proxy_password_closes_tunnels` (T7, I11) | open a `CONNECT` tunnel through the LAN client from loopback, call `new_proxy_password` → the tunnel is closed; the reply's password differs; `not_found` for an unknown client; `invalid_request` for a plain client |
 | `api.rs::lan_client_password_made_at_start` (T7, I12) | delete `proxy-passwords.json`, restart → a new password exists before `status` shows the port bound; an entry for a removed client is gone |
 | `api.rs::setup_url` (T11) | `LOCALROUTER_TEST_NETWORK=mac:…,192.168.0.1,en0,192.168.0.10` → `http://192.168.0.10:<port>/setup/<password>`; `none` → `setup_url: null`, `problems` names the reason |
+| `api.rs::wifi_name` (T11, I15) | `set_config lan_networks` with `wifi_name` → saved, in `status.network.wifi_name`; `get_proxy.lan.profile` true; without it → `profile: false` |
 
 ### CLI and MCP: `apps/cli/tests` (integration)
 
 | Test | Case |
 |---|---|
-| `cli.rs::proxy_client_lan` (T14) | `proxy client add iphone --lan` → listed with `lan`; `proxy client setup iphone` prints Server, Port, Username, Password and the URL; `proxy client password iphone --new` prints a new one |
+| `cli.rs::proxy_client_lan` (T14) | `proxy client add iphone --lan` → listed with `lan`; `lan name Home-5G` → saved on the current network; `proxy client setup iphone` prints the URL, Server, Port, Username, Password; `proxy client password iphone --new` prints a new one |
 | `mcp.rs` (T15, I8) | the tool list is still nine; `get_proxy {client: "iphone"}` has `lan.address` and `lan.port` but no `password` and no `setup_url`; the text names the Proxy tab |
 
 ### Contract: `api/examples/` (T13)
@@ -146,7 +157,9 @@ themselves.
 
 | Test | Case |
 |---|---|
-| `PhoneSetupTests.testChecklist` (T12) | from decoded `status` JSON: proxy off; LAN off; network not allowed; network unknown; all good → the rows, their buttons, and whether "Set Up a Phone" is enabled |
+| `PhoneSetupTests.testChecklist` (T12) | from decoded `status` JSON: proxy off; LAN off; network not allowed; network unknown; no Wi-Fi name; all good → the rows, their buttons, and whether "Set Up a Phone" is enabled |
+| `PhoneSetupTests.testWifiName` (T12, I14) | a typed name is sent as `lan_networks[].wifi_name` of the current network only; the other networks' names stay; no Location Services call happens unless "Use My Location" was pressed |
+| `PhoneSetupTests.testScanAgainNote` (T12) | after a new password or a new address, the panel shows "Scan again and tap Install" |
 | `PhoneSetupTests.testNextName` (T12) | `iphone` free → `iphone`; taken → `iphone-2`; both taken → `iphone-3` |
 | `PhoneSetupTests.testQrRoundTrip` (T12) | the QR image for a setup URL is read back by `CIDetector` (type QR code) to the same URL |
 | `PhoneSetupTests.testQrHiddenWhenNotReady` (T12) | a LAN client exists but LAN access is off → no QR payload, the failing row |
@@ -180,10 +193,11 @@ address.
    `set_config {"allow_lan": true}` over the socket (the CLI has no command
    for the switch; `lan allow` only adds the network). Repeat step 5.
    Check: 407.
-7. `localrouter proxy client setup iphone`. Check: the URL starts with
-   `http://<own address>:q/setup/`. `GET` that URL from the own address.
-   Check: 200, the page holds the password; `localrouter logs` has no
-   `/setup/` line.
+7. `localrouter lan name Test-WiFi`, then `localrouter proxy client setup
+   iphone`. Check: the URL starts with `http://<own address>:q/setup/`. `GET`
+   that URL and `<url>/phone.mobileconfig` from the own address. Check: 200
+   for both; the profile's `SSID_STR` is `Test-WiFi` and its `ProxyPassword`
+   is the password; `localrouter logs` has no `/setup/` line.
 8. Repeat step 5 with `Proxy-Authorization`. Check: 200 from the dev server;
    the HAR entry has `_client: "iphone"`.
 9. With the password, `GET http://127.0.0.1:<dev port>/`. Check: 403, and the
@@ -194,38 +208,64 @@ address.
 
 ## 3. Manual tests
 
+### M0. What iOS does with a Wi-Fi profile (first, before task 1)
+
+Run on a real iPhone on home Wi-Fi, before any code is written. Use a test
+proxy with a password on the Mac, listening on the LAN, for example
+`mitmproxy --listen-host 0.0.0.0 --listen-port 8878 --proxyauth iphone:test`
+(installed with Homebrew, removed afterwards). Write the profile by hand from
+change 2, serve it with `python3 -m http.server`, and open it in Safari.
+
+| Check | Expected, or what to record |
+|---|---|
+| Install the profile with `ProxyType` `Manual`, user `iphone`, password `test`, **no Wi-Fi `Password`**, for the Wi-Fi the phone already uses (U5) | record: the phone stays on the Wi-Fi / asks for the Wi-Fi password / fails to join |
+| Safari: an `http://` and an `https://` site (U4) | both load; mitmproxy shows the requests with the user `iphone`; no password prompt on the phone |
+| An app (for example Weather) (U4) | works, its requests appear |
+| Settings → Wi-Fi → (i): can the proxy be changed by hand while the profile is installed? | record |
+| `ProxyServer` set to the Mac's Bonjour name `<name>.local` instead of the IPv4 address (U7) | record: works / fails / slow |
+| Profile with `ProxyType` `Auto`, `ProxyPACURL` `http://<mac>:8000/proxy.pac` returning `PROXY <mac>:8878; DIRECT`, `ProxyPACFallbackAllowed` true (U2) | requests go through mitmproxy; record whether the password is sent |
+| With the Auto profile, stop mitmproxy and the PAC server (the Mac is "away") (U2) | record: the phone goes direct, and how many seconds the first page waits |
+| Remove the profile (U6) | record: the phone stays on the Wi-Fi / forgets it |
+
+Write each result into the manifest's U2, U4 to U7. **If U4 fails, stop:
+the password design of change 1 does not work.**
+
 ### M1. The panel (UI)
 
 | Check | Expected |
 |---|---|
 | Proxy off, open Phone… | the checklist; "Set Up a Phone" disabled; "Turn On" next to the proxy row |
+| "Use My Location" | the system dialog shows the text from change 3; after Allow, the Wi-Fi name row shows the real name |
+| Deny the permission, type the name | the row turns ✓; no second dialog appears |
 | Press each ✗ button | the row turns ✓; Settings → Routing shows the same network allowed |
-| Set Up a Phone | the QR code and the four values; copy buttons copy |
+| Set Up a Phone | the QR code and the install steps; "Type by hand" shows the four values; copy buttons copy |
 | Turn off LAN access in Settings | the QR code disappears; the LAN row is ✗ |
-| New Password | the QR code and the password change |
-| Remove Phone | the warning text first; then the checklist again |
+| New Password | the QR code and the password change; the panel says "Scan again and tap Install" |
+| Remove Phone | the warning text (remove the profile on the phone first); then the checklist again |
 | Dark mode | the QR code is black on white in both modes (a camera needs that) |
 
-### M2. A real iPhone through the proxy (U4)
+### M2. A real iPhone through LocalRouter
 
 | Check | Expected |
 |---|---|
-| Set the Manual proxy with the four values | iOS accepts them |
+| Scan the QR code, tap Install, install the profile | no typing; the phone stays on the Wi-Fi (as M0 found) |
 | Safari: an `http://` site | loads; the Proxy tab lists it with the phone's client |
 | Safari: an `https://` site, inspection CA trusted | loads; the HAR entry has the decrypted request |
-| Wrong password in Settings | iOS asks for the proxy password (407 works for `CONNECT`) |
+| New Password on the Mac, do not scan again | the phone's requests get 407; record what iOS shows |
+| Scan again, Install | the new profile replaces the old one (one profile in the list); requests work |
 | An app (for example Weather) | works; its requests appear |
 | Count the phone's entries for 10 minutes while idle | the number is written into the manifest's data impact |
 
-### M3. The setup page and the CA profile
+### M3. The setup page, the profile and the manual fallback
 
 | Check | Expected |
 |---|---|
-| Scan the QR code with the camera | Safari opens the setup page |
-| Tap "Download the CA profile" | iOS says a profile was downloaded |
-| Install it, turn on full trust | the CA appears in Certificate Trust Settings |
-| Reset the inspection CA on the Mac, scan again, install | the new profile has a new name; the old one stays until removed |
-| Remove the profile | HTTPS sites fail again while inspected |
+| Scan the QR code with the camera | Safari opens the setup page with one Install button |
+| Open the setup URL in Chrome on the phone | the page says to open it in Safari |
+| Install, turn on full trust for the CA | the CA appears in Certificate Trust Settings; inspected HTTPS works |
+| Reset the inspection CA on the Mac, scan again, install | the profile is replaced; the new CA is trusted after the trust switch |
+| "Did not work?": type the four values by hand, install `ca.mobileconfig` | the manual way works the same |
+| Remove the profile | the phone goes direct; the Wi-Fi stays or is forgotten as M0 found, and step 4 of the page says the same |
 
 ### M4. Another machine (failure checks)
 
@@ -253,9 +293,9 @@ address.
 
 | Check | Expected |
 |---|---|
-| Put the Mac to sleep, use Safari | record the error text iOS shows; check that step 4 of the setup page names this case |
+| Put the Mac to sleep, use Safari | with Auto (if M0 picked it): the phone goes direct. With Manual: record the error text iOS shows, and check that step 4 of the setup page names this case |
 | Proxy off on the Mac | the same |
-| Turn Configure Proxy off on the phone | the phone works again at once |
+| Remove the profile on the phone | the phone works again at once; the Wi-Fi stays or is forgotten as M0 found |
 
 ### M8. Post-release smoke test
 
@@ -282,6 +322,7 @@ a CA profile on the phone; remove it at the end.
 | network `mac:02:00:00:00:00:01,192.168.0.1,en0,192.168.0.10` | a known network with an address, for the daemon tests |
 | two clients, `iphone` (lan) and `chrome` (plain), with ports next to each other | a check that only the LAN one gets the new behaviour |
 | a password with every allowed character class | the format and the compare |
+| Wi-Fi name `Café "Home" & 5G` | the profile and the page escape it (XML and HTML) |
 | the test CA of `forward.rs` (`test_ca`) | the profile's DER |
 
 ## Invariants to tests
@@ -297,7 +338,9 @@ a CA profile on the phone; remove it at the end.
 | I7 the file is 0600 | T7 | none |
 | I8 MCP has no password | T15 | none |
 | I9 setup requests not logged | T10, E1 | none |
-| I10 the profile holds only the CA certificate | T9 | M3 |
+| I10 the profiles hold only what change 2 lists | T9 | M0, M3 |
 | I11 a new password closes the connections | T7, E1 | M1 |
 | I12 a LAN client always has a password | T7 | none |
 | I13 /setup only on a LAN client | T8 | none |
+| I14 only the app asks for Location Services, only on the button | T12 | M1 |
+| I15 no phone profile without a Wi-Fi name | T8, T11, T12 | none |

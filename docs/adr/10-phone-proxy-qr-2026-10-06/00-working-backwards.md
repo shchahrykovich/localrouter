@@ -1,6 +1,6 @@
 # 0. Working backwards: a phone on the proxy
 
-**Status:** Mixed. The one quote marked (real) is the user's request in a
+**Status:** Mixed. The two quotes marked (real) are the user's words in a
 Claude Code session on 2026-10-06. The repository has no GitHub issues
 (checked 2026-10-06). Every other quote is simulated, written to test the
 design before it is built.
@@ -15,15 +15,29 @@ goal (the iPhone's traffic through the proxy). It does not say whether HTTPS
 must be read. The design assumes yes, because `inspect_hosts` is `["*"]` by
 default and the proxy log exists to read traffic.
 
+> "а зачем это? зачем пароль? это будет автоматически? я хочу что б юзер
+> сфоткал и пошел работать" (real, the user, 2026-10-06, about the first
+> design, in Russian. In English: "Why all this? Why a password? Will it be
+> automatic? I want the user to take a photo and go to work.")
+
+This is feedback on the first version of this ADR, where the setup page
+listed four values for the user to type into iOS Settings. It found the
+biggest gap of that version (G8): typing a server, a port, a user name and a
+16-character password is not "take a photo and go to work". The design moved
+to a configuration profile that carries all four values, the password
+included ([02](02-setup-page.md)). The password stays, because the port is
+open to the whole Wi-Fi ([01](01-phone-port.md), "What changes if a proxy
+port is open to the LAN"), but the user no longer sees it.
+
 ## The announcement
 
 > **LocalRouter: see your iPhone's traffic**
 >
 > The Proxy tab has a new **Phone…** button. It checks that the proxy is on
 > and that your Mac allows LAN access on this Wi-Fi, then shows a QR code.
-> Scan it with the iPhone camera. A page opens with the four values to type
-> in Settings → Wi-Fi → Configure Proxy, and a CA profile, so the proxy can
-> read HTTPS.
+> Scan it with the iPhone camera, tap **Install**, and confirm in Settings
+> with your passcode. Nothing to type. To read HTTPS, turn on the CA in
+> Certificate Trust Settings.
 >
 > From then on, every request of the phone on that Wi-Fi appears in the proxy
 > log, marked `iphone`, next to Chrome and your agents.
@@ -31,8 +45,8 @@ default and the proxy log exists to read traffic.
 > The phone port asks for a password, works only on the networks you allowed,
 > and cannot reach your Mac's own servers, only your routes.
 >
-> One thing to remember: the phone uses your Mac for its internet on that
-> Wi-Fi. When you are done, set Configure Proxy back to Off.
+> To stop, remove the LocalRouter profile on the phone (Settings → General →
+> VPN & Device Management).
 
 ## Roles
 
@@ -49,9 +63,9 @@ default and the proxy log exists to read traffic.
 
 ### Positive
 
-**R1: "I scanned the code, typed four things, and saw my app's API calls on
-the Mac."** The goal. **covered**, [03](03-qr-code-and-api.md),
-[02](02-setup-page.md).
+**R1: "I scanned the code, tapped Install, and saw my app's API calls on
+the Mac."** The goal. **covered**, [02](02-setup-page.md),
+[03](03-qr-code-and-api.md), if M0 confirms U4 and U5.
 
 **R2: "The phone's requests are marked iphone in the viewer; I can filter
 them."** **covered** by ADR 09 `_client`, [01](01-phone-port.md) decision 1.
@@ -89,15 +103,17 @@ the same as ports 80 and 443.
 
 **R9: "The next morning my phone had no internet at home. It took me an hour
 to remember the proxy."** The Mac was asleep. The silent failure from the
-manifest's blast radius. **gap, fixed** (G3): step 4 of the page, the panel
-line "The phone has no internet on this Wi-Fi while the Mac sleeps", and the
-"Remove Phone" warning. The real fix, a PAC file with a fallback, is
-**not now**: manifest U2. [02](02-setup-page.md), [03](03-qr-code-and-api.md).
+manifest's blast radius. **gap, fixed** (G3): if M0 shows that the Auto proxy
+with the fallback works (U2), the profile uses it and the phone goes direct
+when the Mac is away. If not, step 4 of the page and the panel say it, and
+the "Remove Phone" warning. [02](02-setup-page.md),
+[03](03-qr-code-and-api.md), manifest U2.
 
 **R10: "After the router restarted, my Mac got a new address and the phone
-stopped working."** The phone still has the old server value. **accepted**:
-the panel shows the current address in large type; the user types it again.
-[03](03-qr-code-and-api.md) decision 3.
+stopped working."** The phone's profile has the old address. **covered**:
+the panel says "Scan again and tap Install"; the new profile replaces the old
+one. If M0 shows the Bonjour name works (U7), the address no longer matters.
+[03](03-qr-code-and-api.md) decision 3, manifest U7.
 
 **R11: "My flatmate found port 8878 open on my Mac and used it."** (the other
 person) The password stops every request. **covered**, I3,
@@ -125,8 +141,8 @@ phone is on."** The phone's background traffic shares the 5 files.
 **accepted**, measured in M2. Manifest data impact.
 
 **R17: "I removed the phone in the app, and the phone lost its internet."**
-**gap, fixed** (G6): "Remove Phone" warns first. [03](03-qr-code-and-api.md)
-decision 3.
+**gap, fixed** (G6): "Remove Phone" warns first: remove the profile on the
+phone. [03](03-qr-code-and-api.md) decision 3.
 
 **R18: "We rolled back to the previous version and my partner's phone had no
 internet on our Wi-Fi."** The old daemon binds the client on loopback only.
@@ -139,6 +155,34 @@ new CA is a new profile. Manifest source of truth.
 
 **R20: "Does the phone open https://shop.localhost now?"** Not known.
 **accepted, not now**: manifest U1, checked by M6.
+
+### Added with the profile flow
+
+**R21: "Why does a proxy app want my location?"** macOS gives the Wi-Fi name
+only with Location Services permission. **gap, fixed** (G9): the request
+comes only from the "Use My Location" button, with a text that says why, and
+a typed name works without it (I14). [03](03-qr-code-and-api.md) decision 2.
+
+**R22: "My Mac is on Ethernet. The panel says the Wi-Fi name is unknown."**
+**gap, fixed** (G10): the user types the name of the Wi-Fi the phone uses on
+the same network. [03](03-qr-code-and-api.md) decision 2.
+
+**R23: "I removed the profile and my phone forgot my home Wi-Fi."** Likely:
+networks installed by a profile go with it. **accepted** if M0 confirms it
+(U6): step 4 of the page says so before the user removes it.
+[02](02-setup-page.md) decision 4.
+
+**R24: "iOS says the profile is Not Verified. Is this safe?"** **accepted**:
+every self-made profile is unsigned; the profile's description says what it
+does and how to remove it. [02](02-setup-page.md) trade-offs.
+
+**R25: "I pressed New Password on the Mac, and the phone stopped working."**
+**covered**: the panel says "Scan again and tap Install".
+[03](03-qr-code-and-api.md) decision 3.
+
+**R26: "I opened the QR link in Chrome on the phone and Install did
+nothing."** iOS installs profiles only from Safari. **covered**: the page
+says to open it in Safari. [02](02-setup-page.md) decision 4.
 
 ## A simulated session with the automated client
 
@@ -180,6 +224,9 @@ check that it sends the user to the Proxy tab.
 | G5 | the setup URL with the password lands in the log | setup requests not logged | [02](02-setup-page.md) decision 5, I9, T10, task 3 |
 | G6 | removing the phone in the app cuts the phone's internet with no warning | a warning before "Remove Phone" | [03](03-qr-code-and-api.md) decision 3, M1, task 6 |
 | G7 | an agent tells the user to set `127.0.0.1` on the phone | texts and the `get_proxy` tool text | [03](03-qr-code-and-api.md) decisions 6 and 7, task 5, task 7 |
+| G8 (real) | typing four values and a 16-character password is not "take a photo and go to work" | a configuration profile with the Wi-Fi proxy and the password; typing only as a fallback | [02](02-setup-page.md), [03](03-qr-code-and-api.md), M0, task 0, task 1 |
+| G9 | the Location Services request looks like tracking | a button with a reason, and a typed name | [03](03-qr-code-and-api.md) decision 2, I14, T12, M1, task 6 |
+| G10 | a Mac on Ethernet has no Wi-Fi name | the typed name | [03](03-qr-code-and-api.md) decision 2, T12 |
 
 Every gap is fixed in the files it touches, or written as an unresolved
-effect in the manifest (U1 to U4).
+effect in the manifest (U1 to U7).

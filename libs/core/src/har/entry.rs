@@ -65,6 +65,8 @@ pub struct HarRecord {
     pub receive_ms: u64,
     /// The response body did not end normally.
     pub body_error: Option<String>,
+    /// The client ended the TLS handshake inside an inspected `CONNECT`.
+    pub tls_error: Option<String>,
     /// The messages of a WebSocket, and how many were not kept.
     pub ws_messages: Option<Vec<WsMessage>>,
     pub ws_dropped: u64,
@@ -97,6 +99,7 @@ impl HarRecord {
             response_body: None,
             receive_ms: 0,
             body_error: None,
+            tls_error: None,
             ws_messages: None,
             ws_dropped: 0,
             held: vec![],
@@ -218,6 +221,9 @@ impl HarRecord {
         }
         if let Some(e) = &self.body_error {
             entry.insert("_bodyError".into(), e.clone().into());
+        }
+        if let Some(e) = &self.tls_error {
+            entry.insert("_tlsError".into(), e.clone().into());
         }
         if let Some(route) = &self.route {
             entry.insert("_route".into(), route.clone().into());

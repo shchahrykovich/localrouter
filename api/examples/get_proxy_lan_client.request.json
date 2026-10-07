@@ -1,0 +1,7 @@
+{
+  "id": 40,
+  "method": "get_proxy",
+  "params": {
+    "client": "iphone"
+  }
+}

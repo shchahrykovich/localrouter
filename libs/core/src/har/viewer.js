@@ -69,6 +69,28 @@ function load() {
   }
 }
 
+/** Clear hides every request that started before this time, in this tab
+ *  only (it survives a reload). The files are not touched: the viewer is
+ *  read only. */
+const CLEAR_KEY = STORE_KEY + "-cleared";
+
+function loadCleared() {
+  try {
+    return Number(sessionStorage.getItem(CLEAR_KEY)) || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function saveCleared() {
+  try {
+    if (clearedAt) sessionStorage.setItem(CLEAR_KEY, String(clearedAt));
+    else sessionStorage.removeItem(CLEAR_KEY);
+  } catch (e) {
+    // Private windows: Clear lasts until the page reloads.
+  }
+}
+
 function save() {
   try {
     const { view, tl, hide, group, detailW } = S;
@@ -132,7 +154,7 @@ function splitUrl(url) {
 }
 
 function isError(r) {
-  return r.status === 0 || r.status >= 400 || !!r.e._bodyError;
+  return r.status === 0 || r.status >= 400 || !!r.e._bodyError || !!r.e._tlsError;
 }
 
 // ---- state
@@ -195,6 +217,7 @@ const full = new Map();   // file@at → whole entry
 const fullWait = new Map();
 const liveMsgs = new Map(); // _id → messages of an open WebSocket
 let held = [];            // live events while paused
+let clearedAt = loadCleared(); // Clear: rows that started before are hidden
 let order = [];           // keys in table order, for the arrow keys
 let toastTimer = null;
 let drawn = null;         // what the detail pane shows, to skip redraws
@@ -226,6 +249,7 @@ function rowOf(e, f) {
 }
 
 function upsert(r) {
+  if (r.start && r.start < clearedAt) return r;
   const old = byKey.get(r.key);
   if (old) {
     Object.assign(old, r);
@@ -314,8 +338,17 @@ async function loadEntries() {
       if (!r.ok) throw new Error("api/entries: " + r.status);
       const page = await r.json();
       if (reading !== from) break;
-      for (const e of page.entries) upsert(rowOf(e, from.file));
+      let older = false;
+      for (const e of page.entries) {
+        const row = upsert(rowOf(e, from.file));
+        if (row.start && row.start < clearedAt) older = true;
+      }
       got += page.entries.length;
+      // Older entries are all cleared: nothing more to read.
+      if (older) {
+        reading = null;
+        break;
+      }
       if (page.before !== null) {
         // The server stopped inside the file: at the limit, or at its byte
         // cap. With a client filter a page can be empty: read on, a little.
@@ -426,6 +459,28 @@ function liveMessage(m) {
     r.messages = list.length;
     render();
   }
+}
+
+/** Hide every request shown now; new ones still come. */
+function clearView() {
+  clearedAt = Date.now();
+  saveCleared();
+  rows = [];
+  byKey.clear();
+  fresh.clear();
+  liveMsgs.clear();
+  held = [];
+  reading = null;
+  S.sel = null;
+  S.range = null;
+  render();
+}
+
+/** Undo Clear: read the files again. */
+function unclear() {
+  clearedAt = 0;
+  saveCleared();
+  restart();
 }
 
 function setLive(on) {
@@ -661,7 +716,7 @@ function drawToolbar(vis) {
   $("icon-play").toggleAttribute("hidden", S.live);
   const lb = $("live-btn");
   const title = S.live ? "Live, click to pause" : "Paused, click to resume";
-  lb.title = title;
+  lb.dataset.tip = title;
   lb.setAttribute("aria-label", title);
 
   const span = timeSpan();
@@ -669,7 +724,9 @@ function drawToolbar(vis) {
   const rb = $("range");
   rb.hidden = !range;
   if (range) rb.textContent = clock(range[0]) + " to " + clock(range[1]);
-  $("count").textContent = count(vis.length) + " of " + count(rows.length) + (!S.live && held.length ? ", " + count(held.length) + " new while paused" : "");
+  $("count").textContent = count(vis.length) + " of " + count(rows.length) + (!S.live && held.length ? ", " + count(held.length) + " new while paused" : "") +
+    (clearedAt ? ", cleared at " + clock(clearedAt).slice(0, 8) : "");
+  $("unclear").hidden = !clearedAt;
 }
 
 const TYPES = [
@@ -1159,6 +1216,7 @@ function drawDetailHead(r, e, tabs, tab) {
   }
   let summary;
   if (r.type === "ws") summary = (r.messages !== null ? count(r.messages) + " messages" : "") + (r.open ? "" : ", open " + fmtMs(r.receive));
+  else if (e._tlsError) summary = "TLS handshake refused by the client";
   else if (r.mode === "tunnel") summary = fmtMs(r.ms) + ", " + fmtSize(e._bytesIn || 0) + " up, " + fmtSize(e._bytesOut || 0) + " down";
   else summary = (r.open ? "receiving" : fmtMs(r.ms)) + ", " + (r.size > 0 ? fmtSize(r.size) : "no body");
   top.append(h("span", { class: "sum", text: summary }));
@@ -1377,7 +1435,7 @@ function drawHeaders(body, r, e) {
   ];
   body.append(section("General", null, kv(general)));
   const lr = [];
-  for (const k of ["_mode", "_route", "_scripts", "_scriptError", "_bodyError", "_bytesIn", "_bytesOut", "_webSocketDropped", "_id"]) {
+  for (const k of ["_mode", "_route", "_scripts", "_scriptError", "_bodyError", "_tlsError", "_bytesIn", "_bytesOut", "_webSocketDropped", "_id"]) {
     if (e[k] !== undefined) lr.push([k, typeof e[k] === "string" ? e[k] : JSON.stringify(e[k])]);
   }
   const c = e.response.content || {};
@@ -1864,6 +1922,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("tree-btn").addEventListener("click", () => setAllNodes(!treeAllOpen(lastVis)));
   $("builder").addEventListener("mousedown", (e) => { if (e.target === $("builder")) closeBuilder(); });
   $("live-btn").addEventListener("click", () => setLive(!S.live));
+  $("clear-btn").addEventListener("click", clearView);
+  $("unclear").addEventListener("click", unclear);
   $("range").addEventListener("click", () => { S.range = null; render(); });
   $("tl-btn").addEventListener("click", () => { S.tl = !S.tl; save(); render(); });
   $("tl-canvas").addEventListener("mousedown", tlDown);

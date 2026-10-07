@@ -153,6 +153,49 @@ pub fn replace(path: &Path, data: &[u8]) -> std::io::Result<()> {
     result
 }
 
+/// [`replace`] for a file only this user may read (mode `0600` from the
+/// start): the phone clients' setup tokens (ADR 10, I7).
+pub fn replace_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("json.tmp");
+    let result = (|| {
+        let _ = fs::remove_file(&tmp);
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        f.write_all(data)?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)?;
+        if let Some(dir) = path.parent() {
+            fs::File::open(dir)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// One phone client in `proxy-phones.json` (ADR 10): the token of its QR
+/// code and the addresses of the allowed devices.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PhoneRecord {
+    pub token: String,
+    #[serde(default)]
+    pub devices: Vec<String>,
+}
+
+/// The phone clients, by name. A missing or broken file is empty: every
+/// phone client then gets a new token and no device (I12).
+pub fn load_phones(path: &Path) -> std::collections::BTreeMap<String, PhoneRecord> {
+    fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+pub fn save_phones(path: &Path, phones: &std::collections::BTreeMap<String, PhoneRecord>) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(phones).map_err(std::io::Error::other)?;
+    replace_private(path, text.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -331,5 +374,21 @@ mod tests {
         let c = read_config(&path, &dev()).unwrap().unwrap();
         assert!(c.allow_lan);
         assert_eq!(c.http_port, 7080);
+    }
+
+    #[test]
+    fn phones_file_is_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-phones.json");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("iphone".to_string(), PhoneRecord { token: "k7mq".into(), devices: vec!["192.168.0.23".into()] });
+        save_phones(&path, &map).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(load_phones(&path), map);
+        map.insert("ipad".to_string(), PhoneRecord { token: "x".into(), devices: vec![] });
+        save_phones(&path, &map).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::write(&path, "not json").unwrap();
+        assert!(load_phones(&path).is_empty());
     }
 }

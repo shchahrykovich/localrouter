@@ -20,13 +20,14 @@
       <button id="inv" class="check" type="button" title="Show the requests that do not match the text"><span class="box"></span>Invert</button>
     </div>
     <div class="grow"></div>
-    <button id="live-btn" class="icon-btn live-btn" type="button">
+    <button id="clear-btn" class="icon-btn tip" type="button" data-tip="Clear: hide the requests shown now. New ones still appear; the log files keep everything." aria-label="Clear"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"></circle><path d="M3.9 12.1 12.1 3.9"></path></svg></button>
+    <button id="live-btn" class="icon-btn live-btn tip" type="button">
       <svg id="icon-pause" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"></rect><rect x="9.5" y="2.5" width="3" height="11" rx="1"></rect></svg>
       <svg id="icon-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" hidden><path d="M4.5 2.8v10.4a.8.8 0 0 0 1.2.7l8.4-5.2a.8.8 0 0 0 0-1.4L5.7 2.1a.8.8 0 0 0-1.2.7z"></path></svg>
       <span class="live-mark"><span id="live-dot" class="dot"></span></span>
     </button>
     <div class="anchor">
-      <button id="menu-btn" class="icon-btn dots" type="button" title="More" aria-haspopup="true"><span></span><span></span><span></span></button>
+      <button id="menu-btn" class="icon-btn dots tip" type="button" data-tip="Log files: download, folder, rotation" aria-label="More" aria-haspopup="true"><span></span><span></span><span></span></button>
       <div id="menu" class="pop menu right" hidden></div>
     </div>
   </header>
@@ -50,6 +51,7 @@
         <button id="tree-btn" class="btn tight icon" type="button"><svg id="icon-expand" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6 8 2.5 11.5 6M4.5 10 8 13.5 11.5 10"></path></svg><svg id="icon-collapse" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 11.5 2.5M4.5 13.5 8 10 11.5 13.5"></path></svg></button>
         <button id="range" class="range mono" type="button" title="Clear time range" hidden></button>
         <span id="count" class="count mono"></span>
+        <button id="unclear" class="btn small" type="button" title="Show the requests hidden by Clear again" hidden>Show all</button>
       </div>
       <div class="typebar">
         <div id="types" class="types"></div>

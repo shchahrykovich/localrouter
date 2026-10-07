@@ -49,6 +49,10 @@ impl Paths {
     pub fn config(&self) -> PathBuf {
         self.data.join("config.json")
     }
+    /// The phone clients' setup tokens and allowed devices (ADR 10), mode `0600`.
+    pub fn proxy_phones(&self) -> PathBuf {
+        self.data.join("proxy-phones.json")
+    }
     pub fn routes(&self) -> PathBuf {
         self.data.join("routes.json")
     }

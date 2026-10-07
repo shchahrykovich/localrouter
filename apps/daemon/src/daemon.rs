@@ -3,7 +3,7 @@
 //! Every change to routes or settings goes through [`Daemon`], one at a time
 //! (`write` lock), so memory and disk never disagree (invariant I4).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use localrouter_core::api::{
     self, ApiError, CaState, CaStatus, ErrorCode, FindFreePortParams, FindFreePortResult, GetLogsParams, GetLogsResult,
     GetProxyParams, GetProxyResult, HelloParams, HelloResult, HostParams, IdParams, InspectChange, ListRoutesResult,
-    ListScriptRulesResult, NetworkStatus, PortStatus, ProxyClientStatus, ProxyLogStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams,
+    LanProxyInfo, ListScriptRulesResult, NetworkStatus, NewSetupCodeParams, NewSetupCodeResult, PendingDevice, PortStatus, ProxyClientStatus, ProxyLogStatus, ProxyStatus, RegisterRouteResult, RemoveScriptRuleResult, ResetCaResult, RouteView, SetConfigParams, SetPhoneDeviceParams, SetPhoneDeviceResult,
     SetConfigResult, SetScriptRuleParams, SetScriptRuleResult, StatusResult, UnregisterRouteResult,
 };
 use localrouter_core::config::{Config, DEFAULT_CLIENT, LanNetwork, ProxyClient};
@@ -22,6 +22,7 @@ use localrouter_core::inspect::{self, InspectSet};
 use localrouter_core::logs::RequestLog;
 use localrouter_core::instance::Instance;
 use localrouter_core::paths::Paths;
+use localrouter_core::phone::{self, LanClient, PhoneEvent};
 use localrouter_core::proxy::{ClientScheme, Proxy, RouteSource};
 use localrouter_core::routes::{PROXY_LOG_HOST, Protocol, Reserved, Route, RouteError, RouteKey, RouteTable, normalize_path};
 use localrouter_core::scripts::engine::{ScriptKind, load_file};
@@ -81,6 +82,16 @@ struct ProxyHandle {
     configured: u16,
     port: u16,
     cancel: CancellationToken,
+    /// A phone client (ADR 10): its port listens on the LAN.
+    lan: Option<LanHandle>,
+}
+
+/// A phone client's token and devices, shared with its port, and the token
+/// its open connections hang on. Denying a device cancels that token and
+/// makes a new one under the listener's, so the listener stays bound (I11).
+struct LanHandle {
+    client: Arc<LanClient>,
+    conns: Arc<Mutex<CancellationToken>>,
 }
 
 #[derive(Default)]
@@ -124,6 +135,14 @@ pub struct Daemon {
     proxy_listener: Mutex<Option<ProxyHandle>>,
     /// The proxy clients' ports, by name (ADR 09).
     client_listeners: Mutex<HashMap<String, ProxyHandle>>,
+    /// The phone clients' setup tokens and allowed devices, as in
+    /// `proxy-phones.json` (ADR 10).
+    phones: Mutex<BTreeMap<String, store::PhoneRecord>>,
+    /// Devices that asked to use a phone client, by client. Memory only.
+    pending: Mutex<HashMap<String, Vec<PendingDevice>>>,
+    /// Devices the user denied, until the daemon stops: they are not asked
+    /// about again.
+    denied: Mutex<HashSet<(String, std::net::IpAddr)>>,
     problems: Mutex<Problems>,
     trust_cache: TrustCache,
     inspect_trust_cache: TrustCache,
@@ -185,6 +204,7 @@ impl Daemon {
         {
             tracing::warn!("could not write config.json: {e}");
         }
+        let phones = reconcile_phones(&paths, &config.value);
         let log = Arc::new(RequestLog::new(config.value.log_size));
         let scripts = Scripts::new();
         load_saved_script_rules(&paths, &scripts);
@@ -251,6 +271,7 @@ impl Daemon {
         }
         let daemon = Arc::new_cyclic(|this: &Weak<Self>| {
             let this_for_scripts = this.clone();
+            let this_for_setup = this.clone();
             let this = this.clone();
             let proxy = Arc::new(Proxy {
                 instance: instance.clone(),
@@ -273,6 +294,16 @@ impl Daemon {
                 local_certs: certs.clone(),
                 inspect_certs: inspect_certs.clone(),
                 own_ports: shared.proxy_ports.clone(),
+                local_target: Arc::new(|ip| phone::is_local_target(ip, &phone::own_addresses())),
+                setup_ca: {
+                    let this = this_for_setup.clone();
+                    Arc::new(move || this.upgrade().and_then(|d| d.setup_ca()))
+                },
+                phone_events: Arc::new(move |event| {
+                    if let Some(d) = this_for_setup.upgrade() {
+                        d.phone_event(event);
+                    }
+                }),
             });
             let weak = this_for_scripts.clone();
             scripts.set_on_disable(Arc::new(move |id: String| {
@@ -296,6 +327,9 @@ impl Daemon {
                 tcp: Mutex::new(HashMap::new()),
                 proxy_listener: Mutex::new(None),
                 client_listeners: Mutex::new(HashMap::new()),
+                phones: Mutex::new(phones),
+                pending: Mutex::new(HashMap::new()),
+                denied: Mutex::new(HashSet::new()),
                 problems: Mutex::new(problems),
                 trust_cache: Mutex::new(None),
                 inspect_trust_cache: Mutex::new(None),
@@ -489,8 +523,8 @@ impl Daemon {
         }
         // A client's taken port does not stop the others (ADR 09).
         for client in &config.proxy_clients {
-            match bind_proxy(client.port) {
-                Ok((listeners, port)) => self.start_client(&client.name, listeners, client.port, port),
+            match bind_client(client) {
+                Ok((listeners, port)) => self.start_client(&client.name, listeners, client.port, port, client.lan),
                 Err(e) => self.client_failed(&client.name, e.message),
             }
         }
@@ -498,10 +532,11 @@ impl Daemon {
     }
 
     fn start_proxy(self: &Arc<Self>, listeners: Vec<std::net::TcpListener>, configured: u16, port: u16) {
-        let cancel = self.accept_proxy(listeners, ClientPort { client: None, port });
+        let cancel = self.shutdown.child_token();
+        self.accept_proxy(listeners, ClientPort { client: None, port, lan: None }, cancel.clone(), None);
         self.har.set_proxy_on(true);
         self.problems.lock().unwrap().proxy.clear();
-        if let Some(old) = self.proxy_listener.lock().unwrap().replace(ProxyHandle { configured, port, cancel }) {
+        if let Some(old) = self.proxy_listener.lock().unwrap().replace(ProxyHandle { configured, port, cancel, lan: None }) {
             old.cancel.cancel();
         }
         tracing::info!("forward proxy on 127.0.0.1:{port} and [::1]:{port}");
@@ -509,13 +544,21 @@ impl Daemon {
 
     /// Start one proxy client's port (ADR 09). A handle with the same name
     /// is replaced, and its connections closed.
-    fn start_client(self: &Arc<Self>, name: &str, listeners: Vec<std::net::TcpListener>, configured: u16, port: u16) {
-        let cancel = self.accept_proxy(listeners, ClientPort { client: Some(Arc::from(name)), port });
+    fn start_client(self: &Arc<Self>, name: &str, listeners: Vec<std::net::TcpListener>, configured: u16, port: u16, lan: bool) {
+        let cancel = self.shutdown.child_token();
+        let lan = lan.then(|| {
+            let record = self.phones.lock().unwrap().get(name).cloned().unwrap_or_default();
+            let devices = record.devices.iter().filter_map(|d| d.parse().ok()).collect();
+            LanHandle { client: Arc::new(LanClient::new(name, &record.token, devices)), conns: Arc::new(Mutex::new(cancel.child_token())) }
+        });
+        let at = ClientPort { client: Some(Arc::from(name)), port, lan: lan.as_ref().map(|l| l.client.clone()) };
+        self.accept_proxy(listeners, at, cancel.clone(), lan.as_ref().map(|l| l.conns.clone()));
         self.problems.lock().unwrap().proxy_clients.remove(name);
-        if let Some(old) = self.client_listeners.lock().unwrap().insert(name.to_string(), ProxyHandle { configured, port, cancel }) {
+        let place = if lan.is_some() { format!("0.0.0.0:{port} and [::]:{port} (phone)") } else { format!("127.0.0.1:{port} and [::1]:{port}") };
+        if let Some(old) = self.client_listeners.lock().unwrap().insert(name.to_string(), ProxyHandle { configured, port, cancel, lan }) {
             old.cancel.cancel();
         }
-        tracing::info!("proxy client {name} on 127.0.0.1:{port} and [::1]:{port}");
+        tracing::info!("proxy client {name} on {place}");
     }
 
     fn client_failed(&self, name: &str, why: String) {
@@ -546,14 +589,27 @@ impl Daemon {
         self.har.set_clients(menu);
     }
 
-    /// Accept on one proxy port until the returned token is cancelled.
-    fn accept_proxy(self: &Arc<Self>, listeners: Vec<std::net::TcpListener>, at: ClientPort) -> CancellationToken {
-        let cancel = self.shutdown.child_token();
+    /// Accept on one proxy port until `cancel` is cancelled. A phone
+    /// client's connections hang on `conns` (ADR 10, I11).
+    fn accept_proxy(
+        self: &Arc<Self>,
+        listeners: Vec<std::net::TcpListener>,
+        at: ClientPort,
+        cancel: CancellationToken,
+        conns: Option<Arc<Mutex<CancellationToken>>>,
+    ) {
+        fn token(cancel: &CancellationToken, conns: &Option<Arc<Mutex<CancellationToken>>>) -> CancellationToken {
+            match conns {
+                Some(c) => c.lock().unwrap().child_token(),
+                None => cancel.child_token(),
+            }
+        }
         for l in listeners {
             let Ok(listener) = TcpListener::from_std(l) else { continue };
             let this = self.clone();
             let cancel = cancel.clone();
             let at = at.clone();
+            let conns = conns.clone();
             tokio::spawn(async move {
                 loop {
                     let (stream, peer) = tokio::select! {
@@ -565,16 +621,33 @@ impl Daemon {
                     };
                     // Loopback only, whatever allow_lan says (I1). The
                     // sockets are bound to loopback; this is the second check.
+                    // A phone client takes another machine on the same terms
+                    // as ports 80 and 443, decided off the accept loop (ADR 10, I2).
                     if !listen::is_loopback_peer(peer.ip()) {
-                        this.refusals.refused(peer);
+                        if at.lan.is_none() {
+                            this.refusals.refused(peer);
+                            continue;
+                        }
+                        let (this, at, cancel, conns) = (this.clone(), at.clone(), cancel.clone(), conns.clone());
+                        tokio::spawn(async move {
+                            let local = stream.local_addr().ok();
+                            let check = this.clone();
+                            let allowed =
+                                tokio::task::spawn_blocking(move || check.lan_peer_allowed(peer.ip(), local)).await.unwrap_or(false);
+                            if allowed {
+                                let _ = stream.set_nodelay(true);
+                                tokio::spawn(this.forward.clone().serve(stream, peer, at, token(&cancel, &conns)));
+                            } else {
+                                this.refusals.refused(peer);
+                            }
+                        });
                         continue;
                     }
                     let _ = stream.set_nodelay(true);
-                    tokio::spawn(this.forward.clone().serve(stream, peer, at.clone(), cancel.child_token()));
+                    tokio::spawn(this.forward.clone().serve(stream, peer, at.clone(), token(&cancel, &conns)));
                 }
             });
         }
-        cancel
     }
 
     /// Close the proxy listeners, the clients' too, and every open proxy
@@ -687,10 +760,10 @@ impl Daemon {
     async fn network_status(&self) -> Option<NetworkStatus> {
         let n = tokio::task::spawn_blocking(current_network).await.ok().flatten()?;
         let config = self.config();
-        let name = config.lan_networks.iter().find(|l| l.id == n.id).map(|l| l.name.clone());
+        let saved = config.lan_networks.iter().find(|l| l.id == n.id);
         Some(NetworkStatus {
-            lan_allowed: config.allow_lan && name.is_some(),
-            name: name.unwrap_or_default(),
+            lan_allowed: config.allow_lan && saved.is_some(),
+            name: saved.map(|l| l.name.clone()).unwrap_or_default(),
             id: n.id,
             router: n.router.to_string(),
             interface: n.interface,
@@ -725,17 +798,26 @@ impl Daemon {
     fn client_statuses(&self, config: &Config) -> Vec<ProxyClientStatus> {
         let bound = self.client_listeners.lock().unwrap();
         let problems = self.problems.lock().unwrap();
+        let pending = self.pending.lock().unwrap();
         config
             .proxy_clients
             .iter()
             .map(|c| {
-                let port = bound.get(&c.name).map(|h| h.port);
+                let handle = bound.get(&c.name);
+                let port = handle.map(|h| h.port);
+                let on_lan = handle.is_some_and(|h| h.lan.is_some());
                 ProxyClientStatus {
                     name: c.name.clone(),
                     configured: c.port,
                     port,
-                    bound: port.map_or_else(Vec::new, |p| vec![format!("127.0.0.1:{p}"), format!("[::1]:{p}")]),
+                    bound: match (port, on_lan) {
+                        (None, _) => vec![],
+                        (Some(p), false) => vec![format!("127.0.0.1:{p}"), format!("[::1]:{p}")],
+                        (Some(p), true) => vec![format!("0.0.0.0:{p}"), format!("[::]:{p}")],
+                    },
                     errors: problems.proxy_clients.get(&c.name).cloned().into_iter().collect(),
+                    lan: c.lan,
+                    pending: pending.get(&c.name).cloned().unwrap_or_default(),
                 }
             })
             .collect()
@@ -1040,28 +1122,36 @@ impl Daemon {
         // The clients' ports (ADR 09), only when the call names the proxy or
         // the clients. A client this call adds or moves must bind, as above;
         // the others bind if they can, and a failure is reported in status.
-        let mut client_binds: Vec<(String, u16, Result<Bound, ApiError>)> = vec![];
+        let mut client_binds: Vec<(String, u16, bool, Result<Bound, ApiError>)> = vec![];
         let mut client_stops: Vec<String> = vec![];
         if p.proxy_enabled.is_some() || p.proxy_clients.is_some() {
             let old = self.config().proxy_clients;
-            let bound: HashMap<String, u16> =
-                self.client_listeners.lock().unwrap().iter().map(|(n, h)| (n.clone(), h.configured)).collect();
+            // A client is bound as wanted when its port and its LAN switch
+            // match: turning `lan` on binds the wildcard pair (ADR 10).
+            let bound: HashMap<String, (u16, bool)> =
+                self.client_listeners.lock().unwrap().iter().map(|(n, h)| (n.clone(), (h.configured, h.lan.is_some()))).collect();
             let wanted: &[ProxyClient] = if new.proxy_enabled { &new.proxy_clients } else { &[] };
             for name in bound.keys() {
-                if !wanted.iter().any(|c| c.name == *name && bound.get(name) == Some(&c.port)) {
+                if !wanted.iter().any(|c| c.name == *name && bound.get(name) == Some(&(c.port, c.lan))) {
                     client_stops.push(name.clone());
                 }
             }
             for c in wanted {
-                if bound.get(&c.name) == Some(&c.port) {
+                if bound.get(&c.name) == Some(&(c.port, c.lan)) {
                     continue;
                 }
                 let named = p.proxy_clients.is_some() && !old.contains(c);
-                let bind = bind_proxy(c.port);
+                // A client that only switches `lan` keeps its port: its old
+                // listener must close before the new pair can bind.
+                if bound.get(&c.name).is_some_and(|(port, _)| *port == c.port && c.port != 0) {
+                    self.stop_client(&c.name);
+                    client_stops.retain(|n| n != &c.name);
+                }
+                let bind = bind_client(c);
                 if named && let Err(e) = bind {
                     return Err(err(e.code, format!("proxy client {}: {}", c.name, e.message)));
                 }
-                client_binds.push((c.name.clone(), c.port, bind));
+                client_binds.push((c.name.clone(), c.port, c.lan, bind));
             }
         }
 
@@ -1078,9 +1168,23 @@ impl Daemon {
             tracing::warn!("{why}; CONNECTs stay tunnels");
         }
 
+        // A phone client's token is written before the config names the
+        // client, so a phone client never lacks one (ADR 10, I12).
+        let old_phones = self.phones.lock().unwrap().clone();
+        let new_phones = phones_for(&new, &old_phones);
+        if new_phones != old_phones {
+            store::save_phones(&self.paths.proxy_phones(), &new_phones)
+                .map_err(|e| err(ErrorCode::Io, format!("could not save the phone clients: {e}")))?;
+        }
         // A failed write drops the new listeners unused (I4).
-        store::save_config(&self.paths.config(), &new)
-            .map_err(|e| err(ErrorCode::Io, format!("could not save config.json: {e}")))?;
+        if let Err(e) = store::save_config(&self.paths.config(), &new) {
+            if new_phones != old_phones {
+                let _ = store::save_phones(&self.paths.proxy_phones(), &old_phones);
+            }
+            return Err(err(ErrorCode::Io, format!("could not save config.json: {e}")));
+        }
+        self.pending.lock().unwrap().retain(|name, _| new_phones.contains_key(name));
+        *self.phones.lock().unwrap() = new_phones;
         *self.shared.config.write().unwrap() = new.clone();
         // New CONNECTs use the new set; open tunnels stay tunnels.
         self.refresh_inspect();
@@ -1095,9 +1199,9 @@ impl Daemon {
         for name in client_stops {
             self.stop_client(&name);
         }
-        for (name, configured, bind) in client_binds {
+        for (name, configured, lan, bind) in client_binds {
             match bind {
-                Ok((listeners, port)) => self.start_client(&name, listeners, configured, port),
+                Ok((listeners, port)) => self.start_client(&name, listeners, configured, port, lan),
                 Err(e) => self.client_failed(&name, e.message),
             }
         }
@@ -1194,6 +1298,10 @@ impl Daemon {
         if let Some(name) = &name {
             log.url = format!("{}/{name}", log.url);
         }
+        let lan = match &client {
+            Some(c) if c.lan => Some(self.lan_info(&c.name, port, !bound.is_empty()).await),
+            _ => None,
+        };
         Ok(GetProxyResult {
             enabled: config.proxy_enabled,
             client: name,
@@ -1210,7 +1318,184 @@ impl Daemon {
             script_rules: self.scripts.views(),
             log: Some(log),
             clients: status.clients,
+            lan,
         })
+    }
+
+    /// What a phone needs to use its client (ADR 10): this Mac's address on
+    /// the current network, the setup URL, the devices, and why it cannot
+    /// work now.
+    async fn lan_info(&self, name: &str, port: u16, bound: bool) -> LanProxyInfo {
+        let config = self.config();
+        let cli = self.instance.cli();
+        let network = tokio::task::spawn_blocking(current_network).await.ok().flatten();
+        let address = match network.clone() {
+            Some(n) => tokio::task::spawn_blocking(move || lan_address(&n)).await.ok().flatten(),
+            None => None,
+        };
+        let saved = network.as_ref().and_then(|n| config.lan_networks.iter().find(|l| l.id == n.id));
+        let record = self.phones.lock().unwrap().get(name).cloned().unwrap_or_default();
+        let mut problems = vec![];
+        if !config.proxy_enabled {
+            problems.push(format!("The proxy is off. Turn it on: {cli} proxy on"));
+        } else if !bound {
+            problems.push("The phone port is not listening; see the proxy client's errors.".to_string());
+        }
+        if !config.allow_lan {
+            problems.push("LAN access is off, so no other machine can connect.".to_string());
+        }
+        match (&network, saved) {
+            (None, _) => problems.push("This network cannot be recognised (no router, or a VPN), so LAN access does not work on it.".to_string()),
+            (Some(_), None) => problems.push(format!("This network is not allowed for LAN access. Allow it: {cli} lan allow")),
+            _ => {}
+        }
+        if let (Some(n), None) = (&network, address) {
+            problems.push(format!("This Mac has no IPv4 address on {}.", n.interface));
+        }
+        LanProxyInfo {
+            address: address.map(|a| a.to_string()),
+            port,
+            setup_url: address.map(|a| format!("http://{a}:{port}/setup/{}", record.token)),
+            devices: record.devices,
+            pending: self.pending.lock().unwrap().get(name).cloned().unwrap_or_default(),
+            problems,
+        }
+    }
+
+    /// The phone client `name`, or the error a call about it gets.
+    fn phone_client(&self, name: &str) -> Result<ProxyClient, ApiError> {
+        let config = self.config();
+        let Some(client) = config.proxy_clients.iter().find(|c| c.name == name) else {
+            return Err(err(ErrorCode::NotFound, format!("no proxy client {name}")));
+        };
+        if !client.lan {
+            return Err(err(
+                ErrorCode::InvalidRequest,
+                format!("proxy client {name} is not a phone client; add one: {} proxy client add <name> --lan", self.instance.cli()),
+            ));
+        }
+        Ok(client.clone())
+    }
+
+    /// A new setup token: the old QR code stops allowing devices; allowed
+    /// devices stay.
+    pub async fn new_setup_code(&self, p: NewSetupCodeParams) -> Result<NewSetupCodeResult, ApiError> {
+        let _guard = self.write.lock().await;
+        let client = self.phone_client(&p.client)?;
+        let token = phone::new_token();
+        let mut map = self.phones.lock().unwrap().clone();
+        map.entry(client.name.clone()).or_default().token = token.clone();
+        store::save_phones(&self.paths.proxy_phones(), &map)
+            .map_err(|e| err(ErrorCode::Io, format!("could not save the phone clients: {e}")))?;
+        *self.phones.lock().unwrap() = map;
+        let port = {
+            let handles = self.client_listeners.lock().unwrap();
+            let handle = handles.get(&client.name);
+            if let Some(lan) = handle.and_then(|h| h.lan.as_ref()) {
+                lan.client.set_token(&token);
+            }
+            handle.map(|h| h.port)
+        };
+        let info = self.lan_info(&client.name, port.unwrap_or(client.port), port.is_some()).await;
+        tracing::info!("proxy client {}: new setup code", client.name);
+        Ok(NewSetupCodeResult { setup_url: info.setup_url })
+    }
+
+    /// Allow a device on a phone client, or deny it. Denying removes it from
+    /// the allowed list, closes the client's open connections, and stops
+    /// asking about it until the daemon restarts (I11).
+    pub async fn set_phone_device(&self, p: SetPhoneDeviceParams) -> Result<SetPhoneDeviceResult, ApiError> {
+        let _guard = self.write.lock().await;
+        let client = self.phone_client(&p.client)?;
+        let ip: std::net::IpAddr =
+            p.address.trim().parse().map_err(|_| err(ErrorCode::InvalidRequest, format!("{} is not an IP address", p.address)))?;
+        let ip = ip.to_canonical();
+        let mut map = self.phones.lock().unwrap().clone();
+        let record = map.entry(client.name.clone()).or_default();
+        record.devices.retain(|d| d.parse::<std::net::IpAddr>().map(|x| x.to_canonical()) != Ok(ip));
+        if p.allow {
+            record.devices.push(ip.to_string());
+        }
+        let devices = record.devices.clone();
+        store::save_phones(&self.paths.proxy_phones(), &map)
+            .map_err(|e| err(ErrorCode::Io, format!("could not save the phone clients: {e}")))?;
+        *self.phones.lock().unwrap() = map;
+        if let Some(list) = self.pending.lock().unwrap().get_mut(&client.name) {
+            list.retain(|d| d.address != ip.to_string());
+        }
+        {
+            let mut denied = self.denied.lock().unwrap();
+            if p.allow {
+                denied.remove(&(client.name.clone(), ip));
+            } else {
+                denied.insert((client.name.clone(), ip));
+            }
+        }
+        if let Some(h) = self.client_listeners.lock().unwrap().get(&client.name)
+            && let Some(lan) = &h.lan
+        {
+            if p.allow {
+                lan.client.allow(ip);
+            } else {
+                lan.client.forget(ip);
+                let mut conns = lan.conns.lock().unwrap();
+                conns.cancel();
+                *conns = h.cancel.child_token();
+            }
+        }
+        tracing::info!("proxy client {}: {} {ip}", client.name, if p.allow { "allowed" } else { "denied" });
+        Ok(SetPhoneDeviceResult { devices })
+    }
+
+    /// The inspection CA for a phone's setup page, while HTTPS is inspected.
+    fn setup_ca(&self) -> Option<(Vec<u8>, String)> {
+        let inspecting = !self.shared.inspect.read().unwrap().patterns().is_empty();
+        if inspecting { self.inspect_certs.ca_certificate() } else { None }
+    }
+
+    /// From a phone port: a device opened the setup page (it is allowed now;
+    /// save it), or a device that is not allowed asked (the user decides).
+    fn phone_event(self: &Arc<Self>, event: PhoneEvent) {
+        match event {
+            PhoneEvent::Scanned { client, ip } => {
+                let address = ip.to_canonical().to_string();
+                {
+                    let mut phones = self.phones.lock().unwrap();
+                    let Some(record) = phones.get_mut(&client) else { return };
+                    if !record.devices.contains(&address) {
+                        record.devices.push(address.clone());
+                    }
+                }
+                if let Some(list) = self.pending.lock().unwrap().get_mut(&client) {
+                    list.retain(|d| d.address != address);
+                }
+                self.denied.lock().unwrap().remove(&(client.clone(), ip.to_canonical()));
+                tracing::info!("proxy client {client}: {address} opened the setup page and is allowed");
+                let this = self.clone();
+                tokio::spawn(async move {
+                    let _guard = this.write.lock().await;
+                    let phones = this.phones.lock().unwrap().clone();
+                    if let Err(e) = store::save_phones(&this.paths.proxy_phones(), &phones) {
+                        tracing::warn!("could not save the phone clients: {e}");
+                    }
+                });
+            }
+            PhoneEvent::Asked { client, ip, host } => {
+                if self.denied.lock().unwrap().contains(&(client.clone(), ip.to_canonical())) {
+                    return;
+                }
+                let address = ip.to_canonical().to_string();
+                let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+                let mut pending = self.pending.lock().unwrap();
+                let list = pending.entry(client).or_default();
+                list.retain(|d| d.address != address);
+                list.push(PendingDevice { address, host, at_ms });
+                // A device that keeps asking stays; the oldest of many goes.
+                if list.len() > 10 {
+                    list.remove(0);
+                }
+            }
+        }
     }
 
     /// The `log` block of `get_proxy` (ADR 08, change 3).
@@ -1625,6 +1910,66 @@ fn check_clients(config: &Config) -> Result<(), String> {
 
 /// The listeners of one proxy port and the port they got.
 type Bound = (Vec<std::net::TcpListener>, u16);
+
+/// A client's port: the wildcard pair for a phone client (ADR 10), else
+/// loopback (I1).
+fn bind_client(c: &ProxyClient) -> Result<Bound, ApiError> {
+    if c.lan { bind_lan(c.port) } else { bind_proxy(c.port) }
+}
+
+/// A phone client's port on `0.0.0.0` and `[::]`, with the check that
+/// loopback traffic really reaches it (`bind_all`, as ports 80 and 443).
+fn bind_lan(port: u16) -> Result<Bound, ApiError> {
+    let (listeners, status) = listen::bind_all(port);
+    match status.port {
+        Some(actual) if !listeners.is_empty() => Ok((listeners, actual)),
+        _ => Err(err(ErrorCode::PortInUse, format!("cannot listen on 0.0.0.0:{port} and [::]:{port}: {}", status.errors.join("; ")))),
+    }
+}
+
+/// The phone clients a config needs: the kept record of each, a new token
+/// and no device for a new one, nothing for any other name (ADR 10, I12).
+fn phones_for(config: &Config, old: &BTreeMap<String, store::PhoneRecord>) -> BTreeMap<String, store::PhoneRecord> {
+    config
+        .proxy_clients
+        .iter()
+        .filter(|c| c.lan)
+        .map(|c| {
+            let record = match old.get(&c.name) {
+                Some(r) if !r.token.is_empty() => r.clone(),
+                _ => store::PhoneRecord { token: phone::new_token(), devices: vec![] },
+            };
+            (c.name.clone(), record)
+        })
+        .collect()
+}
+
+/// At start: every phone client of the config gets a token before its port
+/// binds, and a removed client's record goes (I12).
+fn reconcile_phones(paths: &Paths, config: &Config) -> BTreeMap<String, store::PhoneRecord> {
+    let old = store::load_phones(&paths.proxy_phones());
+    let new = phones_for(config, &old);
+    if new != old
+        && let Err(e) = store::save_phones(&paths.proxy_phones(), &new)
+    {
+        tracing::warn!("could not write the phone clients: {e}; they are kept in memory");
+    }
+    new
+}
+
+/// This Mac's IPv4 address on a network's interface: the server in a
+/// phone's setup URL. Debug builds take a 4th field of
+/// `LOCALROUTER_TEST_NETWORK`.
+fn lan_address(n: &Network) -> Option<std::net::Ipv4Addr> {
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("LOCALROUTER_TEST_NETWORK")
+        && let Some(address) = value.split(',').nth(3)
+    {
+        return address.parse().ok();
+    }
+    phone::ipv4_of(&n.interface)
+}
+
 
 /// Bind the proxy port on 127.0.0.1 and ::1, both or neither (I1).
 fn bind_proxy(port: u16) -> Result<Bound, ApiError> {

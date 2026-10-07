@@ -1,0 +1,9 @@
+{
+  "id": 43,
+  "method": "set_phone_device",
+  "params": {
+    "client": "iphone",
+    "address": "192.168.0.31",
+    "allow": true
+  }
+}

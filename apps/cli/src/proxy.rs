@@ -5,8 +5,8 @@
 use anyhow::{Context, bail};
 use clap::Subcommand;
 use localrouter_core::api::{
-    self, CaState, FindFreePortParams, FindFreePortResult, GetProxyParams, GetProxyResult, ResetCaResult, SetConfigParams,
-    SetConfigResult,
+    self, CaState, FindFreePortParams, FindFreePortResult, GetProxyParams, GetProxyResult, LanProxyInfo, NewSetupCodeParams,
+    NewSetupCodeResult, ResetCaResult, SetConfigParams, SetConfigResult, SetPhoneDeviceParams, SetPhoneDeviceResult,
 };
 use localrouter_core::config::{Config, DEFAULT_CLIENT, ProxyClient};
 use localrouter_core::instance::Instance;
@@ -99,9 +99,25 @@ pub enum ClientCommand {
         /// The port; without it, the next free port after the proxy port.
         #[arg(long)]
         port: Option<u16>,
+        /// A phone client: its port listens on the LAN and takes the allowed
+        /// devices (ADR 10). Needs LAN access on this network.
+        #[arg(long)]
+        lan: bool,
     },
     /// Remove a proxy client and close its port. Its log entries stay.
     Rm { name: String },
+    /// Print what a phone needs: the server, the port, and the setup URL
+    /// (the app shows it as a QR code; opening it allows the device).
+    Setup {
+        name: String,
+        /// A new setup URL: the old QR code stops allowing devices.
+        #[arg(long)]
+        new_code: bool,
+    },
+    /// Allow a device (its IP address) on a phone client.
+    Allow { name: String, address: String },
+    /// Remove a device from a phone client, or refuse one that asks.
+    Deny { name: String, address: String },
     /// List the proxy clients and their ports.
     List,
 }
@@ -385,7 +401,7 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
             print!("{}", describe_clients(&p, &config, instance));
             return Ok(());
         }
-        ClientCommand::Add { name, port } => {
+        ClientCommand::Add { name, port, lan } => {
             ProxyClient::check_name(&name).map_err(anyhow::Error::msg)?;
             if list.iter().any(|x| x.name == name) {
                 bail!("proxy client {name} exists; remove it first: {cli} proxy client rm {name}");
@@ -394,9 +410,15 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
                 Some(port) => port,
                 None => next_port(c, &config).await?,
             };
-            list.push(ProxyClient { name: name.clone(), port });
+            list.push(ProxyClient { name: name.clone(), port, lan });
             set(c, SetConfigParams { proxy_clients: Some(list), ..Default::default() }).await?;
             let p = get_proxy(c, Some(name.clone())).await?;
+            if let Some(info) = &p.lan {
+                println!("Phone client {name}: port {} on the LAN, for allowed devices.", info.port);
+                print!("{}", describe_lan(info));
+                println!("The app shows the setup URL as a QR code: Proxy tab, Phone.");
+                return Ok(());
+            }
             println!("Proxy client {name}: {}", p.url);
             println!("Use it: eval \"$({cli} proxy env --client {name})\" && claude, or {cli} proxy chrome --client {name}");
             if let Some(log) = &p.log {
@@ -414,6 +436,25 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
             }
             set(c, SetConfigParams { proxy_clients: Some(list), ..Default::default() }).await?;
             println!("Removed proxy client {name}. Its port is closed; its log entries stay.");
+        }
+        ClientCommand::Setup { name, new_code } => {
+            if new_code {
+                let _: NewSetupCodeResult = c.call("new_setup_code", NewSetupCodeParams { client: name.clone() }).await?;
+            }
+            let p = get_proxy(c, Some(name.clone())).await?;
+            let Some(info) = &p.lan else { bail!("proxy client {name} is not a phone client; add one: {cli} proxy client add <name> --lan") };
+            print!("{}", describe_lan(info));
+        }
+        ClientCommand::Allow { name, address } => {
+            let r: SetPhoneDeviceResult =
+                c.call("set_phone_device", SetPhoneDeviceParams { client: name.clone(), address: address.clone(), allow: true }).await?;
+            println!("Allowed {address} on {name}. Allowed devices: {}", r.devices.join(", "));
+        }
+        ClientCommand::Deny { name, address } => {
+            let r: SetPhoneDeviceResult =
+                c.call("set_phone_device", SetPhoneDeviceParams { client: name.clone(), address: address.clone(), allow: false }).await?;
+            let left = if r.devices.is_empty() { "none".to_string() } else { r.devices.join(", ") };
+            println!("Denied {address} on {name}. Allowed devices: {left}");
         }
     }
     Ok(())
@@ -452,9 +493,31 @@ pub fn describe_clients(p: &GetProxyResult, config: &Config, instance: &Instance
     let mut out = format!("{:<20} {}\n", DEFAULT_CLIENT, describe_port(p.enabled, &p.bound, p.port, &p.errors));
     for client in &p.clients {
         let port = client.port.unwrap_or(client.configured);
-        out.push_str(&format!("{:<20} {}\n", client.name, describe_port(config.proxy_enabled, &client.bound, port, &client.errors)));
+        let phone = if client.lan { "  (phone, on the LAN; devices allowed by address)" } else { "" };
+        out.push_str(&format!("{:<20} {}{phone}\n", client.name, describe_port(config.proxy_enabled, &client.bound, port, &client.errors)));
     }
     out.push_str(&format!("\nA shell:   eval \"$({cli} proxy env --client <name>)\" && claude\nChrome:    {cli} proxy chrome --client <name>\n"));
+    out
+}
+
+/// What a phone needs, as text (ADR 10).
+pub fn describe_lan(info: &LanProxyInfo) -> String {
+    let mut out = format!(
+        "Server     {}\nPort       {}\n",
+        info.address.as_deref().unwrap_or("(unknown: no IPv4 address on this network)"),
+        info.port
+    );
+    if let Some(url) = &info.setup_url {
+        out.push_str(&format!("Setup URL  {url}  (opening it allows the device)\n"));
+    }
+    let devices = if info.devices.is_empty() { "none".to_string() } else { info.devices.join(", ") };
+    out.push_str(&format!("Allowed    {devices}\n"));
+    for d in &info.pending {
+        out.push_str(&format!("Waiting    {} (asked for {}): allow it with proxy client allow\n", d.address, d.host));
+    }
+    for problem in &info.problems {
+        out.push_str(&format!("Problem: {problem}\n"));
+    }
     out
 }
 

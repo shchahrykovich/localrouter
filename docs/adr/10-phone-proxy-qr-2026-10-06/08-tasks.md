@@ -2,7 +2,8 @@
 
 | # | Task | Depends on |
 |---|---|---|
-| 1 | `ProxyClient.lan` and `phone.rs` (password, compare, page, profile) | none |
+| 0 | M0 on a real iPhone: what iOS does with a Wi-Fi profile that carries a proxy | none |
+| 1 | `ProxyClient.lan`, `LanNetwork.wifi_name` and `phone.rs` (password, compare, page, profiles) | 0 |
 | 2 | The local-target rule in `upstream.rs` | none |
 | 3 | The forward proxy on a LAN client: 407, 403, setup paths, logging | 1, 2 |
 | 4 | The daemon: binding, accept check, password file, `new_proxy_password`, setup URL, API 1.7 | 1, 3 |
@@ -12,19 +13,37 @@
 | 8 | Verify: E1 and the manual tests M1 to M7 | 5, 6, 7 |
 | 9 | Release notes, M8, ADR status | 8 |
 
-Tasks 1 and 2 run in parallel. Tasks 5, 6 and 7 run in parallel after 4.
+Task 0 comes first: its answers fix the profile's fields, and U4 can stop
+the design. Task 2 does not depend on it and can run at the same time. Tasks
+5, 6 and 7 run in parallel after 4.
+
+## 0. Check iOS first
+
+**Deps:** none. **Tests:** M0.
+
+Run M0 from the test plan with a hand-made profile and mitmproxy as the test
+proxy. No LocalRouter code. Write the results into U2, U4, U5, U6 and U7 of
+the manifest and decide, in this ADR: `Manual` or `Auto` (U2); the Wi-Fi
+password field (U5, and where it would be kept); the text of step 4 of the
+page (U6); IPv4 address or Bonjour name (U7). **If U4 fails, stop and
+redesign change 1.** Done when the five answers are in the manifest and
+change 2 names the chosen fields.
 
 ## 1. The config field and the phone module
 
-**Deps:** none. **Tests:** T1, T2, T9.
+**Deps:** 0. **Tests:** T1, T2, T9.
 
-Add `lan: bool` to `ProxyClient` (`#[serde(default, skip_serializing_if =
-"is_false")]`). New `libs/core/src/phone.rs`: `new_password()` from the
-system random source; `same_password(a, b)` as one fold over every byte
-(review checkpoint for I4: no early return); `check_basic(header, name,
-password)`; `setup_page(values) -> String` with the four steps of change 2,
-every value escaped; `mobileconfig(ca_der, identifier) -> Vec<u8>`.
-Done when T1, T2 and T9 pass and `plutil -lint` accepts the profile.
+Add `lan: bool` to `ProxyClient` and `wifi_name: Option<String>` to
+`LanNetwork` (both left out of `config.json` when unset). New
+`libs/core/src/phone.rs`: `new_password()` from the system random source;
+`same_password(a, b)` as one fold over every byte (review checkpoint for I4:
+no early return); `check_basic(header, name, password)`; `setup_page(values)
+-> String` with the Install button, the steps and the manual fallback of
+change 2, every value escaped; `phone_profile(values) -> Vec<u8>` with the
+fields task 0 chose and the Wi-Fi name as a required value (I15);
+`ca_profile(ca_der) -> Vec<u8>`; `pac(address, port)` if task 0 picked
+`Auto`. Done when T1, T2 and T9 pass and `plutil -lint` accepts both
+profiles.
 
 ## 2. The local-target rule
 
@@ -61,8 +80,11 @@ and T10 tests pass and the regression tests listed in the test plan pass.
   per-client connection token and `new_proxy_password` (I11).
 - `network.rs`: the IPv4 address of an interface; `LOCALROUTER_TEST_NETWORK`
   takes an optional 4th field, the address (debug builds only).
-- `api.rs`: the fields, `GetProxyResult.lan`, `new_proxy_password`,
-  `API_VERSION` 1.7; `socket.rs` dispatch; `api/examples/` files (T13).
+- `api.rs`: the fields (`lan`, `wifi_name`, `status.network.wifi_name`),
+  `GetProxyResult.lan` with `profile`, `new_proxy_password`, `API_VERSION`
+  1.7; `socket.rs` dispatch; `api/examples/` files (T13).
+- The setup paths read `wifi_name` of the current network for the phone
+  profile; with none, `phone.mobileconfig` is 400 (I15).
 - Extend `no_reply_contains_key_material` to the password (I6).
 
 Done when T5, T6, T7, T11 and the Rust half of T13 pass.
@@ -72,7 +94,7 @@ Done when T5, T6, T7, T11 and the Rust half of T13 pass.
 **Deps:** 4. **Tests:** T14, T15.
 
 `proxy client add --lan`, `proxy client setup`, `proxy client password
---new`. The MCP `get_proxy` tool removes `lan.password` and `lan.setup_url`
+--new`, `lan name <wifi name>`. The MCP `get_proxy` tool removes `lan.password` and `lan.setup_url`
 and adds the line about the Proxy tab (I8). `apps/cli/tests/mcp.rs` still
 counts nine tools. Done when T14 and T15 pass.
 
@@ -81,12 +103,16 @@ counts nine tools. Done when T14 and T15 pass.
 **Deps:** 4. **Tests:** T12, T13.
 
 `Api.swift`: the fields and the method. New `LocalRouterKit/PhoneSetup.swift`:
-the checklist from `status` and `get_proxy`, the next free name, the QR
-payload (testable without UI). New `Views/PhoneView.swift`: the two states of
-change 3, the QR image from `CIFilter.qrCodeGenerator()` scaled without
-smoothing, black on white in both appearances, the "Remove Phone" warning,
-the guest Wi-Fi line. `ProxyView.swift`: the "Phone…" button. Done when T12
-and the Swift half of T13 pass and the panel opens in the dev app.
+the checklist from `status` and `get_proxy` (with the Wi-Fi name row), the
+next free name, the QR payload, the "scan again" note (testable without UI).
+New `LocalRouter/WifiName.swift`: the only place that asks for Location
+Services (I14) and reads the name with CoreWLAN. `scripts/build-app.sh`:
+`NSLocationUsageDescription` in `Info.plist`. New `Views/PhoneView.swift`:
+the two states of change 3, the QR image from `CIFilter.qrCodeGenerator()`
+scaled without smoothing, black on white in both appearances, "Type by
+hand", the "Remove Phone" warning, the guest Wi-Fi line. `ProxyView.swift`:
+the "Phone…" button. Done when T12 and the Swift half of T13 pass and the
+panel opens in the dev app.
 
 ## 7. Texts
 
@@ -105,10 +131,9 @@ decision 2 pointing to this ADR. Done when the text tests pass and
 
 Write E1 in `apps/cli/tests/e2e.rs`. Install the dev app
 (`scripts/install.sh --user --launch`) and run M1 to M7 with a real iPhone.
-Write the results of M6 into U1 and of M2 into U4 in the manifest. **If M2
-shows that iOS does not send the password for `CONNECT` (U4), stop: change 1
-needs another design.** Record the 10-minute idle count of M2 in the
-manifest's data impact.
+Check that M2 and M3 behave as M0 found with the test proxy; a difference is
+a bug in LocalRouter's 407 or profile. Write the result of M6 into U1.
+Record the 10-minute idle count of M2 in the manifest's data impact.
 
 ## 9. Release notes, smoke test, status
 
@@ -131,11 +156,13 @@ file; set the README status to as-built, with each difference marked.
 | I7 the file is 0600 | 4 |
 | I8 MCP has no password | 5 |
 | I9 setup requests not logged | 3 |
-| I10 the profile holds only the CA certificate | 1 |
+| I10 the profiles hold only what change 2 lists | 1 |
 | I11 a new password closes the connections | 4 |
 | I12 a LAN client always has a password | 4 |
 | I13 /setup only on a LAN client | 3 |
+| I14 only the app asks for Location Services | 6 |
+| I15 no phone profile without a Wi-Fi name | 1, 4 |
 
-Every test ID of the test plan is in a task: T1, T2, T9 (1); T4 (2, 3); T3,
+Every test ID of the test plan is in a task: M0 (0); T1, T2, T9 (1); T4 (2, 3); T3,
 T8, T10 (3); T5, T6, T7, T11, T13 (4); T14, T15 (5); T12, T13 (6); E1, M1 to
 M7 (8); M8 (9).

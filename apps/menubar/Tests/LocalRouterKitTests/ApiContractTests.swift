@@ -19,7 +19,7 @@ final class ApiContractTests: XCTestCase {
     private static let methods = [
         "hello", "status", "register_route", "unregister_route", "list_routes", "find_free_port",
         "get_logs", "subscribe_logs", "get_config", "set_config", "reset_ca", "get_proxy", "reset_inspect_ca",
-        "set_script_rule", "remove_script_rule", "list_script_rules",
+        "set_script_rule", "remove_script_rule", "list_script_rules", "new_setup_code", "set_phone_device",
     ]
 
     /// Decode, encode again, and compare with the file (nulls and default
@@ -63,6 +63,8 @@ final class ApiContractTests: XCTestCase {
         case "set_script_rule": try roundTrip(SetScriptRuleParams.self, json, file)
         case "remove_script_rule": try roundTrip(IdParams.self, json, file)
         case "get_proxy": try roundTrip(GetProxyParams.self, json, file)
+        case "new_setup_code": try roundTrip(NewSetupCodeParams.self, json, file)
+        case "set_phone_device": try roundTrip(SetPhoneDeviceParams.self, json, file)
         case "status", "list_routes", "get_config", "reset_ca", "reset_inspect_ca", "list_script_rules":
             try roundTrip(Empty.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
@@ -86,6 +88,8 @@ final class ApiContractTests: XCTestCase {
         case "set_script_rule": try roundTrip(SetScriptRuleResult.self, json, file)
         case "remove_script_rule": try roundTrip(RemoveScriptRuleResult.self, json, file)
         case "list_script_rules": try roundTrip(ListScriptRulesResult.self, json, file)
+        case "new_setup_code": try roundTrip(NewSetupCodeResult.self, json, file)
+        case "set_phone_device": try roundTrip(SetPhoneDeviceResult.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
     }

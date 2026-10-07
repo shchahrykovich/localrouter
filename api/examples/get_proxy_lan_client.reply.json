@@ -1,0 +1,118 @@
+{
+  "id": 40,
+  "result": {
+    "enabled": true,
+    "client": "iphone",
+    "url": "http://127.0.0.1:8880",
+    "port": 8880,
+    "bound": [
+      "0.0.0.0:8880",
+      "[::]:8880"
+    ],
+    "errors": [],
+    "inspect_hosts": [
+      "api.example.com",
+      "*.anthropic.com"
+    ],
+    "inspect_set": [
+      "api.example.com",
+      "*.anthropic.com"
+    ],
+    "inspect_ca": {
+      "state": "ok",
+      "pem_path": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem",
+      "common_name": "LocalRouter Inspection 5e6f7a8b",
+      "trusted": false
+    },
+    "env": {
+      "CURL_CA_BUNDLE": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/bundle.pem",
+      "HTTPS_PROXY": "http://127.0.0.1:8880",
+      "HTTP_PROXY": "http://127.0.0.1:8880",
+      "NODE_EXTRA_CA_CERTS": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/ca.pem",
+      "NODE_USE_ENV_PROXY": "1",
+      "NO_PROXY": "localhost,127.0.0.1,::1,.localhost",
+      "REQUESTS_CA_BUNDLE": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/bundle.pem",
+      "SSL_CERT_FILE": "/Users/me/Library/Application Support/LocalRouter/inspect-ca/bundle.pem",
+      "http_proxy": "http://127.0.0.1:8880",
+      "https_proxy": "http://127.0.0.1:8880",
+      "no_proxy": "localhost,127.0.0.1,::1,.localhost"
+    },
+    "chrome_args": [
+      "--user-data-dir=/Users/me/Library/Caches/LocalRouter/chrome-proxy-iphone",
+      "--proxy-server=http://127.0.0.1:8880",
+      "--no-first-run",
+      "--no-default-browser-check"
+    ],
+    "notes": [
+      "The inspection CA is not trusted in the login keychain: Chrome will refuse inspected hosts. Run: localrouter proxy trust"
+    ],
+    "script_rules": [],
+    "log": {
+      "enabled": true,
+      "folder": "/Users/me/Library/Logs/LocalRouter/proxy",
+      "url": "http://proxy.localhost/iphone",
+      "file_mb": 20,
+      "file_requests": 5000,
+      "keep_files": 5,
+      "current": "proxy-20261002-093512.har",
+      "files": 3,
+      "written": 912,
+      "dropped": 0
+    },
+    "clients": [
+      {
+        "name": "chrome",
+        "configured": 8878,
+        "port": 8878,
+        "bound": [
+          "127.0.0.1:8878",
+          "[::1]:8878"
+        ],
+        "errors": []
+      },
+      {
+        "name": "agent-1",
+        "configured": 8879,
+        "port": null,
+        "bound": [],
+        "errors": [
+          "cannot listen on 127.0.0.1:8879 and [::1]:8879: port 8879 is in use by another program"
+        ]
+      },
+      {
+        "name": "iphone",
+        "configured": 8880,
+        "port": 8880,
+        "bound": [
+          "0.0.0.0:8880",
+          "[::]:8880"
+        ],
+        "errors": [],
+        "lan": true,
+        "pending": [
+          {
+            "address": "192.168.0.31",
+            "host": "api.example.com",
+            "at_ms": 1791283415000
+          }
+        ]
+      }
+    ],
+    "lan": {
+      "address": "192.168.0.10",
+      "port": 8880,
+      "setup_url": "http://192.168.0.10:8880/setup/k7mq-2xph-9tdw-r4nc",
+      "devices": [
+        "192.168.0.23"
+      ],
+      "pending": [
+        {
+          "address": "192.168.0.31",
+          "host": "api.example.com",
+          "at_ms": 1791283415000
+        }
+      ],
+      "problems": []
+    }
+  }
+}

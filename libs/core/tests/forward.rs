@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use bytes::Bytes;
@@ -27,6 +27,7 @@ use localrouter_core::inspect::InspectSet;
 use localrouter_core::instance::Instance;
 use localrouter_core::logs::{LogEntry, ProxyMode, RequestLog, Via};
 use localrouter_core::paths::Paths;
+use localrouter_core::phone::{self, LanClient, PhoneEvent};
 use localrouter_core::proxy::{Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Route, RouteTable};
 use localrouter_core::scripts::Scripts;
@@ -245,8 +246,23 @@ struct Harness {
     /// The proxy log (ADR 08), on, in the temp folder.
     har: Arc<HarLog>,
     scripts: Arc<Scripts>,
+    /// A phone port (ADR 10) whose every connection looks like it came from
+    /// 192.168.0.23, another machine.
+    phone: SocketAddr,
+    /// The same phone client on a second port, with the real peer (this Mac).
+    phone_local: SocketAddr,
+    phone_client: Arc<LanClient>,
+    /// What the phone ports told the daemon.
+    events: Arc<Mutex<Vec<PhoneEvent>>>,
+    /// Off: the local-target rule lets the test servers on 127.0.0.1 through,
+    /// so a phone request can succeed. On: the real rule (I5).
+    strict: Arc<AtomicBool>,
     _dir: tempfile::TempDir,
 }
+
+/// The peer every connection to `Harness::phone` gets.
+const PHONE_PEER: &str = "192.168.0.23:50000";
+const PHONE_TOKEN: &str = "k7mq-2xph-9tdw-r4nc";
 
 async fn harness() -> Harness {
     let echo = echo_server().await;
@@ -302,6 +318,9 @@ async fn harness() -> Harness {
     let inspection_ca = inspection.cert_der().clone();
     let set = InspectSet::new(&["test.example".into(), "selfsigned.example".into(), "h2.example".into()]);
     let inspect_store = Arc::new(CertStore::inspection(Some(inspection), Arc::new(move |n: &str| set.matches(n))));
+    let extras_store = inspect_store.clone();
+    let strict = Arc::new(AtomicBool::new(false));
+    let rule = strict.clone();
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add(internet_ca.clone()).unwrap();
@@ -316,6 +335,13 @@ async fn harness() -> Harness {
     let proxy = listener.local_addr().unwrap();
     let agent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let agent = agent_listener.local_addr().unwrap();
+    let phone_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let phone = phone_listener.local_addr().unwrap();
+    let phone_local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let phone_local = phone_local_listener.local_addr().unwrap();
+    let phone_client = Arc::new(LanClient::new("iphone", PHONE_TOKEN, vec![]));
+    let events = Arc::new(Mutex::new(vec![]));
+    let sink = events.clone();
     let forward = Arc::new(ForwardProxy {
         instance: Instance::release(),
         router,
@@ -323,19 +349,48 @@ async fn harness() -> Harness {
         log: log.clone(),
         local_certs: local_store.clone(),
         inspect_certs: inspect_store,
-        own_ports: Arc::new(RwLock::new(vec![proxy.port(), agent.port()])),
+        own_ports: Arc::new(RwLock::new(vec![proxy.port(), agent.port(), phone.port(), phone_local.port()])),
+        local_target: Arc::new(move |ip| rule.load(Ordering::SeqCst) && phone::is_local_target(ip, &[])),
+        setup_ca: Arc::new(move || extras_store.ca_certificate()),
+        phone_events: Arc::new(move |e| sink.lock().unwrap().push(e)),
     });
-    for (listener, client) in [(listener, None), (agent_listener, Some(Arc::from("agent")))] {
+    let fake: SocketAddr = PHONE_PEER.parse().unwrap();
+    let listeners = [
+        (listener, None, None, None),
+        (agent_listener, Some(Arc::from("agent")), None, None),
+        (phone_listener, Some(Arc::from("iphone")), Some(phone_client.clone()), Some(fake)),
+        (phone_local_listener, Some(Arc::from("iphone")), Some(phone_client.clone()), None),
+    ];
+    for (listener, client, lan, fake_peer) in listeners {
         let forward = forward.clone();
-        let at = ClientPort { client, port: listener.local_addr().unwrap().port() };
+        let at = ClientPort { client, port: listener.local_addr().unwrap().port(), lan };
         tokio::spawn(async move {
             loop {
                 let (stream, peer) = listener.accept().await.unwrap();
+                let peer = fake_peer.unwrap_or(peer);
                 tokio::spawn(forward.clone().serve(stream, peer, at.clone(), CancellationToken::new()));
             }
         });
     }
-    Harness { proxy, agent, log, resolver, inspection_ca, internet_ca, local_store, echo, self_signed_served, har, scripts, _dir: dir }
+    Harness {
+        proxy,
+        agent,
+        log,
+        resolver,
+        inspection_ca,
+        internet_ca,
+        local_store,
+        echo,
+        self_signed_served,
+        har,
+        scripts,
+        phone,
+        phone_local,
+        phone_client,
+        events,
+        strict,
+        _dir: dir,
+    }
 }
 
 /// Send one request to the proxy as written: `uri` may be absolute.
@@ -673,6 +728,24 @@ async fn har_records_each_mode() {
     assert!(entries.iter().all(|e| e.get("_client").is_none()), "the main port writes no _client (ADR 09)");
 }
 
+// A client that does not trust the inspection CA (an iPhone before Install
+// CA) ends the handshake inside the CONNECT. The log must show it: it
+// sent no request, so nothing else is written, and the user saw nothing.
+#[tokio::test]
+async fn a_refused_inspection_certificate_is_logged() {
+    let h = harness().await;
+    let stream = connect(h.agent, "test.example:443").await.unwrap();
+    assert!(tls_over(stream, "test.example", &h.internet_ca).await.is_err(), "the client refuses the inspection leaf");
+    let entries = har_entries(&h, 1).await;
+    let e = &entries[0];
+    assert_eq!(e["request"]["method"], "CONNECT");
+    assert_eq!(e["request"]["url"], "https://test.example:443");
+    assert_eq!(e["_mode"], "inspect");
+    assert_eq!(e["_client"], "agent");
+    let why = e["_tlsError"].as_str().unwrap_or_else(|| panic!("no _tlsError: {e}"));
+    assert!(why.contains("does not trust the inspection CA"), "{why}");
+}
+
 // ADR 09: every mode on a proxy client's port names the client: absolute
 // form, inspected, .localhost by absolute form and by CONNECT, a tunnel, and
 // the proxy's own 508.
@@ -936,4 +1009,257 @@ async fn har_records_websocket_messages() {
     let want = |kind: &str, opcode: u64, data: &str| (kind.to_string(), opcode, data.to_string());
     assert_eq!(&messages[..4], &[want("send", 1, "hello"), want("receive", 1, "hello"), want("send", 2, "AQID"), want("receive", 2, "AQID")]);
     assert!(messages[4..].iter().any(|m| m.0 == "send" && m.1 == 8), "the close frame: {messages:?}");
+}
+
+// ---- ADR 10: a phone port
+
+fn phone_ip() -> std::net::IpAddr {
+    PHONE_PEER.parse::<SocketAddr>().unwrap().ip()
+}
+
+/// One request as written, with its response headers.
+async fn request(proxy: SocketAddr, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, hyper::HeaderMap, String) {
+    let stream = TcpStream::connect(proxy).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+    tokio::spawn(conn);
+    let mut req = Request::get(uri);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let resp = sender.send_request(req.body(Empty::<Bytes>::new()).unwrap()).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+// T3, I3: a device that is not allowed is refused for every kind of request,
+// nothing is sent on, and the daemon hears that it asked.
+#[tokio::test]
+async fn an_unknown_device_waits_for_the_mac() {
+    let h = harness().await;
+    let echo = format!("http://127.0.0.1:{}/a", h.echo.port());
+    let (status, _, body) = request(h.phone, &echo, &[]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("Allow"), "{body}");
+    assert_eq!(request(h.phone, "http://shop.localhost/", &[]).await.0, StatusCode::FORBIDDEN);
+    let refused = connect(h.phone, "plain.example:443").await.unwrap_err();
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    assert!(h.resolver.asked.lock().unwrap().is_empty(), "nothing was resolved or sent");
+    let events = h.events.lock().unwrap().clone();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2], PhoneEvent::Asked { client: "iphone".into(), ip: phone_ip(), host: "plain.example".into() });
+    let entries = har_entries(&h, 3).await;
+    assert!(entries.iter().all(|e| e["_client"] == "iphone"));
+}
+
+// T3: an allowed device uses every kind of request.
+#[tokio::test]
+async fn an_allowed_device_works() {
+    let h = harness().await;
+    h.phone_client.allow(phone_ip());
+    assert_eq!(request(h.phone, &format!("http://127.0.0.1:{}/a", h.echo.port()), &[]).await.0, StatusCode::OK);
+    assert_eq!(request(h.phone, "http://shop.localhost/", &[]).await.0, StatusCode::OK);
+    connect(h.phone, "plain.example:443").await.unwrap();
+    assert!(h.events.lock().unwrap().is_empty());
+}
+
+// T3: this Mac needs nothing on a phone port (ADR 09 behaviour).
+#[tokio::test]
+async fn this_mac_needs_no_allowing() {
+    let h = harness().await;
+    assert_eq!(request(h.phone_local, &format!("http://127.0.0.1:{}/a", h.echo.port()), &[]).await.0, StatusCode::OK);
+}
+
+// T4, I5: with the real rule an allowed device still cannot reach this
+// Mac's loopback, by address or by a name that resolves to it; routes work.
+#[tokio::test]
+async fn local_target_is_refused_for_a_lan_peer() {
+    let h = harness().await;
+    h.strict.store(true, Ordering::SeqCst);
+    h.phone_client.allow(phone_ip());
+    let (status, _, body) = request(h.phone, &format!("http://127.0.0.1:{}/a", h.echo.port()), &[]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("is this Mac"), "{body}");
+    assert_eq!(request(h.phone, "http://localhost:5432/", &[]).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(request(h.phone, "http://plain.example/", &[]).await.0, StatusCode::FORBIDDEN);
+    let refused = connect(h.phone, &format!("[::ffff:127.0.0.1]:{}", h.echo.port())).await.unwrap_err();
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    assert_eq!(request(h.phone, "http://shop.localhost/", &[]).await.0, StatusCode::OK);
+    assert_eq!(request(h.phone_local, &format!("http://127.0.0.1:{}/a", h.echo.port()), &[]).await.0, StatusCode::OK);
+}
+
+// T8, I13: the setup page allows the device that opens it, shows the two
+// values, and has its headers.
+#[tokio::test]
+async fn the_setup_page_allows_the_device() {
+    let h = harness().await;
+    let host = format!("192.168.0.10:{}", h.phone.port());
+    let (status, headers, body) = request(h.phone, &format!("/setup/{PHONE_TOKEN}"), &[("host", &host)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert_eq!(
+        headers.get("content-security-policy").unwrap().to_str().unwrap(),
+        format!("default-src 'none'; style-src 'unsafe-inline'; img-src https://{}", phone::CHECK_HOST)
+    );
+    assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
+    assert!(body.contains("<span class=\"val\">192.168.0.10</span>") && body.contains(&format!("<span class=\"val\">{}</span>", h.phone.port())));
+    assert!(body.contains("This iPhone (192.168.0.23) is allowed."), "{body}");
+    assert!(body.contains("Waiting for the proxy"), "opened directly: the proxy is not set yet");
+    assert!(h.phone_client.allows(phone_ip()));
+    assert_eq!(h.events.lock().unwrap().clone(), vec![PhoneEvent::Scanned { client: "iphone".into(), ip: phone_ip() }]);
+    // Now its requests go through.
+    assert_eq!(request(h.phone, &format!("http://127.0.0.1:{}/a", h.echo.port()), &[]).await.0, StatusCode::OK);
+    // This Mac may open the page too; it is not added as a device.
+    let (status, _, body) = request(h.phone_local, &format!("/setup/{PHONE_TOKEN}"), &[("host", &host)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.contains("is allowed"));
+    assert_eq!(h.events.lock().unwrap().len(), 1);
+}
+
+// An iPhone whose proxy is already set opens the QR page through the proxy:
+// Safari sends `GET http://<mac>:<port>/setup/<token>` in absolute form, to
+// this same port. It got "Not through the phone port", and the token went
+// into the log.
+#[tokio::test]
+async fn the_setup_page_through_the_proxy_itself() {
+    let h = harness().await;
+    h.strict.store(true, Ordering::SeqCst);
+    let base = format!("http://192.168.0.10:{}/setup/{PHONE_TOKEN}", h.phone.port());
+    let host = format!("192.168.0.10:{}", h.phone.port());
+    let (status, _, body) = request(h.phone, &base, &[("host", &host)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(&format!("192.168.0.10 : {}", h.phone.port())), "{body}");
+    assert!(body.contains("This iPhone (192.168.0.23) is allowed."), "{body}");
+    assert!(body.contains("ca.mobileconfig") && body.contains("Checking the certificate"), "through the proxy: the CA step");
+    assert!(h.phone_client.allows(phone_ip()));
+    let (status, headers, _) = request(h.phone, &format!("{base}/ca.mobileconfig"), &[("host", &host)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("content-type").unwrap(), "application/x-apple-aspen-config");
+    assert!(h.log.recent(None, 10).is_empty(), "the setup page is not logged");
+    // Another port is an ordinary request, sent on.
+    let other = format!("http://127.0.0.1:{}/setup/{PHONE_TOKEN}", h.echo.port());
+    h.strict.store(false, Ordering::SeqCst);
+    let (status, _, body) = request(h.phone, &other, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["path"], format!("/setup/{PHONE_TOKEN}"), "the echo server got it");
+}
+
+/// The phone's trust once the server side of the handshake has noted it:
+/// the client can finish its side first.
+async fn trust_becomes(h: &Harness, want: phone::Trust) -> phone::Trust {
+    for _ in 0..200 {
+        if h.phone_client.trust(phone_ip()) == want {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    h.phone_client.trust(phone_ip())
+}
+
+/// `CONNECT trust-check.invalid:443` on the phone port, then TLS that trusts
+/// only `root`. The handshake result, and the status of a GET when it worked.
+async fn trust_check(h: &Harness, root: &CertificateDer<'static>) -> Option<StatusCode> {
+    let stream = connect(h.phone, &format!("{}:443", phone::CHECK_HOST)).await.unwrap();
+    let tls = tls_over(stream, phone::CHECK_HOST, root).await.ok()?;
+    Some(get_over(tls, phone::CHECK_HOST, "/1.gif").await.0)
+}
+
+// The setup page's trust check: the port answers it itself with an
+// inspection leaf. A device that refuses the leaf is noted as not trusting
+// the CA, one that accepts it as trusting; the page follows; nothing is
+// logged and nothing is resolved.
+#[tokio::test]
+async fn the_trust_check_tells_the_setup_page() {
+    let h = harness().await;
+    h.phone_client.allow(phone_ip());
+    let page = || async {
+        let base = format!("http://192.168.0.10:{}/setup/{PHONE_TOKEN}", h.phone.port());
+        request(h.phone, &base, &[]).await.2
+    };
+    assert_eq!(h.phone_client.trust(phone_ip()), phone::Trust::Unknown);
+
+    assert_eq!(trust_check(&h, &h.internet_ca).await, None, "the client does not trust the inspection CA");
+    assert_eq!(trust_becomes(&h, phone::Trust::Refused).await, phone::Trust::Refused);
+    assert!(page().await.contains("not trusted yet"));
+
+    assert_eq!(trust_check(&h, &h.inspection_ca).await, Some(StatusCode::OK));
+    assert_eq!(trust_becomes(&h, phone::Trust::Trusted).await, phone::Trust::Trusted);
+    let done = page().await;
+    assert!(done.contains("This iPhone is connected") && !done.contains("http-equiv=\"refresh\""), "{done}");
+
+    assert!(h.resolver.asked.lock().unwrap().is_empty(), "the check host is never resolved");
+    assert!(h.log.recent(None, 10).is_empty(), "the check is not logged");
+}
+
+// Real traffic tells too: a refused inspected handshake marks the device,
+// a working one clears it. Closing without a word (pinning) says nothing.
+#[tokio::test]
+async fn inspected_handshakes_note_the_trust() {
+    let h = harness().await;
+    h.phone_client.allow(phone_ip());
+    let stream = connect(h.phone, "test.example:443").await.unwrap();
+    assert!(tls_over(stream, "test.example", &h.internet_ca).await.is_err());
+    assert_eq!(trust_becomes(&h, phone::Trust::Refused).await, phone::Trust::Refused);
+    let mut stream = connect(h.phone, "test.example:443").await.unwrap();
+    stream.shutdown().await.unwrap();
+    drop(stream);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(h.phone_client.trust(phone_ip()), phone::Trust::Refused, "a silent close changes nothing");
+    let stream = connect(h.phone, "test.example:443").await.unwrap();
+    tls_over(stream, "test.example", &h.inspection_ca).await.unwrap();
+    assert_eq!(trust_becomes(&h, phone::Trust::Trusted).await, phone::Trust::Trusted);
+}
+
+// An unknown device gets no trust check: it waits for the Mac like any
+// request.
+#[tokio::test]
+async fn the_trust_check_needs_an_allowed_device() {
+    let h = harness().await;
+    let refused = connect(h.phone, &format!("{}:443", phone::CHECK_HOST)).await.unwrap_err();
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+}
+
+// T8, I13: a wrong or old token, and every other port, get the 400 page and
+// allow nobody.
+#[tokio::test]
+async fn setup_page_refusals() {
+    let h = harness().await;
+    let host = [("host", "192.168.0.10")];
+    assert_eq!(request(h.phone, "/setup/wrong", &host).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(request(h.phone, "/setup/", &host).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(request(h.proxy, &format!("/setup/{PHONE_TOKEN}"), &host).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(request(h.agent, &format!("/setup/{PHONE_TOKEN}"), &host).await.0, StatusCode::BAD_REQUEST);
+    h.phone_client.set_token("new-code");
+    assert_eq!(request(h.phone, &format!("/setup/{PHONE_TOKEN}"), &host).await.0, StatusCode::BAD_REQUEST);
+    assert!(!h.phone_client.allows(phone_ip()));
+    assert_eq!(request(h.phone, "/setup/new-code", &host).await.0, StatusCode::OK);
+    assert!(h.phone_client.allows(phone_ip()));
+}
+
+// T9: the CA profile, as iOS downloads it: the CA only, no Wi-Fi.
+#[tokio::test]
+async fn the_ca_profile() {
+    let h = harness().await;
+    let (status, headers, body) = request(h.phone, &format!("/setup/{PHONE_TOKEN}/ca.mobileconfig"), &[("host", "192.168.0.10")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("content-type").unwrap(), "application/x-apple-aspen-config");
+    assert!(body.contains("com.apple.security.root"));
+    assert!(!body.contains("com.apple.wifi"));
+}
+
+// T10, I9: setup requests are in no log; a wrong one is logged without the
+// path; no entry holds the token.
+#[tokio::test]
+async fn setup_not_logged() {
+    let h = harness().await;
+    let host = [("host", "192.168.0.10")];
+    request(h.phone, &format!("/setup/{PHONE_TOKEN}"), &host).await;
+    request(h.phone, &format!("/setup/{PHONE_TOKEN}/ca.mobileconfig"), &host).await;
+    request(h.phone, "/setup/a-wrong-token", &host).await;
+    let entries = h.log.recent(None, 10);
+    assert_eq!(entries.len(), 1, "only the wrong one");
+    assert_eq!(serde_json::to_value(&entries[0]).unwrap()["path"], "/setup/…");
+    let har = har_entries(&h, 1).await;
+    let text = serde_json::to_string(&har).unwrap() + &serde_json::to_string(&entries).unwrap();
+    assert!(!text.contains(PHONE_TOKEN) && !text.contains("a-wrong-token"), "{text}");
 }

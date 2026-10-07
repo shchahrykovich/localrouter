@@ -95,6 +95,14 @@ code { font-family: var(--mono); font-size: 12px; background: var(--hover); padd
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
 .find { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 720px; margin-left: 12px; }
 .live-btn { position: relative; color: var(--ink); }
+/* A tooltip that shows at once, under the header buttons (a title waits a
+   second or more). Right-aligned, so it stays inside the window. */
+.tip { position: relative; }
+.tip:hover::after {
+  content: attr(data-tip); position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  padding: 5px 8px; border-radius: 5px; background: var(--ink); color: var(--surface);
+  font-size: 11px; font-weight: 500; line-height: 1.3; white-space: nowrap; pointer-events: none;
+}
 .live-mark { position: absolute; top: -3px; right: -3px; border-radius: 50%; background: var(--surface); padding: 2px; display: flex; }
 
 .banner {

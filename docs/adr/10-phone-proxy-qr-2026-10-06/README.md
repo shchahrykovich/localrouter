@@ -7,21 +7,22 @@
 
 **In one sentence.** A proxy client can be a LAN client: its port accepts an
 iPhone on an allowed network with a password, and the Proxy tab shows a QR
-code that opens a setup page with the values to type and the CA profile.
+code that installs one configuration profile with the Wi-Fi proxy, the
+password and the CA, so the user types nothing.
 
 **In three sentences.** An iPhone cannot use the forward proxy today, because
 every proxy port listens on `127.0.0.1` only.
 
 This ADR lets one proxy client (ADR 09) listen on the LAN, behind the same
 network rule as ports 80 and 443 (ADR 08), a password, and a rule that keeps
-the phone away from the Mac's own loopback servers. The Proxy tab shows a QR
-code; the phone opens a page with the four values for Settings and the
-inspection CA as a profile, and its requests appear in the proxy log as
+the phone away from the Mac's own loopback servers. The user scans a QR code
+and taps Install: a profile sets the proxy of that Wi-Fi network, with the
+password inside it, and the phone's requests appear in the proxy log as
 `_client: "iphone"`.
 
-**In seven sentences.** iOS sets a proxy for each Wi-Fi network by hand
-(server, port, user name, password), and a QR code can only open a URL, so
-the phone needs a page that tells the user what to type.
+**In seven sentences.** iOS does not let a QR code or a web page change the
+Wi-Fi proxy, but a configuration profile with a Wi-Fi payload can set it,
+including the proxy user name and password, on an iPhone no company manages.
 
 The proxy listens on loopback only (ADR 06), because an open proxy on the LAN
 lets anyone use the Mac and read what it records. This ADR adds `lan: true`
@@ -31,17 +32,20 @@ answers `407` without the password from `proxy-passwords.json` (mode `0600`),
 and answers `403` for any target that is this Mac's loopback or own address,
 while `.localhost` routes still work.
 
-The same port serves `/setup/<password>`: a static page with the values and a
-`.mobileconfig` with the inspection CA; these requests are never logged. The
-app's Proxy tab gets a "Phone…" panel: a checklist that fixes each missing
-condition with one button, then the QR code drawn with Core Image, the values,
-"New Password" and "Remove Phone"; socket API 1.7 adds `lan` and
+The same port serves `/setup/<password>`: a page with one Install button for
+`phone.mobileconfig` (a Wi-Fi payload for the network's name with the proxy
+and its password, and the inspection CA), a manual fallback, and nothing of
+it is logged. The Proxy tab's "Phone…" panel fixes each missing condition with
+one button, gets the Wi-Fi name (Location Services on request, or typed), and
+shows the QR code; socket API 1.7 adds `lan`, `wifi_name` and
 `new_proxy_password`, and the MCP tool never returns the password.
 
-The main trade-off: the phone depends on the Mac for its internet on that
-Wi-Fi, which the page and the panel say but cannot prevent. There is no data
-migration; the plan is 15 automated tests, one end-to-end journey through
-the Mac's own LAN address, and 8 manual checks with a real iPhone.
+Five behaviours of iOS are not verified yet, and M0 checks them on a real
+iPhone with a test proxy before any code is written: the password for
+`CONNECT`, a profile without the Wi-Fi password, what removing the profile
+does, the Mac's Bonjour name, and an automatic proxy that goes direct when the
+Mac is away. Then come 15 automated tests, one end-to-end journey through
+the Mac's own LAN address, and the manual checks with LocalRouter itself.
 
 ## Context
 
@@ -56,8 +60,8 @@ loopback only, and an iPhone is another machine.
 |---|---|---|---|
 | 0 | What users would say, checked against the ADR | simulation | [00-working-backwards.md](00-working-backwards.md) |
 | 1 | The phone port: LAN binding, the network rule, the password, the 403 rule | feature | [01-phone-port.md](01-phone-port.md) |
-| 2 | The setup page and the CA profile | feature | [02-setup-page.md](02-setup-page.md) |
-| 3 | The QR code in the Proxy tab, socket API 1.7, CLI, MCP | feature, UI | [03-qr-code-and-api.md](03-qr-code-and-api.md) |
+| 2 | The setup page: one profile, one Install button | feature | [02-setup-page.md](02-setup-page.md) |
+| 3 | The QR code and the Wi-Fi name in the Proxy tab, socket API 1.7, CLI, MCP | feature, UI | [03-qr-code-and-api.md](03-qr-code-and-api.md) |
 | 4 | Where the code lives | overview | [04-components.md](04-components.md) |
 | 5 | Setup, a phone request, a new password | data flow | [05-data-flow.md](05-data-flow.md) |
 | 6 | What exists and happens afterwards | manifest | [06-semantic-change-manifest.md](06-semantic-change-manifest.md) |
@@ -66,7 +70,11 @@ loopback only, and an iPhone is another machine.
 
 ## Why read the working-backwards file
 
-It found 7 gaps. Two changed the design most:
+It found 10 gaps. Three changed the design most:
+
+- **G8 (real feedback)**: the first version asked the user to type four
+  values into iOS Settings. The user asked for "take a photo and go to work".
+  The design moved to a profile that carries the values and the password.
 
 - **G4**: through a LAN proxy port, the phone (or anyone with the password)
   could reach every loopback server of the Mac, such as
@@ -78,18 +86,21 @@ It found 7 gaps. Two changed the design most:
 
 ## Why read the manifest
 
-- **The phone's internet depends on the Mac.** On that Wi-Fi the phone has no
-  internet when the Mac sleeps, the proxy is off, or the Mac's address
-  changes. No rollback undoes the phone's setting. This is the main cost of
-  the feature, and only the user can remove it.
-- **Four unresolved effects.** U4 can stop the build: it is not yet seen on a
-  device that iOS sends the proxy password for `CONNECT`. U1 (do `*.localhost`
-  names from Safari reach the proxy?) decides whether the profile should also
-  hold the local CA.
+- **The phone's internet depends on the Mac.** With a manual proxy, on that
+  Wi-Fi the phone has no internet when the Mac sleeps or the proxy is off. No
+  rollback removes the profile from the phone; only the user can.
+- **Seven unresolved effects, five of them answered by M0 before any code.**
+  U4 can stop the build: it is not yet seen that iOS sends the proxy password
+  from a profile for `CONNECT`. U2 can remove the main cost: an automatic
+  proxy with a fallback would keep the phone online when the Mac is away. U5
+  decides whether LocalRouter must ever hold the Wi-Fi password.
 - **The phone's traffic fills the shared proxy log**, so other clients'
   entries are pruned sooner.
 
 ## Why read the test plan
+
+M0 comes before any code: a hand-made profile and mitmproxy as a test proxy
+on a real iPhone. Its answers fix the profile's fields.
 
 It found that the new 403 rule blocks every success test, because every test
 upstream binds `127.0.0.1`. The rule is therefore a value the forward proxy
@@ -99,10 +110,12 @@ path with a non-loopback peer by connecting to the Mac's own LAN address.
 ## Notable artifacts
 
 - `proxy-passwords.json` in the data folder, mode `0600`.
-- `ProxyClient.lan` in `config.json`.
+- `ProxyClient.lan` and `LanNetwork.wifi_name` in `config.json`.
 - Socket API 1.7: `new_proxy_password`; `get_proxy.lan`.
+- `phone.mobileconfig` and `ca.mobileconfig`, built on request, never stored.
+- `NSLocationUsageDescription` in the app's `Info.plist`.
 - `libs/core/src/phone.rs`, `LocalRouterKit/PhoneSetup.swift`,
-  `Views/PhoneView.swift`.
+  `LocalRouter/WifiName.swift`, `Views/PhoneView.swift`.
 - No migration.
 
 ## Through-line

@@ -93,6 +93,12 @@ impl Upstream {
         client.request(req).await.map_err(|e| describe(&e))
     }
 
+    /// The addresses a name resolves to, with the resolver the connections
+    /// use: the phone port checks them before it sends (ADR 10, I5).
+    pub async fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+        self.connector.resolver.resolve(host, port).await
+    }
+
     /// A TCP connection for a tunnel.
     pub async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, String> {
         self.connector.tcp(host, port).await.map_err(|e| e.to_string())

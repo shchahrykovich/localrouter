@@ -319,6 +319,22 @@ impl CertStore {
         self.ca.read().unwrap().as_ref().map(|ca| ca.common_name.clone())
     }
 
+    /// The CA certificate (DER) and its name: the public half only, for a
+    /// phone's configuration profile (ADR 10, I10).
+    pub fn ca_certificate(&self) -> Option<(Vec<u8>, String)> {
+        self.ca.read().unwrap().as_ref().map(|ca| (ca.cert_der().to_vec(), ca.common_name.clone()))
+    }
+
+    /// A certificate for a name the proxy answers itself (a phone's trust
+    /// check, ADR 10), whatever `allow` says. Still never a `.localhost`
+    /// name from the inspection CA (I3).
+    pub fn cert_for_own_name(&self, name: &str) -> Option<Arc<CertifiedKey>> {
+        if self.kind == CaKind::Inspection && host_key(name).is_some() {
+            return None;
+        }
+        self.leaf(name)
+    }
+
     /// A certificate for `name`, or `None` when the name must be refused (I5).
     pub fn cert_for(&self, name: &str) -> Option<Arc<CertifiedKey>> {
         match self.kind {
@@ -335,6 +351,11 @@ impl CertStore {
                 }
             }
         }
+        self.leaf(name)
+    }
+
+    /// The cached leaf for `name`, or a new one.
+    fn leaf(&self, name: &str) -> Option<Arc<CertifiedKey>> {
         let name = name.trim_end_matches('.').to_ascii_lowercase();
         if let Some((cert, made)) = self.leaves.lock().unwrap().get(&name)
             && made.elapsed() < LEAF_REFRESH_AFTER

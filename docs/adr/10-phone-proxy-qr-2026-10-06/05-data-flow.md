@@ -5,17 +5,18 @@ built yet.
 
 | Flow | new/changed/removed | Trigger | Writes | Reads |
 |---|---|---|---|---|
+| A0. Name the Wi-Fi | new | "Use My Location" or the typed name in the checklist, or `lan name` | `config.json` (`lan_networks[].wifi_name`) | CoreWLAN in the app (with Location Services) |
 | A. Set up a phone | new | "Set Up a Phone" in the Proxy tab, or `proxy client add --lan` | `config.json` (the client), `proxy-passwords.json` (its password) | `status.network` |
 | B. Show the QR code | new | the phone panel opens, every 3 s refresh | nothing | `proxy-passwords.json`, the interface address |
-| C. Open the setup page | new | the phone scans the QR code | nothing (not logged) | `proxy-passwords.json`, `inspect-ca/ca.pem` |
+| C. Open the setup page, install the profile | new | the phone scans the QR code, taps Install | nothing on the Mac (not logged); on the phone: the profile | `proxy-passwords.json`, `config.json` (`wifi_name`), `inspect-ca/ca.pem` |
 | D. A request from the phone | new (was: refused, the port did not exist) | any app on the phone | the request log, the HAR log with `_client` | `config.json` (`allow_lan`, `lan_networks`), `proxy-passwords.json` |
-| E. New password | new | "New Password", `proxy client password --new` | `proxy-passwords.json` | nothing |
+| E. New password | new | "New Password", `proxy client password --new` | `proxy-passwords.json` | nothing; the phone keeps the old profile until it scans again |
 | F. A request on the main port or a loopback client | unchanged | | | |
 
 Flow F is listed only to say it does not change: no password, no 403 rule,
 loopback only.
 
-## A, B, C: setting up
+## A0, A, B, C: setting up
 
 ![Setting up a phone](diagrams/03-setup-flow.svg)
 
@@ -37,8 +38,20 @@ removes such entries at start. A LAN client with no password cannot happen,
 because the password is written first. At start, a LAN client whose password
 is missing gets a new one (the old QR code stops working; `status` says so).
 
-Decided in [01](01-phone-port.md) (port, password) and
-[03](03-qr-code-and-api.md) (panel, API).
+**The Wi-Fi name (A0)** is written before the client exists, with the
+existing `set_config lan_networks` path: the app sends the whole list with
+`wifi_name` set on the current network's entry. Only the app reads the name
+from the system (CoreWLAN, after Location Services permission); the daemon
+only stores it.
+
+**The profile (C)** is built on each request from three reads: the password
+(memory), the Wi-Fi name of the current network (`config.json` in memory)
+and `inspect-ca/ca.pem`. It is never stored on the Mac. On the phone it
+becomes an external copy of all three (manifest, source of truth).
+
+Decided in [01](01-phone-port.md) (port, password),
+[02](02-setup-page.md) (page, profile) and [03](03-qr-code-and-api.md)
+(panel, Wi-Fi name, API).
 
 ## D: a request from the phone
 

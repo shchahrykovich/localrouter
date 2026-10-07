@@ -39,11 +39,19 @@ use crate::har::websocket::{self, WsTap};
 use crate::inspect::bare_host;
 use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
+use crate::phone::{self, LanClient, PhoneEvent, Setup, SetupFile, Trust};
 use crate::proxy::{Body, ClientScheme, FromProxy, Proxy, escape, is_upgrade, page, remove_hop_headers};
 use crate::scripts::Ctx;
 use crate::routes::host_key;
 use crate::tls::CertStore;
 use crate::upstream::Upstream;
+
+/// The setup page's policy: no script, its own style, and the one image of
+/// the trust check.
+const SETUP_CSP: &str = concat!("default-src 'none'; style-src 'unsafe-inline'; img-src https://", "trust-check.invalid");
+
+/// A 1×1 transparent GIF: the answer to the trust check.
+const PIXEL: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
 
 /// Time a client gets for its TLS handshake inside a `CONNECT`.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -63,7 +71,20 @@ pub struct ForwardProxy {
     /// Every bound proxy port, the main one and the clients', for the loop
     /// check. Empty while the proxy is off.
     pub own_ports: Arc<RwLock<Vec<u16>>>,
+    /// A target another machine may not reach through a phone port (ADR 10,
+    /// I5). The daemon passes [`phone::is_local_target`] with this Mac's
+    /// addresses; a test can narrow it to reach a test server on loopback.
+    pub local_target: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>,
+    /// The inspection CA (DER and name) for a phone's setup page, while
+    /// HTTPS is inspected; `None` otherwise.
+    pub setup_ca: Arc<dyn Fn() -> Option<(Vec<u8>, String)> + Send + Sync>,
+    /// Tells the daemon that a device opened the setup page (it is allowed
+    /// now) or asked to use a phone port (the user decides).
+    pub phone_events: Arc<dyn Fn(PhoneEvent) + Send + Sync>,
 }
+
+/// The type of a configuration profile.
+const MOBILECONFIG: &str = "application/x-apple-aspen-config";
 
 /// The proxy port a connection came in on (ADR 09).
 #[derive(Debug, Clone)]
@@ -71,6 +92,9 @@ pub struct ClientPort {
     /// The proxy client's name; `None` for the main port.
     pub client: Option<Arc<str>>,
     pub port: u16,
+    /// A phone client (ADR 10): its password; the port then serves the setup
+    /// paths and checks every other machine.
+    pub lan: Option<Arc<LanClient>>,
 }
 
 impl ForwardProxy {
@@ -97,6 +121,11 @@ impl ForwardProxy {
     }
 
     async fn handle(self: &Arc<Self>, mut req: Request<Incoming>, peer: SocketAddr, at: &ClientPort, cancel: CancellationToken) -> Response<Body> {
+        if let Some(lan) = &at.lan
+            && let Some(resp) = self.phone_gate(&req, peer, at, lan).await
+        {
+            return resp;
+        }
         if req.method() == Method::CONNECT {
             return self.connect(req, peer, at, cancel).await;
         }
@@ -104,6 +133,8 @@ impl ForwardProxy {
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let Some(authority) = req.uri().authority().cloned() else {
+            // A setup path holds a phone's password: never in a log (I9).
+            let path = if path.starts_with("/setup/") { "/setup/…".to_string() } else { path };
             let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             let seen = self.seen(&req, || if host.is_empty() { path.clone() } else { format!("http://{host}{path}") }, ProxyMode::Http, at);
             let resp = self.not_a_proxy_request(at.port);
@@ -145,6 +176,133 @@ impl ForwardProxy {
         self.log_sent(&method, &host, &path, resp, start, ProxyMode::Http, scripts, rec)
     }
 
+    /// A phone port (ADR 10). First the setup paths, for any peer, never
+    /// logged (I9): opening the page with the token allows that device.
+    /// Then, for another machine, a proxy request needs an allowed device
+    /// (I3) and may not reach this Mac's own addresses (I5). `None` lets the
+    /// request go on as on any proxy port.
+    async fn phone_gate<B>(&self, req: &Request<B>, peer: SocketAddr, at: &ClientPort, lan: &Arc<LanClient>) -> Option<Response<Body>> {
+        let authority = req.uri().authority().cloned();
+        let ip = peer.ip().to_canonical();
+        let local = ip.is_loopback();
+        // The page is asked for directly, or through this same port by a
+        // phone whose proxy is already set: Safari then sends
+        // `GET http://<mac ip>:<port>/setup/…`. Only an IP address, so no
+        // name is resolved for it.
+        let to_this_port = authority.as_ref().is_none_or(|a| {
+            a.port_u16() == Some(at.port) && bare_host(a.as_str()).parse::<IpAddr>().is_ok()
+        });
+        if to_this_port
+            && matches!(*req.method(), Method::GET | Method::HEAD)
+            && let Some((token, file)) = phone::parse_setup_path(req.uri().path_and_query().map_or("/", |p| p.as_str()))
+            && lan.is_token(token)
+        {
+            let allowed = (!local).then_some(ip);
+            if allowed.is_some() && lan.allow(ip) {
+                (self.phone_events)(PhoneEvent::Scanned { client: lan.name.clone(), ip });
+            }
+            return Some(self.setup_answer(req, at, lan, file, allowed, ip));
+        }
+        if local {
+            return None;
+        }
+        // Not a proxy request: the 400 page, as on every proxy port.
+        let authority = authority?;
+        let connect = req.method() == Method::CONNECT;
+        let host = bare_host(authority.as_str());
+        let port = authority.port_u16().unwrap_or(if connect { 443 } else { 80 });
+        let start = Instant::now();
+        let app = escape(&self.instance.app_name());
+        let refusal = if !lan.allows(ip) {
+            (self.phone_events)(PhoneEvent::Asked { client: lan.name.clone(), ip, host: host.clone() });
+            page(
+                StatusCode::FORBIDDEN,
+                "Waiting for the Mac",
+                format!(
+                    "<p>This device ({ip}) is not allowed to use the {app} proxy yet. On the Mac, press <b>Allow</b> \
+                     in the Proxy tab, or scan the QR code of Proxy tab, Phone.</p>"
+                ),
+            )
+        } else if connect && host == phone::CHECK_HOST {
+            // The setup page's trust check: the port answers it itself.
+            return None;
+        } else if host_key(&host).is_none() && self.reaches_this_mac(&host, port).await {
+            page(
+                StatusCode::FORBIDDEN,
+                "Not through the phone port",
+                format!(
+                    "<p><code>{}</code> is this Mac. Through the phone port a phone reaches the routes \
+                     (<code>.localhost</code> names), not the Mac's own servers.</p>",
+                    escape(&host)
+                ),
+            )
+        } else {
+            return None;
+        };
+        let status = refusal.status().as_u16();
+        let millis = start.elapsed().as_millis() as u64;
+        if connect {
+            self.log.push(LogEntry::tunnel(&host, status, millis, 0, 0));
+            self.record_tunnel(at, SystemTime::now(), &host, port, status, millis, (0, 0));
+        } else {
+            let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
+            let seen = self.seen(req, || req.uri().to_string(), ProxyMode::Http, at);
+            self.log_http(req.method().as_str(), &host, &path, &refusal, start, ProxyMode::Http, Default::default(), seen);
+        }
+        Some(refusal)
+    }
+
+    /// The target resolves to this Mac: loopback, unspecified, or one of
+    /// its own addresses (I5). A name that does not resolve is not refused
+    /// here; sending it gives the 502.
+    async fn reaches_this_mac(&self, host: &str, port: u16) -> bool {
+        if host.eq_ignore_ascii_case("localhost") {
+            return true;
+        }
+        let addrs: Vec<IpAddr> = match host.parse::<IpAddr>() {
+            Ok(ip) => vec![ip],
+            Err(_) => match self.upstream.resolve(host, port).await {
+                Ok(list) => list.iter().map(SocketAddr::ip).collect(),
+                Err(_) => return false,
+            },
+        };
+        addrs.into_iter().any(|ip| (self.local_target)(ip))
+    }
+
+    /// The setup page or the CA profile. The server on the page is the host
+    /// the phone used to reach this port.
+    fn setup_answer<B>(&self, req: &Request<B>, at: &ClientPort, lan: &LanClient, file: SetupFile, allowed: Option<IpAddr>, ip: IpAddr) -> Response<Body> {
+        let server = match req.uri().authority() {
+            Some(a) => bare_host(a.as_str()),
+            None => req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).map(bare_host).unwrap_or_default(),
+        };
+        let setup = Setup {
+            app_name: self.instance.app_name(),
+            bundle_id: self.instance.bundle_id(),
+            token: lan.token(),
+            server,
+            port: at.port,
+            ca: (self.setup_ca)(),
+            allowed,
+            via_proxy: req.uri().authority().is_some(),
+            trust: lan.trust(ip),
+            nonce: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
+        };
+        let (body, content_type) = match file {
+            SetupFile::Page => (Some(phone::setup_page(&setup)), "text/html; charset=utf-8"),
+            SetupFile::CaProfile => (phone::ca_profile(&setup), MOBILECONFIG),
+        };
+        let Some(body) = body else { return self.not_a_proxy_request(at.port) };
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CACHE_CONTROL, "no-store")
+            .header(header::CONTENT_SECURITY_POLICY, SETUP_CSP)
+            .header(header::REFERRER_POLICY, "no-referrer")
+            .body(Full::new(Bytes::from(body)).map_err(|never| match never {}).boxed_unsync())
+            .expect("static response parts are valid")
+    }
+
     /// Follow a request the proxy sends on: its body, and its WebSocket
     /// messages after an upgrade.
     fn recording(&self, seen: Option<HarRecord>, req: Request<Body>) -> (Request<Body>, Option<Recording>) {
@@ -174,6 +332,20 @@ impl ForwardProxy {
         if let Some(har) = self.router.har.as_ref().filter(|h| h.enabled()) {
             let mut record = HarRecord::tunnel(started, host, port, status, millis, bytes);
             record.client = at.client.clone();
+            har.record(record);
+        }
+    }
+
+    /// An inspected `CONNECT` whose client ended the TLS handshake: it sends
+    /// no request, so this is its only entry.
+    fn record_refused_inspection(&self, at: &ClientPort, started: SystemTime, host: &str, port: u16, millis: u64, why: &str) {
+        if let Some(har) = self.router.har.as_ref().filter(|h| h.enabled()) {
+            let mut record = HarRecord::tunnel(started, host, port, 200, millis, (0, 0));
+            record.mode = ProxyMode::Inspect;
+            record.bytes_in = None;
+            record.bytes_out = None;
+            record.client = at.client.clone();
+            record.tls_error = Some(inspection_refused(why));
             har.record(record);
         }
     }
@@ -217,6 +389,11 @@ impl ForwardProxy {
         };
         let host = bare_host(authority.as_str());
         let port = authority.port_u16().unwrap_or(443);
+        if let Some(lan) = &at.lan
+            && host == phone::CHECK_HOST
+        {
+            return self.trust_check(req, peer, lan.clone(), cancel);
+        }
         if self.is_own_address(&host, port) {
             let resp = loop_detected(&host, port);
             self.log.push(LogEntry::tunnel(&host, resp.status().as_u16(), 0, 0, 0));
@@ -243,7 +420,7 @@ impl ForwardProxy {
                         tracing::debug!("CONNECT {host}: no route, so no certificate");
                         return;
                     };
-                    if let Some(tls) = accept_tls(io, cert).await {
+                    if let Ok(tls) = accept_tls(io, cert).await {
                         router.serve_as(tls, ClientScheme::Https, peer, Some(via)).await;
                     }
                 };
@@ -260,7 +437,19 @@ impl ForwardProxy {
             let at = at.clone();
             tokio::spawn(async move {
                 let Ok(upgraded) = upgrade.await else { return };
-                let Some(tls) = accept_tls(TokioIo::new(upgraded), cert).await else { return };
+                let tls = match accept_tls(TokioIo::new(upgraded), cert).await {
+                    Ok(tls) => {
+                        note_trust(&at, peer, Trust::Trusted);
+                        tls
+                    }
+                    Err(fail) => {
+                        if fail.cert_refused {
+                            note_trust(&at, peer, Trust::Refused);
+                        }
+                        this.record_refused_inspection(&at, started, &host, port, start.elapsed().as_millis() as u64, &fail.why);
+                        return;
+                    }
+                };
                 let session = this.clone();
                 let service = hyper::service::service_fn(move |req| {
                     let session = session.clone();
@@ -301,6 +490,42 @@ impl ForwardProxy {
             let millis = start.elapsed().as_millis() as u64;
             this.log.push(LogEntry::tunnel(&host, 200, millis, bytes_in, bytes_out));
             this.record_tunnel(&at, started, &host, port, 200, millis, (bytes_in, bytes_out));
+        });
+        empty(StatusCode::OK)
+    }
+
+    /// The setup page's trust check (`CONNECT trust-check.invalid:443`): a
+    /// handshake with an inspection leaf, then a 1×1 GIF for any request.
+    /// It notes whether the device trusts the CA and is never logged.
+    fn trust_check(self: &Arc<Self>, req: Request<Incoming>, peer: SocketAddr, lan: Arc<LanClient>, cancel: CancellationToken) -> Response<Body> {
+        let Some(cert) = self.inspect_certs.cert_for_own_name(phone::CHECK_HOST) else {
+            return page(StatusCode::NOT_FOUND, "No inspection CA", "<p>HTTPS is not inspected, so there is nothing to trust.</p>".into());
+        };
+        let upgrade = hyper::upgrade::on(req);
+        tokio::spawn(async move {
+            let Ok(upgraded) = upgrade.await else { return };
+            let tls = match accept_tls(TokioIo::new(upgraded), cert).await {
+                Ok(tls) => tls,
+                Err(fail) => {
+                    if fail.cert_refused {
+                        lan.set_trust(peer.ip(), Trust::Refused);
+                    }
+                    return;
+                }
+            };
+            lan.set_trust(peer.ip(), Trust::Trusted);
+            let service = hyper::service::service_fn(|_req| async {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "image/gif")
+                        .header(header::CACHE_CONTROL, "no-store")
+                        .body(Full::new(Bytes::from_static(PIXEL)).map_err(|never| match never {}).boxed_unsync())
+                        .expect("static response parts are valid"),
+                )
+            });
+            let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+            let conn = builder.serve_connection(TokioIo::new(tls), service);
+            tokio::select! { _ = conn => {}, _ = cancel.cancelled() => {} }
         });
         empty(StatusCode::OK)
     }
@@ -446,25 +671,66 @@ fn same_authority(host: &HeaderValue, uri: &Uri) -> bool {
     host.host().eq_ignore_ascii_case(authority.host()) && host.port_u16().unwrap_or(default) == authority.port_u16().unwrap_or(default)
 }
 
+/// Why a client's TLS handshake failed.
+struct HandshakeFailed {
+    /// For the log.
+    why: String,
+    /// The client said it does not accept the certificate: it does not
+    /// trust the CA. Closing without a word (an app that pins) is not this.
+    cert_refused: bool,
+}
+
+impl HandshakeFailed {
+    fn other(why: String) -> Self {
+        Self { why, cert_refused: false }
+    }
+}
+
 /// A TLS server handshake with one fixed leaf, ALPN `h2` and `http/1.1`.
-async fn accept_tls<IO>(io: IO, cert: Arc<CertifiedKey>) -> Option<tokio_rustls::server::TlsStream<IO>>
+async fn accept_tls<IO>(io: IO, cert: Arc<CertifiedKey>) -> Result<tokio_rustls::server::TlsStream<IO>, HandshakeFailed>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
     let mut config = rustls::ServerConfig::builder_with_provider(crate::tls::provider())
         .with_safe_default_protocol_versions()
-        .ok()?
+        .map_err(|e| HandshakeFailed::other(e.to_string()))?
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(OneCert(cert)));
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(io)).await {
-        Ok(Ok(tls)) => Some(tls),
+        Ok(Ok(tls)) => Ok(tls),
         Ok(Err(e)) => {
             tracing::debug!("TLS handshake inside CONNECT failed: {e}");
-            None
+            let cert_refused = matches!(
+                e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+                Some(rustls::Error::AlertReceived(
+                    rustls::AlertDescription::CertificateUnknown
+                        | rustls::AlertDescription::UnknownCA
+                        | rustls::AlertDescription::BadCertificate
+                ))
+            );
+            Err(HandshakeFailed { why: e.to_string(), cert_refused })
         }
-        Err(_) => None,
+        Err(_) => Err(HandshakeFailed::other(format!("the client sent no TLS handshake in {} s", HANDSHAKE_TIMEOUT.as_secs()))),
+    }
+}
+
+/// The `_tlsError` of a `CONNECT` whose client ended the handshake with the
+/// inspection leaf: a phone or a program that does not trust the CA, or an
+/// app that pins its certificates. Without it the log shows nothing at all.
+fn inspection_refused(why: &str) -> String {
+    format!(
+        "The client ended the TLS handshake ({why}). It most likely does not trust the inspection CA: install the CA \
+         and trust it, or take this host out of the inspected hosts. An app that pins its certificates always fails here."
+    )
+}
+
+/// On a phone port, what a handshake with an inspection leaf says about the
+/// device's trust in the CA (the setup page shows it).
+fn note_trust(at: &ClientPort, peer: SocketAddr, trust: Trust) {
+    if let Some(lan) = &at.lan {
+        lan.set_trust(peer.ip(), trust);
     }
 }
 

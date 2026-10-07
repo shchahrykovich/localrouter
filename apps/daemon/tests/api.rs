@@ -1471,3 +1471,139 @@ fn the_viewer_lists_and_filters_by_client() {
     let (head, _) = viewer_get(http, "/chrome/");
     assert!(head.starts_with("HTTP/1.1 302") && head.to_ascii_lowercase().contains("location: ../chrome"), "{head}");
 }
+
+// ---- ADR 10: a phone client
+
+/// Home network with this Mac at 192.168.0.10 (the 4th field).
+const HOME_NET_WITH_ADDRESS: &str = "mac:18:35:d1:15:d1:a8,192.168.0.1,en0,192.168.0.10";
+
+fn phone_config() -> Value {
+    let mut config = base_config(true);
+    config["lan_networks"] = json!([{"id": "mac:18:35:d1:15:d1:a8", "name": "Home", "router": "192.168.0.1"}]);
+    config
+}
+
+fn phones(d: &Daemon) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(d.dir.path().join("proxy-phones.json")).unwrap()).unwrap()
+}
+
+// T6, I1: a phone client binds the wildcard pair; the main port and a
+// plain client stay on loopback, also with allow_lan on.
+#[test]
+fn lan_client_binds_on_the_lan() {
+    let d = start_on_network(phone_config(), HOME_NET_WITH_ADDRESS);
+    let mut c = d.client();
+    let main = proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "chrome", "port": 0}, {"name": "iphone", "port": 0, "lan": true}]}));
+    let s = c.call("status", json!({}));
+    assert_eq!(s["proxy"]["bound"], json!([format!("127.0.0.1:{main}"), format!("[::1]:{main}")]));
+    let clients = s["proxy"]["clients"].as_array().unwrap();
+    let chrome = clients[0]["port"].as_u64().unwrap();
+    let iphone = clients[1]["port"].as_u64().unwrap();
+    assert_eq!(clients[0]["bound"], json!([format!("127.0.0.1:{chrome}"), format!("[::1]:{chrome}")]));
+    assert!(clients[0].get("lan").is_none());
+    assert_eq!(clients[1]["bound"], json!([format!("0.0.0.0:{iphone}"), format!("[::]:{iphone}")]));
+    assert_eq!(clients[1]["lan"], true);
+    // Turning lan on for an existing client binds the wildcard pair.
+    c.call("set_config", json!({"proxy_clients": [{"name": "chrome", "port": 0, "lan": true}, {"name": "iphone", "port": 0, "lan": true}]}));
+    let s = c.call("status", json!({}));
+    let bound = s["proxy"]["clients"][0]["bound"][0].as_str().unwrap().to_string();
+    assert!(bound.starts_with("0.0.0.0:"), "{bound}");
+}
+
+// T7, I7, I12, I6: the phone file, its life, the setup URL, and that no
+// other reply holds the token.
+#[test]
+fn phone_client_file_and_setup_url() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = start_on_network(phone_config(), HOME_NET_WITH_ADDRESS);
+    let mut c = d.client();
+    proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true}]}));
+    let file = d.dir.path().join("proxy-phones.json");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    let token = phones(&d)["iphone"]["token"].as_str().unwrap().to_string();
+    assert_eq!(token.len(), 19);
+    assert_eq!(phones(&d)["iphone"]["devices"], json!([]));
+    let p = c.call("get_proxy", json!({"client": "iphone"}));
+    let port = p["port"].as_u64().unwrap();
+    assert_eq!(p["lan"]["setup_url"], format!("http://192.168.0.10:{port}/setup/{token}"));
+    assert_eq!(p["lan"]["address"], "192.168.0.10");
+    assert_eq!(p["lan"]["problems"], json!([]), "{p}");
+    for (method, params) in [("get_config", json!({})), ("status", json!({})), ("get_proxy", json!({})), ("get_logs", json!({}))] {
+        assert!(!c.raw(method, params).to_string().contains(&token), "{method} holds the token");
+    }
+    // The same list again keeps the token; removing the client removes it.
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true}]}));
+    assert_eq!(phones(&d)["iphone"]["token"], token);
+    c.call("set_config", json!({"proxy_clients": []}));
+    assert_eq!(phones(&d), json!({}));
+}
+
+// I12: at start a phone client without a record gets one, and the record of
+// a client that is gone is removed.
+#[test]
+fn phone_record_made_at_start() {
+    let mut config = phone_config();
+    config["proxy_clients"] = json!([{"name": "iphone", "port": 0, "lan": true}]);
+    let d = Daemon::start_program_env(
+        Path::new(env!("CARGO_BIN_EXE_localrouterd")),
+        |dir| {
+            std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+            std::fs::write(dir.join("proxy-phones.json"), r#"{"old-phone": {"token": "x", "devices": []}}"#).unwrap();
+        },
+        &[("LOCALROUTER_TEST_NETWORK", HOME_NET_WITH_ADDRESS)],
+    );
+    let mut c = d.client();
+    c.call("status", json!({}));
+    let p = phones(&d);
+    assert!(p.get("old-phone").is_none());
+    assert_eq!(p["iphone"]["token"].as_str().unwrap().len(), 19);
+}
+
+// T7, I11: allow and deny a device; deny closes the client's open
+// connections and keeps the port; the list is saved; errors.
+#[test]
+fn allow_and_deny_a_device() {
+    let d = start_on_network(phone_config(), HOME_NET_WITH_ADDRESS);
+    let mut c = d.client();
+    proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true}, {"name": "chrome", "port": 0}]}));
+    let port = client_port(&mut c, "iphone").unwrap();
+    let r = c.call("set_phone_device", json!({"client": "iphone", "address": "192.168.0.31", "allow": true}));
+    assert_eq!(r["devices"], json!(["192.168.0.31"]));
+    assert_eq!(phones(&d)["iphone"]["devices"], json!(["192.168.0.31"]));
+    assert_eq!(c.call("get_proxy", json!({"client": "iphone"}))["lan"]["devices"], json!(["192.168.0.31"]));
+    // The same device as IPv4-mapped IPv6 is the same entry.
+    let r = c.call("set_phone_device", json!({"client": "iphone", "address": "::ffff:192.168.0.31", "allow": true}));
+    assert_eq!(r["devices"], json!(["192.168.0.31"]));
+
+    let target = echo_server();
+    let mut tunnel = connect_through(port, &format!("127.0.0.1:{target}"));
+    let r = c.call("set_phone_device", json!({"client": "iphone", "address": "192.168.0.31", "allow": false}));
+    assert_eq!(r["devices"], json!([]));
+    let mut buf = [0u8; 4];
+    assert_eq!(tunnel.read(&mut buf).unwrap_or(0), 0, "the open tunnel is closed");
+    assert_eq!(client_port(&mut c, "iphone"), Some(port), "the port stays");
+    assert_eq!(phones(&d)["iphone"]["devices"], json!([]));
+
+    assert_eq!(c.error_code("set_phone_device", json!({"client": "nobody", "address": "1.2.3.4", "allow": true})), "not_found");
+    assert_eq!(c.error_code("set_phone_device", json!({"client": "chrome", "address": "1.2.3.4", "allow": true})), "invalid_request");
+    assert_eq!(c.error_code("set_phone_device", json!({"client": "iphone", "address": "phone", "allow": true})), "invalid_request");
+}
+
+// A new setup code changes the QR code's token; allowed devices stay.
+#[test]
+fn new_setup_code_keeps_the_devices() {
+    let d = start_on_network(phone_config(), HOME_NET_WITH_ADDRESS);
+    let mut c = d.client();
+    proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true}]}));
+    c.call("set_phone_device", json!({"client": "iphone", "address": "192.168.0.31", "allow": true}));
+    let old = phones(&d)["iphone"]["token"].as_str().unwrap().to_string();
+    let r = c.call("new_setup_code", json!({"client": "iphone"}));
+    let new = phones(&d)["iphone"]["token"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    assert!(r["setup_url"].as_str().unwrap().ends_with(&format!("/setup/{new}")));
+    assert_eq!(phones(&d)["iphone"]["devices"], json!(["192.168.0.31"]));
+}

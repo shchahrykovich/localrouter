@@ -15,8 +15,11 @@ decisions: `docs/adr/01-project-setup-2026-09-26/` (architecture),
 `proxy.localhost`, LAN access per network) and
 `docs/adr/09-proxy-clients-2026-10-02/` (one more proxy port per client, `_client`
 in the log, `proxy.localhost/<client>`) and
-`docs/adr/10-phone-proxy-qr-2026-10-06/` (proposed, not built: a LAN proxy client
-for an iPhone, with a password and a QR code in the Proxy tab).
+`docs/adr/10-phone-proxy-qr-2026-10-06/` (a LAN proxy client for an iPhone,
+`libs/core/src/phone.rs`: no password, a device is allowed by its address after
+it opens the QR setup page or the user presses Allow; the setup page shows only
+the next step. Built differently from its text, which still describes a Wi-Fi
+profile and needs a rewrite).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 

@@ -45,6 +45,8 @@ fn params(method: &str, params: Value, file: &str) {
         "set_script_rule" => check::<SetScriptRuleParams>(params, file),
         "remove_script_rule" => check::<IdParams>(params, file),
         "get_proxy" => check::<GetProxyParams>(params, file),
+        "new_setup_code" => check::<NewSetupCodeParams>(params, file),
+        "set_phone_device" => check::<SetPhoneDeviceParams>(params, file),
         "status" | "list_script_rules" | "list_routes" | "get_config" | "reset_ca" | "reset_inspect_ca" => {
             check::<Empty>(params, file)
         }
@@ -69,6 +71,8 @@ fn result(method: &str, result: Value, file: &str) {
         "set_script_rule" => check::<SetScriptRuleResult>(result, file),
         "remove_script_rule" => check::<RemoveScriptRuleResult>(result, file),
         "list_script_rules" => check::<ListScriptRulesResult>(result, file),
+        "new_setup_code" => check::<NewSetupCodeResult>(result, file),
+        "set_phone_device" => check::<SetPhoneDeviceResult>(result, file),
         other => panic!("{file}: unknown method {other}"),
     }
 }

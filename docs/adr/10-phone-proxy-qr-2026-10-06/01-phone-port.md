@@ -58,8 +58,10 @@ more of the Mac than `allow_lan` ever did.
    A peer on loopback needs no password.
    - **The password**: 16 characters in four groups, `k7mq-2xph-9tdw-r4nc`,
      from 32 lowercase letters and digits without look-alikes (no `0`, `o`,
-     `1`, `l`). That is 80 bits from the system random source, easy to type
-     on a phone keyboard.
+     `1`, `l`). That is 80 bits from the system random source.
+   - **The user does not type it.** The phone profile carries it in the
+     Wi-Fi payload (`ProxyPassword`, change 2), and iOS sends it. Only the
+     manual fallback shows it, and it is easy to type on a phone keyboard.
    - **Where it lives**: `proxy-passwords.json` in the data folder, mode
      `0600`, written with `store::replace` like every other file. It is not
      in `config.json`, so `get_config`, `status` and a copy of
