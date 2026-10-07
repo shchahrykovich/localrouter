@@ -3,10 +3,33 @@ import XCTest
 @testable import LocalRouterKit
 
 final class RouteGroupsTests: XCTestCase {
-    private func view(_ host: String, _ path: String? = nil) throws -> RouteView {
+    private func view(_ host: String, _ path: String? = nil, up: Bool? = nil, listenFailed: Bool = false) throws -> RouteView {
         let pathField = path.map { #","path":"\#($0)""# } ?? ""
-        let json = #"{"host":"\#(host)"\#(pathField),"target":"http://127.0.0.1:3000","urls":[]}"#
+        let upField = up.map { #","upstream_up":\#($0)"# } ?? ""
+        let json = #"{"host":"\#(host)"\#(pathField),"target":"http://127.0.0.1:3000","urls":[]\#(upField),"listen_failed":\#(listenFailed)}"#
         return try Api.decoder.decode(RouteView.self, from: Data(json.utf8))
+    }
+
+    func testOnlineProjectsComeFirstThenByName() throws {
+        let routes = [try view("alpha", up: false), try view("zeta", up: true), try view("beta"), try view("mid", up: true)]
+        XCTAssertEqual(RouteGroup.group(routes).map(\.project), ["mid", "zeta", "alpha", "beta"])
+    }
+
+    func testOnlineRoutesComeFirstInsideAProject() throws {
+        let routes = [
+            try view("a.shop", up: false),
+            try view("b.shop"),
+            try view("c.shop", up: true),
+            try view("d.shop", up: false),
+            try view("e.shop", up: true),
+        ]
+        XCTAssertEqual(RouteGroup.group(routes)[0].routes.map(\.id), ["c.shop", "e.shop", "a.shop", "b.shop", "d.shop"])
+    }
+
+    // A route whose listen port is taken has an orange dot, not a green one.
+    func testATakenListenPortIsNotOnline() throws {
+        XCTAssertFalse(try view("db.shop", up: true, listenFailed: true).online)
+        XCTAssertTrue(try view("db.shop", up: true).online)
     }
 
     func testProjectIsTheLastLabel() throws {

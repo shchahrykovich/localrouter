@@ -71,8 +71,10 @@ struct MainView: View {
         HStack(alignment: .firstTextBaseline) {
             Text(Instance.current.appName).font(.headline)
             Spacer()
-            if let s = model.status {
-                Text("\(s.routes) routes").foregroundStyle(.secondary).font(.caption)
+            if model.status != nil {
+                let online = model.routes.filter(\.online).count
+                Text("\(online)/\(model.routes.count) online").foregroundStyle(.secondary).font(.caption)
+                    .help("\(online) of \(model.routes.count) routes have a target that is up")
             } else {
                 Label("not running", systemImage: "exclamationmark.circle").foregroundStyle(.orange).font(.caption)
             }

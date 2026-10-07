@@ -21,13 +21,12 @@ struct DomainsView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            List(RouteGroup.group(model.routes)) { group in
-                let isCollapsed = collapsed.contains(group.project)
-                Section {
-                    if !isCollapsed {
-                        ForEach(group.routes) { view in RouteRow(view: view) }
-                    }
-                } header: {
+            // The project headers are plain rows, not `Section` headers: an
+            // inset list keeps a section's spacing when its rows are hidden,
+            // so collapsed projects would stand far apart.
+            List {
+                ForEach(RouteGroup.group(model.routes)) { group in
+                    let isCollapsed = collapsed.contains(group.project)
                     Button { collapsed.toggle(group.project) } label: {
                         HStack {
                             Image(systemName: "chevron.right")
@@ -36,12 +35,17 @@ struct DomainsView: View {
                                 .frame(width: 10)
                             Text(group.project)
                             Spacer()
-                            Text("\(group.routes.count)").foregroundStyle(.secondary)
+                            Text("\(group.routes.filter(\.online).count)/\(group.routes.count)")
                         }
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.secondary)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(isCollapsed ? "Show the routes of \(group.project)" : "Hide the routes of \(group.project)")
+                    if !isCollapsed {
+                        ForEach(group.routes) { view in RouteRow(view: view) }
+                    }
                 }
             }
             .listStyle(.inset)

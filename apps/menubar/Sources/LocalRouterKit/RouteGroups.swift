@@ -15,8 +15,12 @@ public struct RouteGroup: Equatable, Sendable, Identifiable {
 
     public var id: String { project }
 
-    /// Groups by project, sorted by project name. Inside a group the routes
-    /// keep the order the daemon sent.
+    /// Has at least one route whose target is up.
+    public var online: Bool { routes.contains(where: \.online) }
+
+    /// Groups by project: projects with a route whose target is up first,
+    /// then by project name. Inside a group the routes whose target is up
+    /// come first; otherwise they keep the order the daemon sent.
     public static func group(_ routes: [RouteView]) -> [RouteGroup] {
         var order: [String] = []
         var byProject: [String: [RouteView]] = [:]
@@ -25,8 +29,19 @@ public struct RouteGroup: Equatable, Sendable, Identifiable {
             if byProject[project] == nil { order.append(project) }
             byProject[project, default: []].append(view)
         }
-        return order.sorted().map { RouteGroup(project: $0, routes: byProject[$0]!) }
+        return order
+            .map { project in
+                let views = byProject[project]!
+                return RouteGroup(project: project, routes: views.filter(\.online) + views.filter { !$0.online })
+            }
+            .sorted { a, b in a.online != b.online ? a.online : a.project < b.project }
     }
+}
+
+extension RouteView {
+    /// The target answered the daemon's last check, and the listen port is
+    /// bound: the green dot.
+    public var online: Bool { upstreamUp == true && !listenFailed }
 }
 
 /// The projects whose routes the Domains tab hides. Saved in `UserDefaults`
