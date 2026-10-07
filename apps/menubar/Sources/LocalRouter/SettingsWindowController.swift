@@ -53,6 +53,7 @@ private struct SettingsWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             SettingsView()
+                .tint(Theme.accentFill)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if let m = model.message {
                 Divider()

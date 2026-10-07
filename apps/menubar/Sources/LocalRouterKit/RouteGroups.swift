@@ -8,7 +8,7 @@ extension Route {
     }
 }
 
-/// The routes of one project, as the Domains tab shows them.
+/// The routes of one project, as the Routes tab shows them.
 public struct RouteGroup: Equatable, Sendable, Identifiable {
     public var project: String
     public var routes: [RouteView]
@@ -44,7 +44,7 @@ extension RouteView {
     public var online: Bool { upstreamUp == true && !listenFailed }
 }
 
-/// The projects whose routes the Domains tab hides. Saved in `UserDefaults`
+/// The projects whose routes the Routes tab hides. Saved in `UserDefaults`
 /// as one string, project names joined by newlines: a project is a host
 /// label, so it never holds a newline.
 public struct CollapsedProjects: Equatable, Sendable, RawRepresentable {

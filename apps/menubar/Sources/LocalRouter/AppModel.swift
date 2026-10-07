@@ -543,11 +543,27 @@ final class AppModel {
         return feedback
     }
 
+    /// The link in ~/.local/bin exists.
+    var cliInstalled: Bool {
+        (try? FileManager.default.destinationOfSymbolicLink(atPath: CLIInstaller().link.path)) != nil
+    }
+
     var mcpCommand: String {
-        let link = CLIInstaller().link
-        let installed = (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil
         let cli = Instance.current.cli
-        return "claude mcp add \(cli) -- \(installed ? link.path : cli) mcp"
+        return "claude mcp add \(cli) -- \(cliInstalled ? CLIInstaller().link.path : cli) mcp"
+    }
+
+    /// What the app menus show, read at each open.
+    var menuContext: AppMenu.Context {
+        let online = routes.filter(\.online).count
+        return AppMenu.Context(
+            appName: Instance.current.appName,
+            chromeInstalled: chromeInstalled,
+            hasProxyLog: proxy?.log != nil,
+            agentApps: AgentApp.allCases.filter(\.isInstalled),
+            cliInstalled: cliInstalled,
+            agentHelpHost: agentHelpURL.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: ""),
+            onlineSummary: running ? "\(online) of \(routes.count) online" : nil)
     }
 
     // MARK: Agent instructions

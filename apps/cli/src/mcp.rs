@@ -345,7 +345,7 @@ fn without_phone_secrets(mut v: Value) -> Value {
         lan.insert(
             "note".into(),
             Value::String(
-                "A phone is set up in the app: Proxy tab, Phone. The proxy address 127.0.0.1 does not work from a phone: \
+                "A phone is set up in the app: Proxy tab, Set up iPhone. The proxy address 127.0.0.1 does not work from a phone: \
                  it is the phone itself. An agent cannot set up a phone or allow a device."
                     .into(),
             ),

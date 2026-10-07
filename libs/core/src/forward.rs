@@ -245,7 +245,7 @@ impl ForwardProxy {
                 "Waiting for the Mac",
                 format!(
                     "<p>This device ({ip}) is not allowed to use the {app} proxy yet. On the Mac, press <b>Allow</b> \
-                     in the Proxy tab, or scan the QR code of Proxy tab, Phone.</p>"
+                     in the Proxy tab, or scan the QR code of Proxy tab, Set up iPhone.</p>"
                 ),
             )
         } else if connect && host == phone::CHECK_HOST {

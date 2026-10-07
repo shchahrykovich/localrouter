@@ -421,7 +421,7 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
             if let Some(info) = &p.lan {
                 println!("Phone client {name}: port {} on the LAN, for allowed devices.", info.port);
                 print!("{}", describe_lan(info));
-                println!("The app shows the setup URL as a QR code: Proxy tab, Phone.");
+                println!("The app shows the setup URL as a QR code: Proxy tab, Set up iPhone.");
                 return Ok(());
             }
             println!("Proxy client {name}: {}", p.url);

@@ -311,7 +311,7 @@ closes the port; the entries stay in the log. Client ports open and close with
 `127.0.0.1` does not work from a phone: on the phone it is the phone itself.
 A **phone client** is a proxy client whose port listens on the LAN:
 
-1. In the app: Proxy tab, **Phone…**. It turns on what is missing (the proxy,
+1. In the app: Proxy tab, **Set up iPhone**. It turns on what is missing (the proxy,
    LAN access, this network) and shows a QR code.
 2. The user scans it with the iPhone camera. The page that opens allows this
    iPhone and shows only the next step: Settings → Wi-Fi → (i) → Configure

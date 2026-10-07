@@ -332,7 +332,7 @@ pub fn setup_page(s: &Setup) -> String {
         if s.paused {
             body.push_str(
                 "<p class=\"note\">The Mac sends this iPhone direct now. To use the proxy, on the Mac: \
-                 <b>Proxy › Phone…</b>, turn on <b>Send this iPhone through the proxy</b>.</p>",
+                 <b>Proxy › Set up iPhone</b>, turn on <b>Send this iPhone through the proxy</b>.</p>",
             );
         }
         let pac_url = format!("http://{}:{port}/pac/{}.pac", s.server, s.pac);
@@ -393,7 +393,7 @@ pub fn setup_page(s: &Setup) -> String {
             "<div class=\"hero\"><div class=\"big\">✓</div><h3>This iPhone is connected</h3>\
              <p>Its requests appear on the Mac, in the Proxy tab.</p></div>\
              <div class=\"info\"><div class=\"r\"><span>Proxy</span><span>{server} : {port} ✓</span></div>{ca_row}</div>\
-             <div class=\"info\"><div class=\"r\"><span><b>To stop</b></span><span>On the Mac: Proxy › Phone…, or here: \
+             <div class=\"info\"><div class=\"r\"><span><b>To stop</b></span><span>On the Mac: Proxy › Set up iPhone, or here: \
              Wi-Fi › ⓘ › Configure Proxy › Off</span></div></div>\
              <details><summary>Good to know</summary>\
              <p>While the proxy is on, this iPhone has no internet on this Wi-Fi when the Mac sleeps or the proxy is off.</p>\

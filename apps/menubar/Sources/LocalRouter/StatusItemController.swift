@@ -24,12 +24,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         super.init()
         popover.behavior = .transient
         popover.delegate = self
-        let main = MainView(openSettings: { [weak self] page in self?.showSettings(page) })
-        let content = NSHostingController(rootView: main.environment(model).frame(width: 480, height: 540))
+        let main = MainView(
+            openSettings: { [weak self] page in self?.showSettings(page) },
+            perform: { [weak self] action in self?.perform(action, fromWindow: true) })
+        let content = NSHostingController(rootView: main.environment(model).frame(width: 480, height: 560))
         content.sizingOptions = .preferredContentSize
         // After the controller: setting it resets contentSize.
         popover.contentViewController = content
-        popover.contentSize = NSSize(width: 480, height: 540)
+        popover.contentSize = NSSize(width: 480, height: 560)
         if let button = item.button {
             button.target = self
             button.action = #selector(clicked)
@@ -102,103 +104,99 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     /// A status item's own menu: macOS positions it, highlights the icon and
     /// gives it the system appearance. It is set only for this one click, so
-    /// a left click still opens the window.
+    /// a left click still opens the window. The items are AppMenu's, read
+    /// again at each open (Chrome, the proxy log and the agent apps may come
+    /// and go).
     private func showMenu() {
-        let menu = NSMenu()
-        menu.addItem(menuItem("Open LocalRouter", #selector(openWindow)))
-        // Only when Google Chrome is installed, checked at each open (ADR 06, I17).
-        if model.chromeInstalled {
-            menu.addItem(menuItem("Open Chrome via Proxy", #selector(openChromeViaProxy)))
-        }
-        // Only when the daemon reports a proxy log (ADR 08).
-        if model.proxy?.log != nil {
-            menu.addItem(menuItem("Open Proxy Log", #selector(openProxyLog)))
-            menu.addItem(menuItem("Show Proxy Log Folder", #selector(showProxyLogFolder)))
-        }
-        menu.addItem(.separator())
-        let helpHost = model.agentHelpURL.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: "")
-        menu.addItem(menuItem("Open Agent Instructions (\(helpHost))", #selector(openAgentHelp)))
-        menu.addItem(menuItem("Copy Prompt for a Coding Agent", #selector(copyAgentPrompt)))
-        menu.addItem(menuItem("Copy MCP Command", #selector(copyMCPCommand)))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Install Command Line Tool…", #selector(installCLI)))
-        menu.addItem(menuItem("Install Claude Code Instructions…", #selector(installClaude)))
-        menu.addItem(menuItem("Install Codex Instructions…", #selector(installCodex)))
-        menu.addItem(menuItem("Check for Updates…", #selector(checkForUpdates)))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Help", #selector(openHelp)))
-        // Only the agent apps that are installed, checked at each open.
-        for app in AgentApp.allCases where app.isInstalled {
-            let item = menuItem("Help with \(app.name)", #selector(askForHelp(_:)))
-            item.representedObject = app.rawValue
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Settings…", #selector(openSettings)))
-        menu.addItem(menuItem("Quit LocalRouter", #selector(quit)))
-        item.menu = menu
+        item.menu = makeMenu(AppMenu.entries(model.menuContext, window: true))
         item.button?.performClick(nil)
         item.menu = nil
     }
 
-    private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    private func makeMenu(_ entries: [AppMenu.Entry]) -> NSMenu {
+        let menu = NSMenu()
+        for entry in entries {
+            switch entry {
+            case .separator:
+                menu.addItem(.separator())
+            case let .header(title):
+                menu.addItem(.sectionHeader(title: title))
+            case let .item(entry):
+                menu.addItem(menuItem(entry))
+            case let .submenu(title, symbol, children):
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+                item.submenu = makeMenu(children)
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    private func menuItem(_ entry: AppMenu.Item) -> NSMenuItem {
+        let item = NSMenuItem(title: entry.title, action: #selector(menuAction(_:)), keyEquivalent: entry.shortcut ?? "")
         item.target = self
+        item.representedObject = entry.action
+        if let symbol = entry.symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        if entry.checked { item.state = .on }
+        if entry.emphasized {
+            item.attributedTitle = NSAttributedString(string: entry.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+        }
+        if let detail = entry.detail {
+            if #available(macOS 14.4, *) { item.subtitle = detail } else { item.toolTip = detail }
+        }
         return item
     }
 
-    /// Menu actions run while the menu is closing; open the window after it.
-    @objc private func openWindow() {
-        DispatchQueue.main.async { self.showWindow() }
+    @objc private func menuAction(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? AppMenu.Action else { return }
+        perform(action, fromWindow: false)
     }
 
-    @objc private func openSettings() {
-        DispatchQueue.main.async { self.showSettings() }
+    /// Runs a command of the icon's menu or of the window's "…" menu. From
+    /// the icon's menu the window is closed, so a result is said in an
+    /// alert; in the window it goes to the footer.
+    func perform(_ action: AppMenu.Action, fromWindow: Bool) {
+        switch action {
+        case .openWindow:
+            // Menu actions run while the menu is closing; open the window after it.
+            DispatchQueue.main.async { self.showWindow() }
+        case .openChromeViaProxy: openChromeViaProxy()
+        case .openProxyLog: Task { @MainActor in await model.openProxyLog() }
+        case .showProxyLogFolder: model.showProxyLogFolder()
+        case .copyAgentPrompt: model.copy(model.agentPrompt)
+        case .copyMCPCommand: model.copy(model.mcpCommand)
+        case .openAgentHelp: model.open(model.agentHelpURL)
+        case .installCLI: report(model.installCLI(), fromWindow: fromWindow)
+        case .installClaude: report(model.installClaude(), fromWindow: fromWindow)
+        case .installCodex: report(model.installCodex(), fromWindow: fromWindow)
+        case .help: DispatchQueue.main.async { self.showSettings(.help) }
+        case let .askForHelp(app): model.askForHelp(app)
+        case .checkForUpdates:
+            if fromWindow { Task { @MainActor in await model.checkForUpdates(manual: true) } } else { checkForUpdates() }
+        case .settings: DispatchQueue.main.async { self.showSettings() }
+        case .quit: NSApp.terminate(nil)
+        }
     }
 
-    @objc private func openHelp() {
-        DispatchQueue.main.async { self.showSettings(.help) }
-    }
-
-    @objc private func askForHelp(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let app = AgentApp(rawValue: raw) else { return }
-        model.askForHelp(app)
+    /// The install commands set the footer message themselves.
+    private func report(_ feedback: Feedback, fromWindow: Bool) {
+        guard !fromWindow else { return }
+        DispatchQueue.main.async { self.alert(feedback) }
     }
 
     /// The window opens to show the result: the proxy address, or why
     /// Chrome was not started.
-    @objc private func openChromeViaProxy() {
+    private func openChromeViaProxy() {
         Task { @MainActor in
             await model.openChromeViaProxy()
             showWindow()
         }
     }
 
-    @objc private func openProxyLog() { Task { @MainActor in await model.openProxyLog() } }
-    @objc private func showProxyLogFolder() { model.showProxyLogFolder() }
-
-    @objc private func openAgentHelp() { model.open(model.agentHelpURL) }
-    @objc private func copyAgentPrompt() { model.copy(model.agentPrompt) }
-    @objc private func copyMCPCommand() { model.copy(model.mcpCommand) }
-
-    @objc private func installCLI() {
-        let feedback = model.installCLI()
-        DispatchQueue.main.async { self.alert(feedback) }
-    }
-
-    @objc private func installClaude() {
-        let feedback = model.installClaude()
-        DispatchQueue.main.async { self.alert(feedback) }
-    }
-
-    @objc private func installCodex() {
-        let feedback = model.installCodex()
-        DispatchQueue.main.async { self.alert(feedback) }
-    }
-
     /// Says the result in an alert; an available update can be installed
     /// from it.
-    @objc private func checkForUpdates() {
+    private func checkForUpdates() {
         Task { @MainActor in
             await model.checkForUpdates(manual: true)
             switch model.update {
@@ -230,6 +228,4 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         for title in buttons { alert.addButton(withTitle: title) }
         return alert.runModal()
     }
-
-    @objc private func quit() { NSApp.terminate(nil) }
 }

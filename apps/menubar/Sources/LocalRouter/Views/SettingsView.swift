@@ -76,6 +76,11 @@ struct SettingsView: View {
                 }
                 .listStyle(.sidebar)
             }
+            Text("\(Instance.current.appName) \(model.version)")
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
         }
     }
 
@@ -95,8 +100,24 @@ struct SettingsView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
     }
 
+    /// Daemon has a green dot while it runs, orange otherwise; Updates
+    /// has a badge while an update is available.
     private func row(_ page: SettingsPage) -> some View {
-        Label(page.title, systemImage: page.symbol).tag(page)
+        HStack {
+            Label(page.title, systemImage: page.symbol)
+            if page == .daemon {
+                Spacer()
+                Circle().fill(model.running ? Theme.online : Theme.warning).frame(width: 6, height: 6)
+                    .accessibilityLabel(model.running ? "running" : "not running")
+            }
+        }
+        .badge(page == .updates && updateAvailable ? 1 : 0)
+        .tag(page)
+    }
+
+    private var updateAvailable: Bool {
+        if case .available = model.update { return true }
+        return false
     }
 
     private func expanded(_ page: SettingsPage) -> Binding<Bool> {
@@ -116,9 +137,9 @@ struct SettingsView: View {
                 }
                 Text(page.title)
             }
-            .font(.title3.weight(.semibold))
+            .font(.title2.weight(.semibold))
             .padding(.horizontal, 20)
-            .padding(.top, 14)
+            .padding(.top, 16)
             if page == .help {
                 HelpView()
             } else {
@@ -144,13 +165,14 @@ struct SettingsView: View {
 
     @ViewBuilder private var generalPage: some View {
         Section {
-            Toggle("Open at login", isOn: $openAtLogin)
-                .disabled(!model.inBundle)
-                .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
-            Text(model.inBundle
-                ? "Starts LocalRouter when you log in, so it works after a restart. The daemon starts at login either way."
-                : "Only an app bundle can open at login.")
-                .font(.caption).foregroundStyle(.secondary)
+            Toggle(isOn: $openAtLogin) {
+                Text("Open at login")
+                Text(model.inBundle
+                    ? "Starts \(Instance.current.appName) when you log in, so it works after a restart. The daemon starts at login either way."
+                    : "Only an app bundle can open at login.")
+            }
+            .disabled(!model.inBundle)
+            .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
             if let note = loginNote {
                 Text(note).font(.caption)
                 Button("Open Login Items") { model.openLoginItems() }
@@ -168,14 +190,16 @@ struct SettingsView: View {
 
     @ViewBuilder private var routingPage: some View {
         Section {
-            Toggle("Subdomain fallback", isOn: $fallback)
-                .onChange(of: fallback) { _, on in if loaded { Task { await model.setFallback(on) } } }
-            Text("feat-x.shop.localhost uses the shop route when it has no route of its own.")
-                .font(.caption).foregroundStyle(.secondary)
-            Toggle("Allow LAN access", isOn: $allowLan)
-                .onChange(of: allowLan) { _, on in if loaded { Task { await model.setAllowLan(on) } } }
-            Text("On: other machines reach ports \(ports.http) and \(ports.https) only on the networks below. On other networks only this Mac can reach ports \(ports.http) and \(ports.https). TCP routes, the proxy and the proxy log are always this Mac only, except a phone client (Proxy tab, Phone…).")
-                .font(.caption).foregroundStyle(.secondary)
+            Toggle(isOn: $fallback) {
+                Text("Subdomain fallback")
+                Text("feat-x.shop.localhost uses the shop route when it has no route of its own.")
+            }
+            .onChange(of: fallback) { _, on in if loaded { Task { await model.setFallback(on) } } }
+            Toggle(isOn: $allowLan) {
+                Text("Allow LAN access")
+                Text("On: other machines reach ports \(String(ports.http)) and \(String(ports.https)) only on the networks below. On other networks only this Mac can reach ports \(String(ports.http)) and \(String(ports.https)). TCP routes, the proxy and the proxy log are always this Mac only, except a phone client (Proxy tab, Set up iPhone).")
+            }
+            .onChange(of: allowLan) { _, on in if loaded { Task { await model.setAllowLan(on) } } }
         }
         lanNetworksSection
     }
@@ -183,14 +207,31 @@ struct SettingsView: View {
     /// LAN access per network (ADR 08): this network and the allowed list.
     /// Read when the page opens; nothing watches the network.
     @ViewBuilder private var lanNetworksSection: some View {
-        Section("Networks") {
+        Section {
             if let here = model.status?.network {
                 let known = model.lanNetworks.first { $0.id == here.id }
                 let name = (known?.name).flatMap { $0.isEmpty ? nil : $0 }
-                Text("This network: \(name.map { "\($0) " } ?? "")(router \(here.router) on \(here.interface)). \(here.lanAllowed ? "Allowed." : known != nil ? "In the list; turn on Allow LAN access." : "Not allowed.")")
-                if known != nil {
-                    Button("Stop Allowing") { Task { await model.forgetNetwork(here.id) } }
-                } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "wifi").foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(name.map { "This network: \($0)" } ?? "This network").fontWeight(.semibold)
+                            if here.lanAllowed {
+                                Chip(text: "Allowed", kind: .success)
+                            } else if known != nil {
+                                Chip(text: "In the list; turn on Allow LAN access", kind: .warning)
+                            } else {
+                                Chip(text: "Not allowed", kind: .neutral)
+                            }
+                        }
+                        Text("Router \(here.router) on \(here.interface)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if known != nil {
+                        Button("Stop Allowing") { Task { await model.forgetNetwork(here.id) } }
+                    }
+                }
+                if known == nil {
                     HStack {
                         TextField("Name", text: $networkName, prompt: Text("Home"))
                         Button("Allow on This Network") {
@@ -208,11 +249,17 @@ struct SettingsView: View {
             if model.lanNetworks.isEmpty {
                 Text("No network is allowed yet.").font(.caption).foregroundStyle(.secondary)
             }
+        } header: {
             HStack {
-                Text("A network is known by its router's MAC address.").font(.caption).foregroundStyle(.secondary)
+                Text("Networks")
                 Spacer()
                 Button("Check Again") { Task { await model.loadLanNetworks() } }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accent)
+                    .font(.callout.weight(.medium))
             }
+        } footer: {
+            Text("A network is known by its router's MAC address.").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -244,10 +291,11 @@ struct SettingsView: View {
             noProxy
         } else {
             Section {
-                Toggle("Forward proxy", isOn: $proxyOn)
-                    .onChange(of: proxyOn) { _, on in if loaded { Task { await model.setProxyEnabled(on) } } }
-                Text("Chrome or a program you start with the proxy settings sends its traffic through LocalRouter, and Logs shows it. Only this Mac can reach the port.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Toggle(isOn: $proxyOn) {
+                    Text("Forward proxy")
+                    Text("Chrome or a program you start with the proxy settings sends its traffic through \(Instance.current.appName), and Traffic shows it. Only this Mac can reach the port.")
+                }
+                .onChange(of: proxyOn) { _, on in if loaded { Task { await model.setProxyEnabled(on) } } }
                 if let p = model.proxy {
                     LabeledContent("Address", value: p.bound.isEmpty ? (p.enabled ? "not listening" : "off, port \(p.port)") : p.url)
                     ForEach(p.errors, id: \.self) { e in Text(e).foregroundStyle(.red).font(.caption) }
@@ -308,7 +356,7 @@ struct SettingsView: View {
                         .onSubmit(addInspectHost)
                     Button("Inspect", action: addInspectHost).disabled(newInspectHost.isEmpty)
                 }
-                Text("Other HTTPS hosts pass through unread: Logs shows only their name.")
+                Text("Other HTTPS hosts pass through unread: Traffic shows only their name.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let ca = p.inspectCa {
@@ -374,7 +422,7 @@ struct SettingsView: View {
                 Text(model.daemonProblem ?? "Not running").foregroundStyle(.secondary)
             }
             if let pending = daemon.pendingPorts {
-                Text("Restart the daemon to use ports \(pending.http) and \(pending.https):").font(.caption)
+                Text("Restart the daemon to use ports \(String(pending.http)) and \(String(pending.https)):").font(.caption)
                 CopyLine(text: DaemonSection.restartCommand(for: .current))
             }
             HStack {
@@ -493,7 +541,9 @@ private struct LanNetworkRow: View {
             Text("router \(network.router)").font(.caption).foregroundStyle(.secondary)
             Text(network.id).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
-            Button("Forget") { Task { await model.forgetNetwork(network.id) } }
+            Button("Forget", role: .destructive) { Task { await model.forgetNetwork(network.id) } }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.dangerText)
         }
         .onAppear { name = network.name }
     }

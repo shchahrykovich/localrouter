@@ -52,7 +52,7 @@ them at {{PROXY_LOG_URL}}.
 - You cannot change the proxy of a program that is already running, and that
   includes yourself.
 - A phone cannot use `127.0.0.1`: the user sets it up in the app (Proxy tab,
-  Phone…). You cannot do it for them.
+  Set up iPhone). You cannot do it for them.
 - Never write proxy settings into project files (`.env`,
   `.claude/settings.json`, test configs).
 - A HAR file can be 100 MB: do not read a whole file, use `jq` on the newest
