@@ -218,6 +218,11 @@ const fullWait = new Map();
 const liveMsgs = new Map(); // _id → messages of an open WebSocket
 let held = [];            // live events while paused
 let clearedAt = loadCleared(); // Clear: rows that started before are hidden
+// Rows chosen for "Download HAR": Cmd/Ctrl-click a row or a group, Shift-click
+// a range, or Select mode. Not the row whose details are open (S.sel).
+let chosen = new Set();
+let anchor = null;        // the last row clicked, the start of a Shift range
+let choosing = false;     // Select mode: a click chooses instead of opening
 let order = [];           // keys in table order, for the arrow keys
 let toastTimer = null;
 let drawn = null;         // what the detail pane shows, to skip redraws
@@ -468,6 +473,7 @@ function clearView() {
   rows = [];
   byKey.clear();
   fresh.clear();
+  chosen.clear();
   liveMsgs.clear();
   held = [];
   reading = null;
@@ -727,6 +733,9 @@ function drawToolbar(vis) {
   $("count").textContent = count(vis.length) + " of " + count(rows.length) + (!S.live && held.length ? ", " + count(held.length) + " new while paused" : "") +
     (clearedAt ? ", cleared at " + clock(clearedAt).slice(0, 8) : "");
   $("unclear").hidden = !clearedAt;
+  $("choose-btn").classList.toggle("active", choosing);
+  $("chosen-bar").hidden = !chosen.size;
+  $("chosen-n").textContent = count(chosen.size) + " selected";
 }
 
 const TYPES = [
@@ -971,10 +980,11 @@ function buildTree(vis) {
       let n = map.get(k);
       if (!n) {
         const kind = depth === 0 ? "host" : "folder";
-        n = { key: k, label: depth === 0 ? k : segs[depth - 1] + "/", depth, kind, kids: new Map(), reqs: [], n: 0, err: 0, bytes: 0 };
+        n = { key: k, label: depth === 0 ? k : segs[depth - 1] + "/", depth, kind, kids: new Map(), reqs: [], keys: [], n: 0, err: 0, bytes: 0 };
         map.set(k, n);
       }
       n.n++;
+      n.keys.push(r.key);
       n.bytes += Math.max(0, r.size);
       if (isError(r)) n.err++;
       node = n;
@@ -986,7 +996,9 @@ function buildTree(vis) {
 }
 
 function nodeEl(n, open) {
-  return h("div", { class: "node k-" + n.kind, style: { paddingLeft: 14 + n.depth * 18 + "px" }, title: n.key, onClick: () => { S.tx[n.key] = !open; render(); } },
+  return h("div", { class: "node k-" + n.kind, style: { paddingLeft: 14 + n.depth * 18 + "px" }, title: n.key,
+    onClick: (ev) => { if (!chooseGroup(ev, n.keys)) { S.tx[n.key] = !open; render(); } } },
+    choiceBox(n.keys),
     h("span", { class: "caret-g", text: open ? "▾" : "▸" }),
     h("span", { class: "label", text: n.label }),
     h("span", { class: "n", text: count(n.n) }),
@@ -1055,7 +1067,9 @@ function drawTable(span, vis, sel) {
       const closed = !!S.collapsed[k];
       const errs = list.filter(isError).length;
       const bytes = list.reduce((a, r) => a + Math.max(0, r.size), 0);
-      frag.append(h("div", { class: "group", onClick: () => { S.collapsed[k] = !S.collapsed[k]; render(); } },
+      const keys = list.map((r) => r.key);
+      frag.append(h("div", { class: "group", onClick: (ev) => { if (!chooseGroup(ev, keys)) { S.collapsed[k] = !S.collapsed[k]; render(); } } },
+        choiceBox(keys),
         h("div", { class: "caret-g", text: closed ? "▸" : "▾" }),
         h("div", { class: "label", text: k }),
         h("div", { class: "n", text: count(list.length) }),
@@ -1088,14 +1102,14 @@ function drawTable(span, vis, sel) {
 function requestCell(r, ctx, opts) {
   if (ctx.tree) {
     const leaf = leafOf(r);
-    return h("div", { class: "c-req", title: r.url, style: { paddingLeft: opts.indent + "px" } },
+    return h("div", { class: "c-req", title: r.url, style: { paddingLeft: opts.indent + "px" } }, choiceBox([r.key]),
       h("span", { class: "path-main", text: leaf.name }), h("span", { class: "path-query", text: leaf.query }));
   }
   if (r.mode === "tunnel") {
-    return h("div", { class: "c-req", title: r.url }, ctx.hostInPath && !opts.noHost ? h("span", { class: "host-pre", text: r.host + " " }) : null, h("span", { class: "path-query", text: "(tunnel)" }));
+    return h("div", { class: "c-req", title: r.url }, choiceBox([r.key]), ctx.hostInPath && !opts.noHost ? h("span", { class: "host-pre", text: r.host + " " }) : null, h("span", { class: "path-query", text: "(tunnel)" }));
   }
   const cut = r.path.search(/[?#]/);
-  return h("div", { class: "c-req", title: r.url },
+  return h("div", { class: "c-req", title: r.url }, choiceBox([r.key]),
     ctx.hostInPath && !opts.noHost ? h("span", { class: "host-pre", text: r.host }) : null,
     h("span", { class: "path-main", text: cut < 0 ? r.path : r.path.slice(0, cut) }),
     h("span", { class: "path-query", text: cut < 0 ? "" : r.path.slice(cut) }));
@@ -1131,8 +1145,8 @@ function rowEl(r, ctx, opts) {
     }
   }
   return h("div", {
-    class: "row" + (ctx.sel && ctx.sel.key === r.key ? " picked" : "") + (fresh.has(r.key) ? " fresh" : ""),
-    onClick: () => select(r.key),
+    class: "row" + (ctx.sel && ctx.sel.key === r.key ? " picked" : "") + (chosen.has(r.key) ? " chosen" : "") + (fresh.has(r.key) ? " fresh" : ""),
+    onClick: (ev) => { if (!chooseRow(ev, r.key)) select(r.key); },
     onContextmenu: (ev) => {
       ev.preventDefault();
       S.sel = r.key;
@@ -1140,6 +1154,97 @@ function rowEl(r, ctx, opts) {
       render();
     },
   }, cells);
+}
+
+// ---- choosing rows for a HAR download
+
+/** A check box before a row or a group, while anything is chosen or in
+ *  Select mode: on when all `keys` are chosen, half when some are. */
+function choiceBox(keys) {
+  if (!choosing && !chosen.size) return null;
+  const n = keys.filter((k) => chosen.has(k)).length;
+  return h("span", { class: "choice" + (n && n === keys.length ? " on" : n ? " some" : "") });
+}
+
+/** Cmd/Ctrl-click (or any click in Select mode) adds or removes one row;
+ *  Shift-click chooses every row from the last one clicked. False for a
+ *  plain click: the row opens, and the choice is dropped. */
+function chooseRow(ev, key) {
+  if (ev.shiftKey && anchor !== null) {
+    const a = order.indexOf(anchor);
+    const b = order.indexOf(key);
+    if (a >= 0 && b >= 0) {
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) chosen.add(order[i]);
+      window.getSelection().removeAllRanges();
+      render();
+      return true;
+    }
+  }
+  anchor = key;
+  if (ev.metaKey || ev.ctrlKey || choosing) {
+    if (chosen.has(key)) chosen.delete(key);
+    else chosen.add(key);
+    render();
+    return true;
+  }
+  chosen.clear();
+  return false;
+}
+
+/** Cmd/Ctrl-click on a group (or a click on its box, or in Select mode)
+ *  chooses all its rows, or drops them when all are chosen already. */
+function chooseGroup(ev, keys) {
+  const onBox = ev.target.classList && ev.target.classList.contains("choice");
+  if (!(ev.metaKey || ev.ctrlKey || choosing || onBox)) return false;
+  const all = keys.every((k) => chosen.has(k));
+  for (const k of keys) all ? chosen.delete(k) : chosen.add(k);
+  render();
+  return true;
+}
+
+function clearChoice() {
+  chosen.clear();
+  choosing = false;
+  render();
+}
+
+/** The chosen rows as one HAR file, whole entries with their bodies, read
+ *  from the log files; oldest first. A request still open has no body yet. */
+async function downloadChosen(keys) {
+  const list = [...keys].map((k) => byKey.get(k)).filter(Boolean).sort((a, b) => a.start - b.start);
+  if (!list.length) return;
+  toast("Reading " + count(list.length) + " requests…");
+  const entries = new Array(list.length);
+  let next = 0;
+  let partial = 0;
+  const work = async () => {
+    while (next < list.length) {
+      const i = next++;
+      const r = list[i];
+      let e = null;
+      try {
+        e = await wholeEntry(r);
+      } catch (err) {
+        e = null;
+      }
+      if (!e) partial++;
+      const copyOf = JSON.parse(JSON.stringify(e || r.e));
+      for (const k of ["_at", "_file", "_open"]) delete copyOf[k];
+      entries[i] = copyOf;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, list.length) }, work));
+  const har = { log: { version: "1.2", creator: { name: "LocalRouter", version: "" }, pages: [], entries } };
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  const name = "proxy-" + (S.client || "selection") + "-" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + ".har";
+  const url = URL.createObjectURL(new Blob([JSON.stringify(har, null, 1)], { type: "application/json" }));
+  const a = h("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  toast("Saved " + count(list.length) + " requests to " + name + (partial ? " (" + count(partial) + " without bodies)" : ""));
 }
 
 function select(key) {
@@ -1663,6 +1768,9 @@ function drawCtx() {
     item("Copy URL", () => copy("URL copied", r.url)),
     item("Copy as cURL", () => copyCurl(r)),
     item("Copy as JSON", () => copyJson(r)),
+    chosen.size > 1 && chosen.has(r.key)
+      ? item("Download " + count(chosen.size) + " selected as HAR", () => downloadChosen(chosen))
+      : item("Download as HAR", () => downloadChosen([r.key])),
     h("div", { class: "pop-sep" }),
     item("Show only this host", () => { S.fHost = { [r.host]: true }; }),
     item("Hide this host", () => { $("q").value = r.host; S.inv = true; S.q = r.host; }),
@@ -1872,6 +1980,7 @@ function onKey(e) {
   if (e.key === "Escape") {
     if (S.pop || S.ctx) return closePops();
     if (tag === "INPUT" && e.target.value) return;
+    if (chosen.size || choosing) return clearChoice();
     if (S.sel) {
       S.sel = null;
       render();
@@ -1879,6 +1988,13 @@ function onKey(e) {
     return;
   }
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if ((e.key === "a" || e.key === "A") && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    // Every request the filter shows, in closed groups too.
+    for (const r of lastVis) chosen.add(r.key);
+    render();
+    return;
+  }
   if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
     $("q").focus();
@@ -1923,6 +2039,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("builder").addEventListener("mousedown", (e) => { if (e.target === $("builder")) closeBuilder(); });
   $("live-btn").addEventListener("click", () => setLive(!S.live));
   $("clear-btn").addEventListener("click", clearView);
+  $("choose-btn").addEventListener("click", () => { choosing = !choosing; render(); });
+  $("chosen-dl").addEventListener("click", () => downloadChosen(chosen));
+  $("chosen-clear").addEventListener("click", clearChoice);
   $("unclear").addEventListener("click", unclear);
   $("range").addEventListener("click", () => { S.range = null; render(); });
   $("tl-btn").addEventListener("click", () => { S.tl = !S.tl; save(); render(); });

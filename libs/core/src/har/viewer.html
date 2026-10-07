@@ -51,6 +51,10 @@
         <button id="tree-btn" class="btn tight icon" type="button"><svg id="icon-expand" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6 8 2.5 11.5 6M4.5 10 8 13.5 11.5 10"></path></svg><svg id="icon-collapse" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 11.5 2.5M4.5 13.5 8 10 11.5 13.5"></path></svg></button>
         <button id="range" class="range mono" type="button" title="Clear time range" hidden></button>
         <span id="count" class="count mono"></span>
+        <button id="choose-btn" class="btn tip" type="button" data-tip="Select requests and groups to download as one HAR file. Also: ⌘-click, Shift-click, ⌘A">Select</button>
+        <span id="chosen-bar" class="chosen-bar" hidden><span id="chosen-n" class="mono"></span>
+          <button id="chosen-dl" class="btn small dark" type="button">Download HAR</button>
+          <button id="chosen-clear" class="btn small" type="button" title="Clear the selection (Esc)">Clear</button></span>
         <button id="unclear" class="btn small" type="button" title="Show the requests hidden by Clear again" hidden>Show all</button>
       </div>
       <div class="typebar">
