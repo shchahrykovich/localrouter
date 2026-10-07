@@ -102,6 +102,7 @@
       "address": "192.168.0.10",
       "port": 8880,
       "setup_url": "http://192.168.0.10:8880/setup/k7mq-2xph-9tdw-r4nc",
+      "pac_url": "http://192.168.0.10:8880/pac/p4cp-4cp4-cp4c-p4cp.pac",
       "devices": [
         "192.168.0.23"
       ],

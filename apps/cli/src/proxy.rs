@@ -118,6 +118,10 @@ pub enum ClientCommand {
     Allow { name: String, address: String },
     /// Remove a device from a phone client, or refuse one that asks.
     Deny { name: String, address: String },
+    /// Send a phone set to Automatic direct: its PAC file says DIRECT.
+    Pause { name: String },
+    /// Send a phone set to Automatic through the proxy again.
+    Resume { name: String },
     /// List the proxy clients and their ports.
     List,
 }
@@ -395,6 +399,7 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
     let cli = instance.cli();
     let config: Config = c.call("get_config", api::Empty {}).await?;
     let mut list = config.proxy_clients.clone();
+    let pause = matches!(command, ClientCommand::Pause { .. });
     match command {
         ClientCommand::List => {
             let p: GetProxyResult = c.call("get_proxy", api::Empty {}).await?;
@@ -410,7 +415,7 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
                 Some(port) => port,
                 None => next_port(c, &config).await?,
             };
-            list.push(ProxyClient { name: name.clone(), port, lan });
+            list.push(ProxyClient { name: name.clone(), port, lan, paused: false });
             set(c, SetConfigParams { proxy_clients: Some(list), ..Default::default() }).await?;
             let p = get_proxy(c, Some(name.clone())).await?;
             if let Some(info) = &p.lan {
@@ -449,6 +454,20 @@ async fn clients(c: &mut Client, command: ClientCommand, instance: &Instance) ->
             let r: SetPhoneDeviceResult =
                 c.call("set_phone_device", SetPhoneDeviceParams { client: name.clone(), address: address.clone(), allow: true }).await?;
             println!("Allowed {address} on {name}. Allowed devices: {}", r.devices.join(", "));
+        }
+        ClientCommand::Pause { name } | ClientCommand::Resume { name } => {
+            let paused = pause;
+            let Some(client) = list.iter_mut().find(|x| x.name == name) else { bail!("there is no proxy client {name}") };
+            if !client.lan {
+                bail!("proxy client {name} is not a phone client; add one: {cli} proxy client add <name> --lan");
+            }
+            client.paused = paused;
+            set(c, SetConfigParams { proxy_clients: Some(list), ..Default::default() }).await?;
+            if paused {
+                println!("Paused {name}: a phone set to Automatic goes direct (it may take until it rejoins the Wi-Fi). Manual settings do not follow.");
+            } else {
+                println!("Resumed {name}: a phone set to Automatic goes through the proxy again.");
+            }
         }
         ClientCommand::Deny { name, address } => {
             let r: SetPhoneDeviceResult =
@@ -509,6 +528,9 @@ pub fn describe_lan(info: &LanProxyInfo) -> String {
     );
     if let Some(url) = &info.setup_url {
         out.push_str(&format!("Setup URL  {url}  (opening it allows the device)\n"));
+    }
+    if let Some(url) = &info.pac_url {
+        out.push_str(&format!("PAC URL    {url}  (Configure Proxy → Automatic)\n"));
     }
     let devices = if info.devices.is_empty() { "none".to_string() } else { info.devices.join(", ") };
     out.push_str(&format!("Allowed    {devices}\n"));

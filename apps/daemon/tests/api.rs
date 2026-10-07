@@ -1559,6 +1559,7 @@ fn phone_record_made_at_start() {
     let p = phones(&d);
     assert!(p.get("old-phone").is_none());
     assert_eq!(p["iphone"]["token"].as_str().unwrap().len(), 19);
+    assert_eq!(p["iphone"]["pac"].as_str().unwrap().len(), 19, "a PAC key too");
 }
 
 // T7, I11: allow and deny a device; deny closes the client's open
@@ -1590,6 +1591,43 @@ fn allow_and_deny_a_device() {
     assert_eq!(c.error_code("set_phone_device", json!({"client": "nobody", "address": "1.2.3.4", "allow": true})), "not_found");
     assert_eq!(c.error_code("set_phone_device", json!({"client": "chrome", "address": "1.2.3.4", "allow": true})), "invalid_request");
     assert_eq!(c.error_code("set_phone_device", json!({"client": "iphone", "address": "phone", "allow": true})), "invalid_request");
+}
+
+/// GET `path` from 127.0.0.1:`port` as the phone's system would, with a
+/// Host of this Mac's LAN address. The response body.
+fn pac_body(port: u16, path: &str) -> String {
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: 192.168.0.10:{port}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or(out)
+}
+
+// A phone set to Automatic: the PAC URL has its own key (not the setup
+// token), the key survives a new setup code and a restart of the list,
+// and `paused` turns the PAC file to DIRECT at once.
+#[test]
+fn pac_url_and_pause() {
+    let d = start_on_network(phone_config(), HOME_NET_WITH_ADDRESS);
+    let mut c = d.client();
+    proxy_on(&mut c);
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true}]}));
+    let port = client_port(&mut c, "iphone").unwrap();
+    let pac = phones(&d)["iphone"]["pac"].as_str().unwrap().to_string();
+    assert_eq!(pac.len(), 19);
+    assert_ne!(pac, phones(&d)["iphone"]["token"].as_str().unwrap());
+    let p = c.call("get_proxy", json!({"client": "iphone"}));
+    assert_eq!(p["lan"]["pac_url"], format!("http://192.168.0.10:{port}/pac/{pac}.pac"));
+    assert!(pac_body(port, &format!("/pac/{pac}.pac")).contains(&format!("PROXY 192.168.0.10:{port}; DIRECT")));
+
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true, "paused": true}]}));
+    assert_eq!(client_port(&mut c, "iphone"), Some(port), "pausing keeps the port");
+    assert!(pac_body(port, &format!("/pac/{pac}.pac")).contains("return \"DIRECT\";"));
+    c.call("set_config", json!({"proxy_clients": [{"name": "iphone", "port": 0, "lan": true}]}));
+    assert!(pac_body(port, &format!("/pac/{pac}.pac")).contains("PROXY"));
+
+    c.call("new_setup_code", json!({"client": "iphone"}));
+    assert_eq!(phones(&d)["iphone"]["pac"], pac.as_str(), "a new QR code keeps the PAC URL in the phone's settings working");
 }
 
 // A new setup code changes the QR code's token; allowed devices stay.

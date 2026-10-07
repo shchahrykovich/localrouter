@@ -359,6 +359,24 @@ final class AppModel {
         await loadPhone()
     }
 
+    /// The phone client's pause switch: while paused its PAC file sends the
+    /// phone direct, so a phone set to Automatic stops using the proxy.
+    var phonePaused: Bool {
+        guard let name = phoneSetup.client else { return false }
+        return phoneConfig?.proxyClients?.first { $0.name == name }?.paused ?? false
+    }
+
+    func setPhonePaused(_ paused: Bool) async {
+        guard let name = phoneSetup.client, let cfg = await config else { return }
+        let list = (cfg.proxyClients ?? []).map { c in
+            var c = c
+            if c.name == name { c.paused = paused ? true : nil }
+            return c
+        }
+        await setConfig(SetConfigParams(proxyClients: list))
+        await loadPhone()
+    }
+
     func removePhone() async {
         guard let name = phoneSetup.client, let cfg = await config else { return }
         await setConfig(SetConfigParams(proxyClients: (cfg.proxyClients ?? []).filter { $0.name != name }))

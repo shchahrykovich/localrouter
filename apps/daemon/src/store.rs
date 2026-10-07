@@ -183,6 +183,10 @@ pub struct PhoneRecord {
     pub token: String,
     #[serde(default)]
     pub devices: Vec<String>,
+    /// The key of the PAC file URL. Kept when the setup code is renewed: the
+    /// URL stays in the phone's settings. Empty in files from before it.
+    #[serde(default)]
+    pub pac: String,
 }
 
 /// The phone clients, by name. A missing or broken file is empty: every
@@ -381,11 +385,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("proxy-phones.json");
         let mut map = std::collections::BTreeMap::new();
-        map.insert("iphone".to_string(), PhoneRecord { token: "k7mq".into(), devices: vec!["192.168.0.23".into()] });
+        map.insert("iphone".to_string(), PhoneRecord { token: "k7mq".into(), devices: vec!["192.168.0.23".into()], pac: "p4c".into() });
         save_phones(&path, &map).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(load_phones(&path), map);
-        map.insert("ipad".to_string(), PhoneRecord { token: "x".into(), devices: vec![] });
+        map.insert("ipad".to_string(), PhoneRecord { token: "x".into(), devices: vec![], pac: String::new() });
         save_phones(&path, &map).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         fs::write(&path, "not json").unwrap();

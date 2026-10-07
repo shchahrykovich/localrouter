@@ -20,7 +20,7 @@ use crate::scripts::engine::{LastError, ScriptKind};
 use crate::scripts::rules::ScriptRule;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.7";
+pub const API_VERSION: &str = "1.8";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
@@ -467,6 +467,11 @@ pub struct LanProxyInfo {
     /// `http://<address>:<port>/setup/<token>`: what the QR code holds.
     /// Opening it allows the device that opens it.
     pub setup_url: Option<String>,
+    /// `http://<address>:<port>/pac/<key>.pac`: the URL for Configure Proxy
+    /// → Automatic. The phone goes through the proxy, or direct when the
+    /// port does not answer or the client is paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pac_url: Option<String>,
     /// The allowed devices.
     pub devices: Vec<String>,
     /// Devices waiting for Allow or Deny.

@@ -70,16 +70,26 @@ struct PhoneView: View {
                     .background(.white, in: RoundedRectangle(cornerRadius: 6))
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("1. Scan with the iPhone camera. The page allows this iPhone.")
-                Text("2. Settings → Wi-Fi → (i) → Configure Proxy → Manual:")
+                Text("1. Scan with the iPhone camera. The page allows this iPhone and shows the next step.")
+                Text("2. Settings → Wi-Fi → (i) → Configure Proxy, one of:")
+                if let pac = lan.pacUrl {
+                    Text("Automatic (recommended): on and off from this Mac").foregroundStyle(.secondary)
+                    CopyLine(text: pac)
+                }
+                Text("Manual").foregroundStyle(.secondary)
                 BigValue(label: "Server", value: lan.address ?? "unknown")
                 BigValue(label: "Port", value: String(lan.port))
-                Text("3. Install CA on the page, then trust it in Certificate Trust Settings. Until then, HTTPS sites do not open on the iPhone.")
+                Text("3. Install CA on the page, then trust it: Settings → General → About → Certificate Trust Settings. Until then, HTTPS sites do not open on the iPhone.")
             }
             .font(.callout)
         }
+        Toggle("Send this iPhone through the proxy", isOn: Binding(
+            get: { !model.phonePaused },
+            set: { on in Task { await model.setPhonePaused(!on) } }
+        ))
+        .help("Off: the Automatic setting sends the iPhone direct. A Manual setting does not follow this switch.")
         devices(lan)
-        Text("To stop: Configure Proxy → Off on the iPhone. While it is on, the iPhone has no internet on this Wi-Fi when the Mac sleeps or the proxy is off. If the page does not open, the iPhone must be on the same Wi-Fi; some guest networks block devices from each other.")
+        Text("Automatic: turn the switch off here, and the iPhone goes direct (it may take until it rejoins the Wi-Fi). It also goes direct when the Mac sleeps. Manual: Configure Proxy → Off on the iPhone; while it is on, the iPhone has no internet on this Wi-Fi when the Mac sleeps. If the page does not open, the iPhone must be on the same Wi-Fi; some guest networks block devices from each other.")
             .font(.caption).foregroundStyle(.secondary)
         if confirmRemove {
             HStack {

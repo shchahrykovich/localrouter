@@ -314,11 +314,14 @@ A **phone client** is a proxy client whose port listens on the LAN:
 1. In the app: Proxy tab, **Phone…**. It turns on what is missing (the proxy,
    LAN access, this network) and shows a QR code.
 2. The user scans it with the iPhone camera. The page that opens allows this
-   iPhone and shows two values for Settings → Wi-Fi → (i) → Configure Proxy →
-   Manual: the server and the port. Its **Install CA** button gives the
-   inspection CA for HTTPS.
+   iPhone and shows only the next step: Settings → Wi-Fi → (i) → Configure
+   Proxy, either **Automatic** with one URL (the PAC file), or **Manual** with
+   the server and the port; then **Install Certificate** and trusting it, for
+   HTTPS. It checks each step itself.
 3. The phone's requests carry `_client` (`iphone`) in the log. To stop:
-   Configure Proxy → Off.
+   Automatic: `{{CLI}} proxy client pause iphone` (or the switch in the app);
+   the phone then goes direct, and it also goes direct when the Mac sleeps.
+   Manual: Configure Proxy → Off on the phone.
 
 The port takes another machine only on an allowed network (as ports
 {{HTTP_PORT}} and {{HTTPS_PORT}}) and only an allowed device: one that opened
@@ -326,7 +329,8 @@ the setup page, or one the user allowed. A device that is not allowed gets 403,
 and the app asks the user to Allow or Deny it. The port answers 403 for this
 Mac's own addresses too: a phone reaches the routes, not the Mac's other
 servers. From a terminal: `{{CLI}} proxy client add iphone --lan`,
-`{{CLI}} proxy client setup iphone`, `{{CLI}} proxy client allow iphone <ip>`.
+`{{CLI}} proxy client setup iphone`, `{{CLI}} proxy client allow iphone <ip>`,
+`{{CLI}} proxy client pause iphone` / `resume iphone`.
 An agent cannot set up a phone: MCP `get_proxy` never returns the setup URL.
 
 ## Proxy log: what a program sent, in HAR files

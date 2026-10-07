@@ -549,7 +549,10 @@ impl Daemon {
         let lan = lan.then(|| {
             let record = self.phones.lock().unwrap().get(name).cloned().unwrap_or_default();
             let devices = record.devices.iter().filter_map(|d| d.parse().ok()).collect();
-            LanHandle { client: Arc::new(LanClient::new(name, &record.token, devices)), conns: Arc::new(Mutex::new(cancel.child_token())) }
+            let client = LanClient::new(name, &record.token, devices);
+            client.set_pac(&record.pac);
+            client.set_paused(self.config().proxy_clients.iter().any(|c| c.name == name && c.paused));
+            LanHandle { client: Arc::new(client), conns: Arc::new(Mutex::new(cancel.child_token())) }
         });
         let at = ClientPort { client: Some(Arc::from(name)), port, lan: lan.as_ref().map(|l| l.client.clone()) };
         self.accept_proxy(listeners, at, cancel.clone(), lan.as_ref().map(|l| l.conns.clone()));
@@ -1205,6 +1208,13 @@ impl Daemon {
                 Err(e) => self.client_failed(&name, e.message),
             }
         }
+        // A phone client kept bound gets its new pause switch: its PAC file
+        // changes at once (ADR 10).
+        for (name, handle) in self.client_listeners.lock().unwrap().iter() {
+            if let Some(lan) = &handle.lan {
+                lan.client.set_paused(new.proxy_clients.iter().any(|c| c.name == *name && c.paused));
+            }
+        }
         self.refresh_proxy_ports();
         let restart_needed = (new.http_port, new.https_port) != self.start_ports;
         Ok(SetConfigResult { config: new, restart_needed })
@@ -1356,6 +1366,7 @@ impl Daemon {
             address: address.map(|a| a.to_string()),
             port,
             setup_url: address.map(|a| format!("http://{a}:{port}/setup/{}", record.token)),
+            pac_url: address.filter(|_| !record.pac.is_empty()).map(|a| format!("http://{a}:{port}/pac/{}.pac", record.pac)),
             devices: record.devices,
             pending: self.pending.lock().unwrap().get(name).cloned().unwrap_or_default(),
             problems,
@@ -1935,10 +1946,13 @@ fn phones_for(config: &Config, old: &BTreeMap<String, store::PhoneRecord>) -> BT
         .iter()
         .filter(|c| c.lan)
         .map(|c| {
-            let record = match old.get(&c.name) {
+            let mut record = match old.get(&c.name) {
                 Some(r) if !r.token.is_empty() => r.clone(),
-                _ => store::PhoneRecord { token: phone::new_token(), devices: vec![] },
+                _ => store::PhoneRecord { token: phone::new_token(), devices: vec![], pac: String::new() },
             };
+            if record.pac.is_empty() {
+                record.pac = phone::new_token();
+            }
             (c.name.clone(), record)
         })
         .collect()

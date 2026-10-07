@@ -263,6 +263,7 @@ struct Harness {
 /// The peer every connection to `Harness::phone` gets.
 const PHONE_PEER: &str = "192.168.0.23:50000";
 const PHONE_TOKEN: &str = "k7mq-2xph-9tdw-r4nc";
+const PHONE_PAC: &str = "p4cp-4cp4-cp4c-p4cp";
 
 async fn harness() -> Harness {
     let echo = echo_server().await;
@@ -340,6 +341,7 @@ async fn harness() -> Harness {
     let phone_local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let phone_local = phone_local_listener.local_addr().unwrap();
     let phone_client = Arc::new(LanClient::new("iphone", PHONE_TOKEN, vec![]));
+    phone_client.set_pac(PHONE_PAC);
     let events = Arc::new(Mutex::new(vec![]));
     let sink = events.clone();
     let forward = Arc::new(ForwardProxy {
@@ -1097,12 +1099,10 @@ async fn the_setup_page_allows_the_device() {
     let (status, headers, body) = request(h.phone, &format!("/setup/{PHONE_TOKEN}"), &[("host", &host)]).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");
-    assert_eq!(
-        headers.get("content-security-policy").unwrap().to_str().unwrap(),
-        format!("default-src 'none'; style-src 'unsafe-inline'; img-src https://{}", phone::CHECK_HOST)
-    );
+    assert_eq!(headers.get("content-security-policy").unwrap().to_str().unwrap(), phone::setup_csp());
     assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
-    assert!(body.contains("<span class=\"val\">192.168.0.10</span>") && body.contains(&format!("<span class=\"val\">{}</span>", h.phone.port())));
+    assert!(body.contains("value=\"192.168.0.10\"") && body.contains(&format!("value=\"{}\"", h.phone.port())));
+    assert!(body.contains(&format!("value=\"http://192.168.0.10:{}/pac/{PHONE_PAC}.pac\"", h.phone.port())));
     assert!(body.contains("This iPhone (192.168.0.23) is allowed."), "{body}");
     assert!(body.contains("Waiting for the proxy"), "opened directly: the proxy is not set yet");
     assert!(h.phone_client.allows(phone_ip()));
@@ -1217,6 +1217,38 @@ async fn the_trust_check_needs_an_allowed_device() {
     let h = harness().await;
     let refused = connect(h.phone, &format!("{}:443", phone::CHECK_HOST)).await.unwrap_err();
     assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+}
+
+// A phone set to Automatic reads its PAC file from the port: through this
+// port, then direct; only direct while paused. Any device may read it (the
+// phone's system fetches it before the device is allowed); a wrong key, or
+// another port, is not the PAC file; nothing is logged.
+#[tokio::test]
+async fn the_pac_file() {
+    let h = harness().await;
+    let path = format!("/pac/{PHONE_PAC}.pac");
+    let host = format!("192.168.0.10:{}", h.phone.port());
+    let (status, headers, body) = request(h.phone, &path, &[("host", &host)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers.get("content-type").unwrap(), "application/x-ns-proxy-autoconfig");
+    assert!(body.contains(&format!("\"PROXY 192.168.0.10:{}; DIRECT\"", h.phone.port())), "{body}");
+    assert!(!h.phone_client.allows(phone_ip()), "reading it allows nobody");
+    assert!(h.events.lock().unwrap().is_empty(), "and asks nothing");
+
+    // Through the proxy itself, as Safari may fetch it.
+    let (status, _, body) = request(h.phone, &format!("http://{host}{path}"), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("PROXY 192.168.0.10:"));
+
+    h.phone_client.set_paused(true);
+    let (_, _, body) = request(h.phone, &path, &[("host", &host)]).await;
+    assert!(body.contains("return \"DIRECT\";") && !body.contains("PROXY"), "{body}");
+
+    assert_eq!(request(h.phone, "/pac/wrong.pac", &[("host", &host)]).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(request(h.phone, &format!("/pac/{PHONE_TOKEN}.pac"), &[("host", &host)]).await.0, StatusCode::BAD_REQUEST, "the setup token is not the PAC key");
+    assert_eq!(request(h.agent, &path, &[("host", &host)]).await.0, StatusCode::BAD_REQUEST);
+    let logged = serde_json::to_string(&h.log.recent(None, 10)).unwrap();
+    assert!(!logged.contains(PHONE_PAC), "{logged}");
 }
 
 // T8, I13: a wrong or old token, and every other port, get the 400 page and

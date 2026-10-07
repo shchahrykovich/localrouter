@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.7"
+public let apiVersion = "1.8"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -232,14 +232,17 @@ public struct ProxyClient: Codable, Equatable, Sendable, Identifiable {
     public var port: UInt16
     /// A phone client: its port listens on the LAN (ADR 10). Nil means false.
     public var lan: Bool?
+    /// A phone client whose PAC file sends the phone direct. Nil means false.
+    public var paused: Bool?
     public var id: String { name }
-    public init(name: String, port: UInt16, lan: Bool? = nil) {
+    public init(name: String, port: UInt16, lan: Bool? = nil, paused: Bool? = nil) {
         self.name = name
         self.port = port
         self.lan = lan
+        self.paused = paused
     }
 
-    enum CodingKeys: String, CodingKey { case name, port, lan }
+    enum CodingKeys: String, CodingKey { case name, port, lan, paused }
 }
 
 /// One proxy client's port and whether it is bound (ADR 09).
@@ -272,6 +275,8 @@ public struct LanProxyInfo: Codable, Equatable, Sendable {
     /// What the QR code holds: opening it allows the device. Nil when the
     /// address is unknown.
     public var setupUrl: String?
+    /// The URL for Configure Proxy → Automatic (the PAC file).
+    public var pacUrl: String?
     public var devices: [String]
     public var pending: [PendingDevice]
     public var problems: [String]

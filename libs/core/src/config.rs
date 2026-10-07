@@ -63,6 +63,10 @@ pub struct ProxyClient {
     /// allowed devices, and serves the setup page.
     #[serde(default, skip_serializing_if = "is_false")]
     pub lan: bool,
+    /// A phone client whose PAC file sends the phone direct: a phone set to
+    /// Automatic keeps its setting but does not use the proxy (ADR 10).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -234,7 +238,7 @@ mod tests {
         let old = Config::parse(r#"{"version":1,"proxy_enabled":true}"#, &dev()).unwrap();
         assert!(old.proxy_clients.is_empty());
         let mut c = Config::defaults_for(&dev());
-        c.proxy_clients = vec![ProxyClient { name: "chrome".into(), port: 7878, lan: false }];
+        c.proxy_clients = vec![ProxyClient { name: "chrome".into(), port: 7878, lan: false, paused: false }];
         let text = serde_json::to_string(&c).unwrap();
         assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
     }

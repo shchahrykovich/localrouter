@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ring::digest::{SHA256, digest};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -89,6 +90,11 @@ pub struct LanClient {
     token: RwLock<String>,
     devices: RwLock<Vec<IpAddr>>,
     trust: RwLock<HashMap<IpAddr, Trust>>,
+    /// The key of the PAC file URL (`/pac/<key>.pac`). Not the setup token:
+    /// the URL stays in the phone's settings, where anyone may read it.
+    pac: RwLock<String>,
+    /// The PAC file sends the phone direct.
+    paused: AtomicBool,
 }
 
 impl LanClient {
@@ -98,7 +104,31 @@ impl LanClient {
             token: RwLock::new(token.to_string()),
             devices: RwLock::new(devices),
             trust: RwLock::new(HashMap::new()),
+            pac: RwLock::new(String::new()),
+            paused: AtomicBool::new(false),
         }
+    }
+
+    pub fn pac(&self) -> String {
+        self.pac.read().unwrap().clone()
+    }
+
+    pub fn set_pac(&self, key: &str) {
+        *self.pac.write().unwrap() = key.to_string();
+    }
+
+    /// The key of a PAC path. An empty key never matches.
+    pub fn is_pac(&self, key: &str) -> bool {
+        let pac = self.pac.read().unwrap();
+        !pac.is_empty() && same_token(key.as_bytes(), pac.as_bytes())
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
     }
 
     pub fn trust(&self, ip: IpAddr) -> Trust {
@@ -214,6 +244,21 @@ pub fn ipv4_of(interface: &str) -> Option<Ipv4Addr> {
     })
 }
 
+/// `/pac/<key>.pac`: the key, or `None`.
+pub fn parse_pac_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/pac/")?;
+    let rest = rest.split('?').next().unwrap_or(rest);
+    rest.strip_suffix(".pac").filter(|k| !k.is_empty() && !k.contains('/'))
+}
+
+/// The PAC file of a phone set to Automatic: through this port, and direct
+/// when the port does not answer (the Mac sleeps, the proxy is off); only
+/// direct while the phone client is paused.
+pub fn pac_file(server: &str, port: u16, paused: bool) -> String {
+    let route = if paused { "DIRECT".to_string() } else { format!("PROXY {server}:{port}; DIRECT") };
+    format!("function FindProxyForURL(url, host) {{\n  return \"{route}\";\n}}\n")
+}
+
 /// What a setup path asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupFile {
@@ -254,6 +299,10 @@ pub struct Setup {
     pub trust: Trust,
     /// Makes each check image URL new, so Safari never takes it from a cache.
     pub nonce: u64,
+    /// The PAC key: the Automatic option's URL.
+    pub pac: String,
+    /// The Mac sends this phone direct now.
+    pub paused: bool,
 }
 
 fn html(s: &str) -> String {
@@ -280,14 +329,33 @@ pub fn setup_page(s: &Setup) -> String {
     let mut reload = true;
     let path = |parts: &[&str]| parts.iter().map(|p| format!("<b>{p}</b>")).collect::<Vec<_>>().join("<span class=\"arrow\">›</span>");
     if !s.via_proxy {
+        if s.paused {
+            body.push_str(
+                "<p class=\"note\">The Mac sends this iPhone direct now. To use the proxy, on the Mac: \
+                 <b>Proxy › Phone…</b>, turn on <b>Send this iPhone through the proxy</b>.</p>",
+            );
+        }
+        let pac_url = format!("http://{}:{port}/pac/{}.pac", s.server, s.pac);
         body.push_str(&format!(
-            "<div class=\"step\"><div class=\"row\"><span class=\"badge now\">1</span><span class=\"title\">Send traffic to the Mac</span></div>\
-             <div class=\"body\"><p class=\"path\">{p}</p>\
-             <div class=\"ios\"><div class=\"r\"><span>Server</span><span class=\"val\">{server}</span></div>\
-             <div class=\"r\"><span>Port</span><span class=\"val\">{port}</span></div>\
+            "<div class=\"step\"><div class=\"row\"><span class=\"badge now\">1</span><span class=\"title\">Send traffic to the Mac\
+             <small>One of two ways</small></span></div><div class=\"body\">\
+             <p class=\"opt\">Automatic <span class=\"tag\">recommended</span></p>\
+             <p class=\"path\">{auto}</p>\
+             <div class=\"ios\"><div class=\"r\"><span>URL</span></div><div class=\"r\">{url_field}</div></div>\
+             <p class=\"hint\">Turn it on and off on the Mac. When the Mac sleeps, this iPhone goes direct and keeps its internet.</p>\
+             <p class=\"or\"><span>or</span></p>\
+             <p class=\"opt\">Manual</p>\
+             <p class=\"path\">{manual}</p>\
+             <div class=\"ios\"><div class=\"r\"><span>Server</span>{server_field}</div>\
+             <div class=\"r\"><span>Port</span>{port_field}</div>\
              <div class=\"r\"><span>Authentication</span><span class=\"toggle off\"></span></div></div>\
-             <p class=\"hint\">Tap <b>Save</b>, then come back here.</p></div></div>",
-            p = path(&["Settings", "Wi-Fi", "ⓘ", "Configure Proxy", "Manual"]),
+             <p class=\"hint\">When the Mac sleeps, this iPhone has no internet on this Wi-Fi.</p>\
+             <p class=\"then\">Tap <b>Save</b>, then come back here.</p></div></div>",
+            auto = path(&["Settings", "Wi-Fi", "ⓘ", "Configure Proxy", "Automatic"]),
+            manual = path(&["Settings", "Wi-Fi", "ⓘ", "Configure Proxy", "Manual"]),
+            url_field = copy_field("pac", &pac_url, "url"),
+            server_field = copy_field("server", &s.server, "val"),
+            port_field = copy_field("port", &port.to_string(), "val"),
         ));
         if ca_name.is_some() {
             body.push_str("<div class=\"step later\"><div class=\"row\"><span class=\"badge later\">2</span><span class=\"title\">Trust the certificate</span></div></div>");
@@ -325,7 +393,8 @@ pub fn setup_page(s: &Setup) -> String {
             "<div class=\"hero\"><div class=\"big\">✓</div><h3>This iPhone is connected</h3>\
              <p>Its requests appear on the Mac, in the Proxy tab.</p></div>\
              <div class=\"info\"><div class=\"r\"><span>Proxy</span><span>{server} : {port} ✓</span></div>{ca_row}</div>\
-             <div class=\"info\"><div class=\"r\"><span><b>To stop</b></span><span>Wi-Fi › ⓘ › Configure Proxy › Off</span></div></div>\
+             <div class=\"info\"><div class=\"r\"><span><b>To stop</b></span><span>On the Mac: Proxy › Phone…, or here: \
+             Wi-Fi › ⓘ › Configure Proxy › Off</span></div></div>\
              <details><summary>Good to know</summary>\
              <p>While the proxy is on, this iPhone has no internet on this Wi-Fi when the Mac sleeps or the proxy is off.</p>\
              <p>The Mac keeps this iPhone's requests in its log, cookies included.</p>\
@@ -338,13 +407,39 @@ pub fn setup_page(s: &Setup) -> String {
     if let Some(ip) = s.allowed {
         body.push_str(&format!("<p class=\"foot\">This iPhone ({ip}) is allowed.</p>"));
     }
-    let refresh = if reload { "<meta http-equiv=\"refresh\" content=\"3\">" } else { "" };
+    let refresh = if reload { "<meta http-equiv=\"refresh\" content=\"5\">" } else { "" };
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">{refresh}\
          <meta name=\"color-scheme\" content=\"light dark\"><title>{app}: connect this iPhone</title><style>{SETUP_CSS}</style></head>\
-         <body><div class=\"top\"><span class=\"logo\"></span>{top}</div><h1>Connect this iPhone</h1>{body}</body></html>",
+         <body><div class=\"top\"><span class=\"logo\"></span>{top}</div><h1>Connect this iPhone</h1>{body}<script>{COPY_JS}</script></body></html>",
         top = html(&s.app_name.to_uppercase()),
+    )
+}
+
+/// A value to type on the iPhone, with a Copy button.
+fn copy_field(id: &str, value: &str, class: &str) -> String {
+    format!(
+        "<span class=\"field\"><input id=\"{id}\" class=\"{class}\" value=\"{v}\" readonly>\
+         <button type=\"button\" class=\"copy\" data-copy=\"{id}\">Copy</button></span>",
+        v = html(value),
+    )
+}
+
+/// The only script of the setup page: the Copy buttons. The page is plain
+/// `http`, where `navigator.clipboard` is missing, so it selects the field
+/// and uses `execCommand("copy")`, which iOS Safari allows on a tap.
+const COPY_JS: &str = "document.querySelectorAll('[data-copy]').forEach(function(b){b.addEventListener('click',function(){\
+var f=document.getElementById(b.getAttribute('data-copy'));f.readOnly=false;f.focus();f.setSelectionRange(0,f.value.length);\
+var ok=false;try{ok=document.execCommand('copy')}catch(e){}f.readOnly=true;f.blur();\
+b.textContent=ok?'Copied':'Select it';setTimeout(function(){b.textContent='Copy'},2000)})})";
+
+/// The setup page's policy: its own style, the trust check image, and the
+/// Copy script by its hash. Nothing else loads.
+pub fn setup_csp() -> String {
+    format!(
+        "default-src 'none'; style-src 'unsafe-inline'; img-src https://{CHECK_HOST}; script-src 'sha256-{}'",
+        base64(digest(&SHA256, COPY_JS.as_bytes()).as_ref())
     )
 }
 
@@ -378,7 +473,14 @@ h1{font-size:30px;line-height:1.1;margin:10px 0 18px}\
 .info{background:var(--card);border-radius:14px;padding:4px 14px;margin:0 0 10px}.info .r{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);font-size:15px}\
 .info .r:last-child{border-bottom:0}.info .r span:last-child{color:var(--mute);text-align:right}\
 details{background:var(--card);border-radius:14px;padding:12px 14px;font-size:14px}summary{font-weight:600}details p{color:var(--mute);margin:8px 0 0}\
-.foot{text-align:center;color:var(--mute);font-size:12px;margin-top:16px}";
+.foot{text-align:center;color:var(--mute);font-size:12px;margin-top:16px}\
+.opt{font-weight:600;margin:0 0 6px}.tag{font-size:12px;font-weight:600;color:var(--green);margin-left:4px}\
+.or{display:flex;align-items:center;gap:10px;color:var(--mute);font-size:13px;margin:14px 0}.or::before,.or::after{content:\"\";flex:1;border-top:1px solid var(--line)}\
+.then{font-size:15px;margin:14px 0 0}.note{background:var(--card);border-radius:14px;padding:12px 14px;font-size:15px;margin:0 0 10px;border-left:4px solid var(--orange)}\
+.field{display:flex;align-items:center;gap:8px;flex:1;min-width:0;justify-content:flex-end}\
+.field input{border:0;background:transparent;color:var(--ink);min-width:0;flex:1;text-align:right;padding:0;-webkit-appearance:none}\
+.field input.url{text-align:left;font:15px/1.3 ui-monospace,Menlo,monospace}\
+.copy{border:0;background:var(--card);color:var(--blue);font:600 14px -apple-system,sans-serif;padding:6px 10px;border-radius:8px;flex:none}";
 
 fn xml(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
@@ -450,6 +552,8 @@ mod tests {
             via_proxy: true,
             trust: Trust::Unknown,
             nonce: 7,
+            pac: "p4cp-4cp4-cp4c-p4cp".into(),
+            paused: false,
         }
     }
 
@@ -547,12 +651,19 @@ mod tests {
     fn setup_page_shows_only_the_next_step() {
         let s = setup();
         let direct = setup_page(&Setup { via_proxy: false, ..s.clone() });
-        assert!(direct.contains("<span class=\"val\">192.168.0.10</span>") && direct.contains("<span class=\"val\">7878</span>"));
+        assert!(direct.contains("value=\"192.168.0.10\"") && direct.contains("value=\"7878\""), "Manual: server and port");
+        assert!(direct.contains("value=\"http://192.168.0.10:7878/pac/p4cp-4cp4-cp4c-p4cp.pac\""), "Automatic: the PAC URL");
+        assert!(direct.contains("Configure Proxy</b><span class=\"arrow\">›</span><b>Automatic") && direct.contains("<b>Manual"));
+        assert_eq!(direct.matches("data-copy=").count(), 3, "a Copy button for each value");
+        assert!(!direct.contains("k7mq-2xph-9tdw-r4nc"), "the PAC URL is not the setup token");
+        assert!(!direct.contains("sends this iPhone direct"));
+        let paused = setup_page(&Setup { via_proxy: false, paused: true, ..s.clone() });
+        assert!(paused.contains("sends this iPhone direct"));
         assert!(direct.contains("Waiting for the proxy") && direct.contains("http-equiv=\"refresh\""));
         assert!(!direct.contains("ca.mobileconfig") && !direct.contains(CHECK_HOST));
 
         let untrusted = setup_page(&s);
-        assert!(untrusted.contains("Traffic goes to the Mac") && !untrusted.contains("class=\"val\""));
+        assert!(untrusted.contains("Traffic goes to the Mac") && !untrusted.contains("data-copy="));
         assert!(untrusted.contains("href=\"/setup/k7mq-2xph-9tdw-r4nc/ca.mobileconfig\""));
         assert!(untrusted.contains("Certificate Trust Settings") && untrusted.contains("LocalRouter-dev Inspection CA 1234"));
         assert!(untrusted.contains(&format!("src=\"https://{CHECK_HOST}/7.gif\"")), "the check image");
@@ -569,10 +680,39 @@ mod tests {
 
         for page in [&direct, &untrusted, &done] {
             assert!(page.contains("This iPhone (192.168.0.23) is allowed."));
-            assert!(!page.contains("<script"));
+            assert_eq!(page.matches("<script>").count(), 1, "only the Copy script");
+            assert!(page.contains(&format!("<script>{COPY_JS}</script>")));
         }
         let escaped = setup_page(&Setup { allowed: None, via_proxy: false, server: "<b>".into(), ..s });
         assert!(escaped.contains("&lt;b&gt;") && !escaped.contains("is allowed"));
+    }
+
+    // The script runs because the policy names its hash, and nothing else.
+    #[test]
+    fn setup_csp_allows_only_the_copy_script() {
+        let csp = setup_csp();
+        let hash = base64(digest(&SHA256, COPY_JS.as_bytes()).as_ref());
+        assert!(csp.contains(&format!("script-src 'sha256-{hash}'")), "{csp}");
+        assert!(csp.starts_with("default-src 'none'") && csp.contains(&format!("img-src https://{CHECK_HOST}")));
+    }
+
+    #[test]
+    fn pac_paths_and_file() {
+        assert_eq!(parse_pac_path("/pac/abc.pac"), Some("abc"));
+        assert_eq!(parse_pac_path("/pac/abc.pac?x=1"), Some("abc"));
+        assert_eq!(parse_pac_path("/pac/.pac"), None);
+        assert_eq!(parse_pac_path("/pac/a/b.pac"), None);
+        assert_eq!(parse_pac_path("/pac/abc"), None);
+        assert_eq!(parse_pac_path("/setup/abc"), None);
+        assert_eq!(pac_file("192.168.0.10", 7878, false), "function FindProxyForURL(url, host) {\n  return \"PROXY 192.168.0.10:7878; DIRECT\";\n}\n");
+        assert!(pac_file("192.168.0.10", 7878, true).contains("return \"DIRECT\";"));
+        let c = LanClient::new("iphone", "k7mq", vec![]);
+        assert!(!c.is_pac(""), "no key yet: nothing matches");
+        c.set_pac("p4c");
+        assert!(c.is_pac("p4c") && !c.is_pac("p4d") && !c.is_pac(""));
+        assert!(!c.paused());
+        c.set_paused(true);
+        assert!(c.paused());
     }
 
     #[test]

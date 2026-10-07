@@ -46,10 +46,6 @@ use crate::routes::host_key;
 use crate::tls::CertStore;
 use crate::upstream::Upstream;
 
-/// The setup page's policy: no script, its own style, and the one image of
-/// the trust check.
-const SETUP_CSP: &str = concat!("default-src 'none'; style-src 'unsafe-inline'; img-src https://", "trust-check.invalid");
-
 /// A 1×1 transparent GIF: the answer to the trust check.
 const PIXEL: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
 
@@ -133,8 +129,15 @@ impl ForwardProxy {
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let Some(authority) = req.uri().authority().cloned() else {
-            // A setup path holds a phone's password: never in a log (I9).
-            let path = if path.starts_with("/setup/") { "/setup/…".to_string() } else { path };
+            // A setup path holds a phone's setup token, a PAC path its PAC
+            // key: never in a log (I9).
+            let path = if path.starts_with("/setup/") {
+                "/setup/…".to_string()
+            } else if path.starts_with("/pac/") {
+                "/pac/…".to_string()
+            } else {
+                path
+            };
             let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             let seen = self.seen(&req, || if host.is_empty() { path.clone() } else { format!("http://{host}{path}") }, ProxyMode::Http, at);
             let resp = self.not_a_proxy_request(at.port);
@@ -192,6 +195,28 @@ impl ForwardProxy {
         let to_this_port = authority.as_ref().is_none_or(|a| {
             a.port_u16() == Some(at.port) && bare_host(a.as_str()).parse::<IpAddr>().is_ok()
         });
+        // The PAC file of a phone set to Automatic: any device may read it
+        // (the phone's system fetches it, maybe before it is allowed); it
+        // only names this port. Never logged.
+        if to_this_port
+            && matches!(*req.method(), Method::GET | Method::HEAD)
+            && let Some(key) = phone::parse_pac_path(req.uri().path())
+            && lan.is_pac(key)
+        {
+            let server = match req.uri().authority() {
+                Some(a) => bare_host(a.as_str()),
+                None => req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).map(bare_host).unwrap_or_default(),
+            };
+            let server = if server.contains(':') { format!("[{server}]") } else { server };
+            return Some(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/x-ns-proxy-autoconfig")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Full::new(Bytes::from(phone::pac_file(&server, at.port, lan.paused()))).map_err(|never| match never {}).boxed_unsync())
+                    .expect("static response parts are valid"),
+            );
+        }
         if to_this_port
             && matches!(*req.method(), Method::GET | Method::HEAD)
             && let Some((token, file)) = phone::parse_setup_path(req.uri().path_and_query().map_or("/", |p| p.as_str()))
@@ -287,6 +312,8 @@ impl ForwardProxy {
             via_proxy: req.uri().authority().is_some(),
             trust: lan.trust(ip),
             nonce: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
+            pac: lan.pac(),
+            paused: lan.paused(),
         };
         let (body, content_type) = match file {
             SetupFile::Page => (Some(phone::setup_page(&setup)), "text/html; charset=utf-8"),
@@ -297,7 +324,7 @@ impl ForwardProxy {
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, content_type)
             .header(header::CACHE_CONTROL, "no-store")
-            .header(header::CONTENT_SECURITY_POLICY, SETUP_CSP)
+            .header(header::CONTENT_SECURITY_POLICY, phone::setup_csp())
             .header(header::REFERRER_POLICY, "no-referrer")
             .body(Full::new(Bytes::from(body)).map_err(|never| match never {}).boxed_unsync())
             .expect("static response parts are valid")

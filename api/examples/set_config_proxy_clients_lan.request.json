@@ -10,7 +10,8 @@
       {
         "name": "iphone",
         "port": 8880,
-        "lan": true
+        "lan": true,
+        "paused": true
       }
     ],
     "lan_networks": [
