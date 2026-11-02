@@ -115,9 +115,9 @@ Events:            0 new socket events
 ```text
 CALL
 type:                   child process
-target:                 /usr/bin/nettop -L 0 -s 5 -x -n -d -J bytes_in,bytes_out
+target:                 /usr/bin/nettop -L 1 -x -n -J bytes_in,bytes_out (D19: was -L 0 -s 5 -d)
 trigger:                daemon start with traffic = true, or set_config traffic -> true
-cardinality:            one process; restarted with backoff 1 s .. 60 s
+cardinality:            one short run every 5 s, killed after 10 s; after a failed run, the next after 1 s .. 60 s
 write_idempotent:       n/a
 producer_deterministic: no (live system state)
 destructive:            no

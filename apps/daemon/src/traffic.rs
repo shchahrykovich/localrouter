@@ -22,10 +22,9 @@ use localrouter_core::traffic::attribute::{self, PeerInfo, Ports};
 use localrouter_core::traffic::geo::{self, Places};
 use localrouter_core::traffic::history::{self, History};
 use localrouter_core::traffic::names::ServerNames;
-use localrouter_core::traffic::nettop::{self, Splitter};
+use localrouter_core::traffic::nettop::{self, Totals};
 use localrouter_core::traffic::peers::PeerTable;
 use localrouter_core::traffic::SAMPLE_SECS;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 const NETTOP: &str = "/usr/bin/nettop";
@@ -33,8 +32,8 @@ const NETTOP: &str = "/usr/bin/nettop";
 const BACKOFF: [u64; 7] = [1, 2, 4, 8, 16, 32, 60];
 /// A child that ran this long resets the wait to 1 second.
 const HEALTHY: Duration = Duration::from_secs(60);
-/// How long to wait for a line before closing the minute anyway.
-const QUIET: Duration = Duration::from_millis(1000);
+/// How long one `nettop -L 1` run may take; it normally takes 0.02 s.
+const RUN_LIMIT: Duration = Duration::from_secs(10);
 
 /// The ports that make a connection `router` or `proxy`, read at each sample.
 pub type PortsFn = Arc<dyn Fn() -> Ports + Send + Sync>;
@@ -203,7 +202,7 @@ impl Traffic {
         result
     }
 
-    /// Run nettop until `cancel`, starting it again when it fails.
+    /// Sample until `cancel`, starting again after a wait when a run fails.
     async fn run(self: Arc<Self>, ports: PortsFn, cancel: CancellationToken) {
         self.retain(self.days.load(Ordering::Relaxed));
         let mut attempt = 0usize;
@@ -228,79 +227,30 @@ impl Traffic {
         }
     }
 
-    /// One nettop child, until it exits or prints something not understood.
-    /// Returns why it stopped. The child is killed when this is dropped.
+    /// One `nettop -L 1` run every `SAMPLE_SECS`, until a run fails.
+    /// Returns why. A run still going is killed when this is dropped.
     async fn run_once(&self, ports: &PortsFn, last_retain: &mut Instant) -> String {
-        let program = nettop_program();
-        let mut child = match tokio::process::Command::new(&program)
-            .args(nettop::args(SAMPLE_SECS))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => return format!("cannot start {}: {e}", program.display()),
-        };
-        let stderr = Arc::new(Mutex::new(String::new()));
-        if let Some(mut err) = child.stderr.take() {
-            let sink = stderr.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 4096];
-                while let Ok(n) = err.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
-                    let mut s = sink.lock().unwrap();
-                    s.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    let len = s.len();
-                    if len > 500 {
-                        let cut = s.char_indices().map(|(i, _)| i).find(|&i| i >= len - 500).unwrap_or(0);
-                        s.drain(..cut);
-                    }
-                }
-            });
-        }
-        let Some(stdout) = child.stdout.take() else { return "nettop has no output".into() };
-        let mut lines = BufReader::new(stdout).lines();
-        let mut splitter = Splitter::default();
-        let mut baseline = true;
+        let mut totals = Totals::default();
+        let mut tick = tokio::time::interval(Duration::from_secs(SAMPLE_SECS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let me = std::process::id();
         loop {
-            let ready = match tokio::time::timeout(QUIET, lines.next_line()).await {
-                Ok(Ok(Some(line))) => splitter.push(&line),
-                Ok(Ok(None)) | Ok(Err(_)) => {
-                    let status = child.wait().await.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
-                    let err = stderr.lock().unwrap().trim().to_string();
-                    return if err.is_empty() { format!("nettop exited ({status})") } else { format!("nettop exited ({status}): {err}") };
-                }
-                // A pause: only text that never had a header is a sample now,
-                // so that a changed format is reported.
-                Err(_) => splitter.take_headerless(),
+            tick.tick().await;
+            let text = match sample_once().await {
+                Ok(text) => text,
+                Err(why) => return why,
             };
             let now = unix_now();
-            let Some(text) = ready else {
-                // Close the minute on time even when nothing is read.
-                if let Err(e) = self.history.lock().unwrap().roll(now) {
-                    tracing::warn!("cannot write traffic history: {e}");
-                }
-                continue;
-            };
             let sample = match nettop::parse_sample(&text) {
                 Ok(s) => s,
                 Err(e) => return e.to_string(),
             };
             self.set_state(SamplerState::Running, None);
-            // The first sample counts from each socket's start: it is only
-            // the starting point.
-            if std::mem::take(&mut baseline) {
-                continue;
-            }
+            let Some(delta) = totals.next(&sample) else { continue };
             let ports = ports();
             let peers = self.peers.clone();
             let peer = move |port: u16| -> Option<PeerInfo> { peers.get(port) };
-            let rows = attribute::apply(&sample, &ports, me, &peer, &pid_path);
+            let rows = attribute::apply(&delta, &ports, me, &peer, &pid_path);
             if let Err(e) = self.history.lock().unwrap().add(now, &rows) {
                 tracing::warn!("cannot write traffic history: {e}");
             }
@@ -310,6 +260,36 @@ impl Traffic {
             }
         }
     }
+}
+
+/// Run `nettop -L 1` once and return what it printed: one sample of totals.
+async fn sample_once() -> Result<String, String> {
+    let program = nettop_program();
+    let child = tokio::process::Command::new(&program)
+        .args(nettop::args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("cannot start {}: {e}", program.display()))?;
+    // On a timeout the child is dropped, and so killed.
+    let out = match tokio::time::timeout(RUN_LIMIT, child.wait_with_output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(format!("nettop failed: {e}")),
+        Err(_) => return Err(format!("nettop did not finish in {} s", RUN_LIMIT.as_secs())),
+    };
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.trim();
+        let tail = err.char_indices().map(|(i, _)| i).find(|&i| err.len() - i <= 500).map_or("", |i| &err[i..]);
+        return Err(if tail.is_empty() { format!("nettop exited ({})", out.status) } else { format!("nettop exited ({}): {tail}", out.status) });
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if text.trim().is_empty() {
+        return Err("nettop printed no sample".into());
+    }
+    Ok(text)
 }
 
 fn unix_now() -> u64 {

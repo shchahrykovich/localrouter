@@ -22,6 +22,11 @@ counts. Measured on this Mac (macOS 26, 2026-11-02):
 nettop -L 0 -s 5 -x -n -d -J bytes_in,bytes_out
 ```
 
+> **Changed in the build (D19 in [11](11-build-notes.md)):** this
+> long-running mode uses about 1.5 CPU cores on macOS 27.0.1. The daemon
+> runs `nettop -L 1 -x -n -J bytes_in,bytes_out` (one sample of totals,
+> then exit) every 5 seconds and computes the change itself.
+
 | Flag | Meaning |
 |---|---|
 | `-L 0` | logging mode, CSV, samples forever |

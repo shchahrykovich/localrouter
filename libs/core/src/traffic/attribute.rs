@@ -212,16 +212,13 @@ fn classify(
 mod tests {
     use std::path::PathBuf;
 
-    use super::super::nettop::{Splitter, parse_sample};
+    use super::super::nettop::{parse_sample, split_samples};
     use super::*;
 
     const FIXTURE: &str = include_str!("testdata/nettop-two-samples.csv");
 
     fn sample(n: usize) -> Sample {
-        let mut s = Splitter::default();
-        let mut parts: Vec<String> = FIXTURE.lines().filter_map(|l| s.push(l)).collect();
-        parts.extend(s.finish());
-        parse_sample(&parts[n]).unwrap()
+        parse_sample(&split_samples(FIXTURE)[n]).unwrap()
     }
 
     fn ports() -> Ports {

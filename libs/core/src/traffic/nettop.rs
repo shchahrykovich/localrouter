@@ -1,7 +1,7 @@
 //! The text `nettop` prints in logging mode (ADR 11, change 1):
 //!
 //! ```text
-//! nettop -L 0 -s 5 -x -n -d -J bytes_in,bytes_out
+//! nettop -L 1 -x -n -J bytes_in,bytes_out
 //! ```
 //!
 //! ```text
@@ -19,7 +19,16 @@
 //! `addr.port`, and a scope can follow an IPv6 address (`fe80::1%en0.55893`).
 //! nettop is a tool, not an API: a sample of which no line parses is an
 //! error, so a changed format is reported instead of showing no traffic.
+//!
+//! `-L 1` prints one sample and exits. The counters are totals since each
+//! socket opened, and [`Totals`] turns them into the bytes since the
+//! previous run. A long-running `nettop -L 0 -s 5 -d` would print the change
+//! itself, but on macOS 27 it uses about 1.5 CPU cores all the time, at any
+//! interval; one `-L 1` run uses about 0.02 s. The cost: a socket that
+//! opens and closes between two runs is not seen, and the last bytes of a
+//! socket that closes are lost.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
@@ -27,12 +36,10 @@ use serde::{Deserialize, Serialize};
 /// The first line of every sample.
 pub const HEADER: &str = ",bytes_in,bytes_out,";
 
-/// The arguments the sampler runs `/usr/bin/nettop` with.
-pub fn args(interval_secs: u64) -> Vec<String> {
-    ["-L", "0", "-s", &interval_secs.to_string(), "-x", "-n", "-d", "-J", "bytes_in,bytes_out"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+/// The arguments the sampler runs `/usr/bin/nettop` with: one sample of
+/// totals, then exit.
+pub fn args() -> Vec<String> {
+    ["-L", "1", "-x", "-n", "-J", "bytes_in,bytes_out"].iter().map(|s| s.to_string()).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -121,51 +128,81 @@ pub fn parse_sample(text: &str) -> Result<Sample, ParseError> {
     Ok(sample)
 }
 
-/// Splits the endless output of `nettop -L 0` into samples, line by line.
-///
-/// A sample ends only where the next one starts. nettop writes to a pipe
-/// with full buffering, so a pause in the output is not the end of a
-/// sample: its last lines often come with the next write.
-#[derive(Debug, Default)]
-pub struct Splitter {
-    current: String,
-    seen_header: bool,
+/// A socket, as far as nettop shows it: the process, the protocol and both
+/// ends.
+type ConnKey = (u32, Proto, Option<IpAddr>, Option<u16>, Option<SocketAddr>);
+
+fn conn_key(pid: u32, c: &Conn) -> ConnKey {
+    (pid, c.proto, c.local.ip, c.local.port, c.remote)
 }
 
-impl Splitter {
-    /// Feed one line. Returns the previous sample when this line starts a
-    /// new one.
-    pub fn push(&mut self, line: &str) -> Option<String> {
-        let line = line.trim_end_matches(['\n', '\r']);
-        let mut done = None;
-        if line.trim() == HEADER {
-            if self.seen_header {
-                done = Some(std::mem::take(&mut self.current));
+/// Turns the totals of `nettop -L 1` runs into the bytes since the
+/// previous run.
+#[derive(Debug, Default)]
+pub struct Totals {
+    last: Option<HashMap<ConnKey, (u64, u64)>>,
+}
+
+impl Totals {
+    /// The bytes of each socket since the previous run, as a sample of the
+    /// same shape. `None` for the first run, which is only the starting
+    /// point. A socket first seen now counts all its bytes: it opened since
+    /// the previous run. A socket whose counter went down is a new socket
+    /// with the same ends and counts all its bytes too. Sockets with the
+    /// same key (two unconnected UDP sockets on one port) are added up.
+    /// Sockets and processes with no new bytes are left out.
+    pub fn next(&mut self, sample: &Sample) -> Option<Sample> {
+        let mut now: HashMap<ConnKey, (u64, u64)> = HashMap::new();
+        for p in &sample.procs {
+            for c in &p.conns {
+                let total = now.entry(conn_key(p.pid, c)).or_default();
+                total.0 += c.bytes_in;
+                total.1 += c.bytes_out;
             }
-            self.current.clear();
-            self.seen_header = true;
         }
-        if !line.trim().is_empty() {
-            self.current.push_str(line);
-            self.current.push('\n');
+        let last = self.last.replace(now)?;
+        let now = self.last.as_ref().expect("just set");
+        let mut out = Sample::default();
+        let mut done = std::collections::HashSet::new();
+        for p in &sample.procs {
+            let mut conns = vec![];
+            for c in &p.conns {
+                let key = conn_key(p.pid, c);
+                if !done.insert(key) {
+                    continue;
+                }
+                let (cur_in, cur_out) = now[&key];
+                let (bytes_in, bytes_out) = match last.get(&key) {
+                    Some(&(in0, out0)) if cur_in >= in0 && cur_out >= out0 => (cur_in - in0, cur_out - out0),
+                    _ => (cur_in, cur_out),
+                };
+                if bytes_in > 0 || bytes_out > 0 {
+                    conns.push(Conn { bytes_in, bytes_out, ..c.clone() });
+                }
+            }
+            if !conns.is_empty() {
+                out.procs.push(Proc { name: p.name.clone(), pid: p.pid, conns });
+            }
         }
-        done
+        Some(out)
     }
+}
 
-    /// Text that came before any header line: nettop's format changed. The
-    /// caller parses it to get the error.
-    pub fn take_headerless(&mut self) -> Option<String> {
-        (!self.seen_header && !self.current.is_empty()).then(|| std::mem::take(&mut self.current))
-    }
-
-    /// The sample read so far, at the end of the output.
-    pub fn finish(&mut self) -> Option<String> {
-        if !self.seen_header || self.current.is_empty() {
-            return None;
+/// The samples of a text with several, split at each header line: the
+/// fixture holds two.
+#[cfg(test)]
+pub(crate) fn split_samples(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        if line.trim() == HEADER {
+            out.push(String::new());
         }
-        self.seen_header = false;
-        Some(std::mem::take(&mut self.current))
+        if let Some(cur) = out.last_mut() {
+            cur.push_str(line);
+            cur.push('\n');
+        }
     }
+    out
 }
 
 enum Line {
@@ -251,10 +288,7 @@ mod tests {
     const FIXTURE: &str = include_str!("testdata/nettop-two-samples.csv");
 
     fn samples() -> Vec<String> {
-        let mut s = Splitter::default();
-        let mut out: Vec<String> = FIXTURE.lines().filter_map(|l| s.push(l)).collect();
-        out.extend(s.finish());
-        out
+        split_samples(FIXTURE)
     }
 
     #[test]
@@ -266,7 +300,6 @@ mod tests {
         let second = parse_sample(&parts[1]).unwrap();
         assert_eq!(first.procs.len(), 6);
         assert_eq!(second.procs.len(), 5);
-        // The first sample is cumulative, the second has only the change.
         let apsd = |s: &Sample| s.procs.iter().find(|p| p.pid == 401).unwrap().conns[0].bytes_in;
         assert_eq!((apsd(&first), apsd(&second)), (732854, 120));
     }
@@ -325,23 +358,76 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_cut_by_a_pause_is_joined_with_its_tail() {
-        let mut s = Splitter::default();
-        assert_eq!(s.push(HEADER), None);
-        assert_eq!(s.push("a.1,1,2,"), None);
-        // A pause here is not the end: the tail comes with the next write.
-        assert_eq!(s.take_headerless(), None);
-        assert_eq!(s.push("tcp4 192.0.2.1:1<->192.0.2.2:2,3,4,"), None);
-        let done = s.push(HEADER).unwrap();
-        assert_eq!(parse_sample(&done).unwrap().procs[0].conns.len(), 1);
-        // Text with no header at all is handed back to be reported.
-        let mut s = Splitter::default();
-        s.push("time;bytes");
-        assert!(parse_sample(&s.take_headerless().unwrap()).is_err());
+    fn args_ask_for_one_sample_of_totals() {
+        // `-L 0` (run until killed) uses about 1.5 CPU cores on macOS 27.
+        assert_eq!(args().join(" "), "-L 1 -x -n -J bytes_in,bytes_out");
+    }
+
+    fn totals(lines: &str) -> Sample {
+        parse_sample(&format!("{HEADER}\n{lines}")).unwrap()
+    }
+
+    fn bytes(s: &Sample, pid: u32, port: u16) -> Option<(u64, u64)> {
+        let p = s.procs.iter().find(|p| p.pid == pid)?;
+        p.conns.iter().find(|c| c.local.port == Some(port)).map(|c| (c.bytes_in, c.bytes_out))
     }
 
     #[test]
-    fn args_match_the_adr() {
-        assert_eq!(args(5).join(" "), "-L 0 -s 5 -x -n -d -J bytes_in,bytes_out");
+    fn the_first_run_is_only_the_starting_point() {
+        let mut t = Totals::default();
+        assert_eq!(t.next(&totals("a.1,10,20,\ntcp4 192.0.2.1:1000<->192.0.2.2:443,10,20,\n")), None);
+    }
+
+    #[test]
+    fn later_runs_give_the_bytes_since_the_previous_run() {
+        let mut t = Totals::default();
+        t.next(&totals("a.1,0,0,\ntcp4 192.0.2.1:1000<->192.0.2.2:443,100,20,\ntcp4 192.0.2.1:1001<->192.0.2.2:443,5,5,\n"));
+        let d = t
+            .next(&totals(concat!(
+                "a.1,0,0,\n",
+                // grew
+                "tcp4 192.0.2.1:1000<->192.0.2.2:443,150,25,\n",
+                // 1001 closed: nothing
+                // opened since the previous run: all its bytes
+                "tcp4 192.0.2.1:1002<->192.0.2.2:443,7,3,\n",
+                "b.2,0,0,\n",
+                // the same ends in another process: its own socket
+                "tcp4 192.0.2.1:1000<->192.0.2.2:443,1,1,\n",
+            )))
+            .unwrap();
+        assert_eq!(bytes(&d, 1, 1000), Some((50, 5)));
+        assert_eq!(bytes(&d, 1, 1001), None);
+        assert_eq!(bytes(&d, 1, 1002), Some((7, 3)));
+        assert_eq!(bytes(&d, 2, 1000), Some((1, 1)));
+        // The next run is measured from this one.
+        let d = t.next(&totals("a.1,0,0,\ntcp4 192.0.2.1:1000<->192.0.2.2:443,160,25,\n")).unwrap();
+        assert_eq!(bytes(&d, 1, 1000), Some((10, 0)));
+    }
+
+    #[test]
+    fn a_counter_that_went_down_is_a_new_socket() {
+        let mut t = Totals::default();
+        t.next(&totals("a.1,0,0,\ntcp4 192.0.2.1:1000<->192.0.2.2:443,100,100,\n"));
+        let d = t.next(&totals("a.1,0,0,\ntcp4 192.0.2.1:1000<->192.0.2.2:443,30,200,\n")).unwrap();
+        assert_eq!(bytes(&d, 1, 1000), Some((30, 200)));
+    }
+
+    #[test]
+    fn idle_sockets_and_processes_are_left_out() {
+        let mut t = Totals::default();
+        let s = totals("a.1,0,0,\ntcp4 192.0.2.1:1000<->192.0.2.2:443,100,100,\nb.2,0,0,\ntcp4 192.0.2.1:2000<->192.0.2.2:443,1,1,\n");
+        t.next(&s);
+        let d = t.next(&s).unwrap();
+        assert_eq!(d, Sample::default());
+    }
+
+    #[test]
+    fn sockets_with_the_same_ends_are_added_up() {
+        let mut t = Totals::default();
+        let two = |a: u64, b: u64| totals(&format!("dns.5,0,0,\nudp4 *:5353<->*:*,{a},0,\nudp4 *:5353<->*:*,{b},0,\n"));
+        t.next(&two(10, 20));
+        let d = t.next(&two(15, 30)).unwrap();
+        assert_eq!(d.procs[0].conns.len(), 1);
+        assert_eq!(bytes(&d, 5, 5353), Some((15, 0)));
     }
 }

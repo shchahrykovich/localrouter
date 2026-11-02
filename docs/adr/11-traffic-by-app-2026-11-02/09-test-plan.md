@@ -98,7 +98,9 @@ cargo test -p localrouter-core --test forward peer_port
 ### Daemon: `apps/daemon/tests/api.rs`
 
 `LOCALROUTER_TEST_NETTOP` (debug builds only) names a shell script that
-prints the fixture, then sleeps; a second script prints one sample and exits.
+prints one sample of totals and exits, as `nettop -L 1` does (D19): run N
+prints `nettop-N.csv` if it exists, else `nettop.csv`; while a `hang` file
+exists, a run does not end.
 Test config as today: ports `0`, `"inspect_hosts":[]`.
 
 | Test file | Case |
@@ -197,7 +199,7 @@ cargo test -p localrouterd --test api traffic_journey -- --nocapture
 | open `https://claude.ai/new?q=hello%20test` in Safari, logged in | a new chat with "hello test" in the input, or sent; write down which (U3) |
 | open `https://chatgpt.com/?q=hello%20test` | the same check (U3) |
 | run `nettop -L 2 -s 2 -x -n -d -J bytes_in,bytes_out` on macOS 14 and 15 | same format as in [01](01-app-traffic.md) (U4) |
-| run `nettop -L 0 -s 5 -x -n -d -J bytes_in,bytes_out > /dev/null` for 10 minutes, watch Activity Monitor | average CPU written down; under 1% (U7) |
+| with traffic on for 10 minutes, watch `localrouterd` and `nettop` in Activity Monitor | average CPU written down; under 1% (U7). Measured `-L 0`: 145% (D19) |
 | download both DB-IP Lite files of this month | sizes and times written into U5 |
 | read the VirusTotal public API terms | written answer for U6 |
 
@@ -267,8 +269,8 @@ M4.
 
 | Check | Expected |
 |---|---|
-| `pkill -f "nettop -L 0"` five times | status "restarting", then "running"; routes keep working |
-| turn traffic off | `pgrep -f "nettop -L 0"` prints nothing |
+| make `/usr/bin/nettop` fail (a debug build with `LOCALROUTER_TEST_NETTOP=/usr/bin/false`) | status "restarting", then the reason; routes keep working |
+| turn traffic off | `pgrep -x nettop` prints nothing (wait 10 s: a run lives about 0.02 s) |
 | Clear history | `<data>/traffic/` is empty; the Apps view starts again from zero |
 
 ### M8. Post-release smoke

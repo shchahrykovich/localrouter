@@ -197,9 +197,11 @@ list, so a new tool needs that test changed on purpose.
   `Proxy-Authorization` is left out.
 - **Traffic by app (ADR 11)**: nettop is a tool, not an API. The parser
   (`traffic/nettop.rs`) must report a sample it cannot read
-  ("nettop output not understood"), never return an empty list. nettop
-  writes to a pipe with full buffering: a sample ends only at the next
-  header line, never at a pause. The daemon drops its own pid from every
+  ("nettop output not understood"), never return an empty list. Never run
+  `nettop -L 0`: on macOS 27 it uses 1.5 CPU cores at any interval. The
+  daemon runs `nettop -L 1` (one sample of totals, then exit) every 5 s,
+  and `Totals` (`traffic/nettop.rs`) turns totals into the change since the
+  previous run (ADR 11, D19). The daemon drops its own pid from every
   sample, or every route and proxy byte counts twice. `traffic` is off by
   default: then no nettop child runs and nothing is written to
   `<data>/traffic/` (I1). The router and the forward proxy note each

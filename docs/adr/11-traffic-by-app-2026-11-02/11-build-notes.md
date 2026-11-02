@@ -12,7 +12,7 @@ M0 below.
 | U5, DB-IP size | 2026-11: city 60.1 MB and ASN 5.2 MB as `.gz` (`content-length` of the download). The city file is about 130 MB unpacked. Download time is not measured. |
 | U3, chat links | Not checked. Both buttons open the link; `AskAI.Service.copyFallback` switches a service to the copy fallback. |
 | U6, VirusTotal terms | Not read yet. Blocks the release of the VirusTotal part, not the build. |
-| U7, CPU of nettop | Not measured. |
+| U7, CPU of nettop | Measured after the release, on macOS 27.0.1: `nettop -L 0` uses 145% CPU (about 1.5 cores) all the time, with `-s 1`, `-s 5` or `-s 60`, and with any flags. One `nettop -L 1` run uses 0.02 s. See D19. |
 
 ## A fact found in the build: nettop's output is buffered
 
@@ -21,10 +21,43 @@ piece: its last lines often come with the next write, 5 seconds later. The
 first sampler ended a sample after a short pause and lost those lines, so
 processes with high pids were missing (the end-to-end test E1 found it).
 
-The fix: a sample ends only at the next header line (`Splitter` in
-`traffic/nettop.rs`). The cost: a sample reaches the history about 5 seconds
-later. A pause is used only to report text that never had a header (a
-changed format, gap G2).
+The first fix was a `Splitter` that ended a sample only at the next header
+line. D19 removed it: each `nettop -L 1` run prints one sample and exits, so
+the daemon reads the output to its end.
+
+## A fact found after the release: `nettop -L 0` uses 1.5 CPU cores (D19)
+
+Version 0.1.23 ran one `nettop -L 0 -s 5 -d` for as long as `traffic` was on.
+Activity Monitor showed it at 145% CPU on macOS 27.0.1, and one more for
+`LocalRouter-dev.app`. The cost does not come from the daemon: a `nettop`
+started by hand with the same flags uses the same, at any `-s` interval and
+with any flags. A stack sample shows its time in the NetworkStatistics
+framework's event handling, between samples.
+
+| Mode | CPU |
+|---|---|
+| `nettop -L 0 -s 1`, `-s 5` or `-s 60` | 11.6 s of CPU per 8 s (145%) |
+| `nettop -L 1` | 0.02 s per run, so 0.4% at one run per 5 s |
+
+The fix: the daemon runs `nettop -L 1 -x -n -J bytes_in,bytes_out` every 5
+seconds (`sample_once` in `apps/daemon/src/traffic.rs`), killed after 10 s.
+Its counters are totals since each socket opened. `Totals` in
+`traffic/nettop.rs` keeps the last totals per socket (pid, protocol, local
+end, remote end) and gives the bytes since the previous run, in the same
+shape as the old `-d` sample, so attribution and history did not change.
+The first run is only the starting point. A run that prints nothing is an
+error ("nettop printed no sample"), not "no traffic".
+
+The cost, accepted for the CPU:
+
+1. A socket that opens and closes between two runs is not seen. Example: a
+   `curl` that finishes in 2 s.
+2. The bytes a socket moves after the last run before it closes are lost:
+   up to 5 seconds of its traffic.
+
+Long-lived connections (HTTP/2 to browsers, push, downloads, the router and
+proxy connections) are counted in full. Seeing every connection needs a
+network extension (option C, a later ADR).
 
 ## Where the build differs from the text
 
@@ -48,6 +81,7 @@ changed format, gap G2).
 | D16 | One row per app opens to its addresses | A tree, as in Little Snitch: app → process (when the app has several) → domain group (host, else owner, else the network part of the server name, else "IP Addresses") → connections and, for a route's or the proxy's host, the requests of the request log. Five rows per level, then "N more…". `RemoteTraffic` gains `exe`. | The user asked to open rows down to the requests. |
 | D17 | Direct traffic shows the owner only | Also the **server name** by reverse DNS (`getnameinfo`, `NI_NAMEREQD`), in the background, cached an hour, at most 10,000 addresses and 8 lookups at once (`traffic/names.rs`). New config field `traffic_names` (off by default: each new address sends one DNS query), new field `server_name`. Debug builds read `LOCALROUTER_TEST_REVERSE_DNS`. | The user wants all three sources of names: owner (A), server name (B), and the real domain (C, a network filter, a later ADR). |
 | D18 | "Places are off" under the map | A card on the map with **Turn On Places** | The line under the map was missed. |
+| D19 | One `nettop -L 0 -s 5 -d` child for as long as `traffic` is on | One `nettop -L 1` run every 5 s; the daemon computes the change (`Totals`). Sockets that open and close between two runs are not counted. | `-L 0` uses 1.5 CPU cores on macOS 27.0.1 (U7). See the section above. |
 
 ## Tests that ran
 

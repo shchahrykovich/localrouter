@@ -1648,20 +1648,21 @@ fn new_setup_code_keeps_the_devices() {
 
 // ---- ADR 11: traffic by app
 
-/// A fake nettop for `LOCALROUTER_TEST_NETTOP`: prints `<dir>/nettop.csv`
-/// once it exists, then stays alive as a shell process whose command line
-/// names the script, so `pgrep -f` finds it, until the daemon ends.
+/// A fake nettop for `LOCALROUTER_TEST_NETTOP`. Like `nettop -L 1`, each
+/// run prints one sample of totals and exits. Run N appends a line to
+/// `<dir>/runs` and prints `<dir>/nettop-N.csv` if it exists, else
+/// `<dir>/nettop.csv`. While `<dir>/hang` exists a run stays alive instead,
+/// as a shell process whose command line names the script (`pgrep -f`
+/// finds it), until the daemon ends.
 fn fake_nettop(dir: &Path) -> PathBuf {
     let script = dir.join("fake-nettop.sh");
-    let csv = dir.join("nettop.csv");
     std::fs::write(
         &script,
-        // It ends with its parent, as the real nettop does on its next
-        // write: a test kills the daemon with SIGKILL, which skips
-        // kill_on_drop.
+        // A hanging run ends with its parent: a test kills the daemon with
+        // SIGKILL, which skips kill_on_drop.
         format!(
-            "#!/bin/sh\nwhile [ ! -f '{csv}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.1; done\ncat '{csv}'\nwhile kill -0 $PPID 2>/dev/null; do sleep 1; done\n",
-            csv = csv.display()
+            "#!/bin/sh\nD='{dir}'\necho run >> \"$D/runs\"\nN=$(wc -l < \"$D/runs\" | tr -d ' ')\nif [ -f \"$D/hang\" ]; then while kill -0 $PPID 2>/dev/null; do sleep 0.1; done; exit 0; fi\nif [ -f \"$D/nettop-$N.csv\" ]; then cat \"$D/nettop-$N.csv\"; elif [ -f \"$D/nettop.csv\" ]; then cat \"$D/nettop.csv\"; fi\n",
+            dir = dir.display()
         ),
     )
     .unwrap();
@@ -1697,18 +1698,25 @@ fn nettop_running(script: &Path) -> bool {
 }
 
 fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // The sampler runs nettop every 5 s, so a second sample takes 5 s.
+    let deadline = Instant::now() + Duration::from_secs(15);
     while !ok() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// Two samples: the first is only the starting point. A sample ends where
-/// the next starts, so a third header ends the second.
-fn two_samples(lines: &[String]) -> String {
-    let body = lines.join("\n");
-    format!(",bytes_in,bytes_out,\n{body}\n,bytes_in,bytes_out,\n{body}\n,bytes_in,bytes_out,\n")
+/// The runs of the fake nettop: the first run (the starting point) sees no
+/// connection, every later run sees `lines` as totals. So the bytes of the
+/// second run are the totals of `lines`, and later runs add nothing.
+fn write_samples(script: &Path, lines: &[String]) {
+    let dir = script.parent().unwrap();
+    std::fs::write(dir.join("nettop-1.csv"), ",bytes_in,bytes_out,\n").unwrap();
+    std::fs::write(dir.join("nettop.csv"), format!(",bytes_in,bytes_out,\n{}\n", lines.join("\n"))).unwrap();
+}
+
+fn nettop_runs(script: &Path) -> usize {
+    std::fs::read_to_string(script.parent().unwrap().join("runs")).map_or(0, |s| s.lines().count())
 }
 
 // ADR 11, T7, I1: off by default: no nettop, no folder. The sampler starts
@@ -1723,6 +1731,8 @@ fn traffic_sampler_starts_and_stops_with_the_setting() {
     assert!(!d.dir.path().join("traffic").exists());
     assert!(!d.dir.path().join("geo").exists());
 
+    // A run that does not end is killed when the setting goes off.
+    std::fs::write(script.parent().unwrap().join("hang"), "").unwrap();
     c.call("set_config", json!({"traffic": true}));
     wait_until("nettop to start", || nettop_running(&script));
     assert_eq!(c.call("status", json!({}))["traffic"], "running");
@@ -1733,6 +1743,37 @@ fn traffic_sampler_starts_and_stops_with_the_setting() {
     assert_eq!(c.call("status", json!({}))["traffic"], "off");
 }
 
+// A long-running `nettop -L 0` uses about 1.5 CPU cores on macOS 27, so the
+// sampler runs `nettop -L 1` (one sample, then exit) every 5 s. A run that
+// prints its sample and exits is the normal case, not a failure.
+#[test]
+fn a_nettop_that_prints_one_sample_and_exits_is_run_again() {
+    let (d, script) = traffic_daemon(json!({}));
+    let mut c = d.client();
+    std::fs::write(script.parent().unwrap().join("nettop.csv"), ",bytes_in,bytes_out,\n").unwrap();
+    c.call("set_config", json!({"traffic": true}));
+    wait_until("the second run", || nettop_runs(&script) >= 2);
+    let status = c.call("status", json!({}));
+    assert_eq!(status["traffic"], "running", "{status}");
+    assert!(status.get("traffic_error").is_none_or(Value::is_null), "{status}");
+    // The runs are 5 s apart: nettop is not started in a loop.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(nettop_runs(&script) <= 3, "{} runs", nettop_runs(&script));
+}
+
+// A run that prints nothing is reported, not read as "no traffic".
+#[test]
+fn a_nettop_that_prints_nothing_is_reported() {
+    let (d, _script) = traffic_daemon(json!({"traffic": true}));
+    let mut c = d.client();
+    let mut status = Value::Null;
+    wait_until("restarting", || {
+        status = c.call("status", json!({}));
+        status["traffic"] == "restarting"
+    });
+    assert!(status["traffic_error"].as_str().unwrap().contains("nettop printed no sample"), "{status}");
+}
+
 // ADR 11, T6: the apps of a sample, sorted by bytes in, with `via`.
 #[test]
 fn get_app_traffic_returns_the_apps_of_the_samples() {
@@ -1741,7 +1782,7 @@ fn get_app_traffic_returns_the_apps_of_the_samples() {
     let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
     let me = std::process::id();
     let gone = 999_999; // no such process: its row is marked exited
-    let csv = two_samples(&[
+    let lines = [
         format!("api-test.{me},0,0,"),
         format!("tcp6 ::1.61001<->::1.{http},3400,600,"),
         "tcp4 192.0.2.155:61010<->203.0.113.4:443,96000,9100,".to_string(),
@@ -1749,8 +1790,8 @@ fn get_app_traffic_returns_the_apps_of_the_samples() {
         "tcp4 192.0.2.155:61020<->198.51.100.7:443,10,120,".to_string(),
         format!("localrouterd.{},0,0,", d.child.id()),
         "tcp4 192.0.2.155:61030<->203.0.113.9:443,5000000,5000000,".to_string(),
-    ]);
-    std::fs::write(script.parent().unwrap().join("nettop.csv"), csv).unwrap();
+    ];
+    write_samples(&script, &lines);
     c.call("set_config", json!({"traffic": true}));
     let mut r = Value::Null;
     wait_until("the second sample", || {
@@ -1788,12 +1829,12 @@ fn get_app_traffic_returns_the_apps_of_the_samples() {
 fn server_names_come_from_reverse_dns_when_on() {
     let (d, script) = traffic_daemon(json!({}));
     let mut c = d.client();
-    let csv = two_samples(&[
+    let lines = [
         format!("api-test.{},0,0,", std::process::id()),
         "tcp4 192.0.2.155:61010<->203.0.113.4:443,500,50,".to_string(),
         "tcp4 127.0.0.1:61011<->127.0.0.1:5173,10,10,".to_string(),
-    ]);
-    std::fs::write(script.parent().unwrap().join("nettop.csv"), csv).unwrap();
+    ];
+    write_samples(&script, &lines);
     c.call("set_config", json!({"traffic": true}));
     let remote = |c: &mut Client, address: &str| -> Value {
         let r = c.call("get_app_traffic", json!({}));
