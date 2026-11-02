@@ -1098,7 +1098,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "localrouter"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "localrouter-core"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "brotli",
  "bytes",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "localrouterd"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "libc",
