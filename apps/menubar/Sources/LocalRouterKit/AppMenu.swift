@@ -11,6 +11,20 @@ public enum AppMenu {
         case installCLI, installClaude, installCodex
         case help, askForHelp(AgentApp)
         case checkForUpdates, settings, quit
+        /// Traffic by app (ADR 11): the Apps view, the map window, and the
+        /// details window of the app with this key.
+        case showApps, openTrafficMap, reviewApp(String)
+    }
+
+    /// An app that needs review, for the menu (ADR 11, 3.4).
+    public struct AppReview: Equatable, Sendable {
+        /// The app's key, as in the traffic reply.
+        public var app: String
+        public var name: String
+        public init(app: String, name: String) {
+            self.app = app
+            self.name = name
+        }
     }
 
     public struct Item: Equatable, Sendable {
@@ -45,9 +59,17 @@ public enum AppMenu {
         public var agentHelpHost: String
         /// "6 of 7 online"; nil when the daemon is not running.
         public var onlineSummary: String?
+        /// "↓ 431 MB, ↑ 96.5 MB last hour"; nil while the sampler is off,
+        /// which hides the Traffic group (ADR 11, 5.2).
+        public var trafficSummary: String?
+        /// Apps that need review; the menu shows at most three.
+        public var appsToReview: [AppReview]
 
         public init(appName: String, chromeInstalled: Bool, hasProxyLog: Bool, agentApps: [AgentApp], cliInstalled: Bool,
-                    agentHelpHost: String, onlineSummary: String?) {
+                    agentHelpHost: String, onlineSummary: String?, trafficSummary: String? = nil,
+                    appsToReview: [AppReview] = []) {
+            self.trafficSummary = trafficSummary
+            self.appsToReview = appsToReview
             self.appName = appName
             self.chromeInstalled = chromeInstalled
             self.hasProxyLog = hasProxyLog
@@ -65,6 +87,16 @@ public enum AppMenu {
         if window {
             out.append(.item(Item(title: "Open \(c.appName)", symbol: "point.3.connected.trianglepath.dotted", action: .openWindow,
                                   detail: c.onlineSummary, emphasized: true)))
+            out.append(.separator)
+        }
+        if let summary = c.trafficSummary {
+            out.append(.header("Traffic"))
+            out.append(.item(Item(title: "Show Apps", symbol: "chart.bar", action: .showApps, detail: summary)))
+            out.append(.item(Item(title: "Open Traffic Map", symbol: "globe.europe.africa", action: .openTrafficMap)))
+            for review in c.appsToReview.prefix(3) {
+                out.append(.item(Item(title: "Review \(review.name)…", symbol: "exclamationmark.shield", action: .reviewApp(review.app),
+                                      emphasized: true)))
+            }
             out.append(.separator)
         }
         if c.chromeInstalled || c.hasProxyLog {

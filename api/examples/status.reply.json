@@ -2,7 +2,7 @@
   "id": 2,
   "result": {
     "daemon_version": "0.1.0",
-    "api_version": "1.5",
+    "api_version": "1.9",
     "pid": 812,
     "data_dir": "/Users/me/Library/Application Support/LocalRouter",
     "http": {
@@ -76,6 +76,13 @@
     },
     "notes": [
       "The route proxy hides the proxy log viewer. It is also at router.localhost/proxy-log/."
-    ]
+    ],
+    "traffic": "restarting",
+    "traffic_error": "nettop output not understood: none of the 3 lines of the sample could be read, first: \"x|1|2\"",
+    "traffic_history_bytes": 48211033,
+    "geo_db": {
+      "date": "2026-11",
+      "bytes": 135000000
+    }
   }
 }

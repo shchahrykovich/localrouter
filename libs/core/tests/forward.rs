@@ -32,6 +32,7 @@ use localrouter_core::proxy::{Proxy, RouteSource};
 use localrouter_core::routes::{Protocol, Route, RouteTable};
 use localrouter_core::scripts::Scripts;
 use localrouter_core::tls::{self, CaKind, CaLoad, CertStore, LocalCa};
+use localrouter_core::traffic::peers::PeerTable;
 use localrouter_core::upstream::{BoxFuture, Resolve, Upstream};
 use rustls::pki_types::{CertificateDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -257,6 +258,8 @@ struct Harness {
     /// Off: the local-target rule lets the test servers on 127.0.0.1 through,
     /// so a phone request can succeed. On: the real rule (I5).
     strict: Arc<AtomicBool>,
+    /// The router's and the proxy's client connections, by port (ADR 11).
+    peers: Arc<PeerTable>,
     _dir: tempfile::TempDir,
 }
 
@@ -301,6 +304,7 @@ async fn harness() -> Harness {
         file_mb: 20,
         file_requests: 5000,
     });
+    let peers = PeerTable::new();
     let router = Arc::new(Proxy {
         instance: Instance::release(),
         routes: routes.clone(),
@@ -309,6 +313,7 @@ async fn harness() -> Harness {
         status: None,
         scripts: scripts.clone(),
         har: Some(har.clone()),
+        peers: Some(peers.clone()),
     });
 
     let paths = Paths::under(dir.path().to_path_buf());
@@ -391,6 +396,7 @@ async fn harness() -> Harness {
         phone_client,
         events,
         strict,
+        peers,
         _dir: dir,
     }
 }
@@ -477,6 +483,54 @@ async fn absolute_form_is_sent_on_without_proxy_headers() {
     }
     let entry = h.log.recent(None, 1).pop().unwrap();
     assert!(matches!(&entry, LogEntry::Http { path, via: Some(Via::Proxy), mode: Some(ProxyMode::Http), .. } if path == "/a"), "{entry:?}");
+}
+
+// ADR 11, T4: each client connection's port gives the host it asked for and
+// the server the proxy reached, for the traffic sampler.
+#[tokio::test]
+async fn peer_port_records_the_host_and_the_upstream_address() {
+    let h = harness().await;
+    // A tunnel: the server's address is known as soon as it connects.
+    let echo = tcp_echo().await;
+    let stream = connect(h.proxy, &format!("127.0.0.1:{}", echo.port())).await.unwrap();
+    let port = stream.local_addr().unwrap().port();
+    let info = h.peers.get(port).expect("an entry for the client's port");
+    assert_eq!(info.host.as_deref(), Some("127.0.0.1"));
+    assert_eq!(info.upstream, Some(echo));
+    assert_eq!(info.client, None);
+    drop(stream);
+    // Closed connections stay for 30 s.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(h.peers.get(port).is_some());
+
+    // An inspected request on a proxy client's port: the host and the
+    // address the upstream client connected to.
+    let stream = connect(h.agent, "test.example:443").await.unwrap();
+    let port = stream.local_addr().unwrap().port();
+    let tls = tls_over(stream, "test.example", &h.inspection_ca).await.unwrap();
+    let (status, _) = get_over(tls, "test.example", "/p").await;
+    assert_eq!(status, StatusCode::OK);
+    let info = h.peers.get(port).unwrap();
+    assert_eq!((info.client.as_deref(), info.host.as_deref()), (Some("agent"), Some("test.example")));
+    assert_eq!(info.upstream, h.resolver.names.get("test.example").copied());
+
+    // A .localhost name through the proxy: the router notes the route's host.
+    let stream = TcpStream::connect(h.proxy).await.unwrap();
+    let port = stream.local_addr().unwrap().port();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+    tokio::spawn(conn);
+    let req = Request::get("http://shop.localhost/x").header("host", "shop.localhost").body(Empty::<Bytes>::new()).unwrap();
+    assert_eq!(sender.send_request(req).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(h.peers.get(port).unwrap().host.as_deref(), Some("shop.localhost"));
+}
+
+// ADR 11, T4, I13: many connections keep the table at 4,096 entries.
+#[tokio::test]
+async fn peer_port_table_stays_bounded() {
+    let peers = PeerTable::new();
+    let guards: Vec<_> = (0..5000u32).map(|i| peers.open(1000 + i as u16, None)).collect();
+    assert_eq!(peers.len(), localrouter_core::traffic::peers::CAPACITY);
+    drop(guards);
 }
 
 // T2: a request without a full URL is not proxied.

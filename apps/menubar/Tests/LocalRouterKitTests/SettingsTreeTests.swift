@@ -24,6 +24,9 @@ final class SettingsTreeTests: XCTestCase {
     func testKeywordMatchFindsThePageThatHoldsTheSetting() {
         XCTAssertEqual(pages(SettingsTree.filter("lan")), [.routing])
         XCTAssertEqual(pages(SettingsTree.filter("uninstall")), [.general])
+        // ADR 11, T15.
+        XCTAssertEqual(pages(SettingsTree.filter("virustotal")), [.traffic])
+        XCTAssertEqual(pages(SettingsTree.filter("nettop")), [.traffic])
     }
 
     func testChildMatchKeepsItsParentButNotItsSiblings() {

@@ -1,0 +1,9 @@
+{
+  "id": 34,
+  "method": "set_config",
+  "params": {
+    "traffic": true,
+    "traffic_history_days": 30,
+    "traffic_places": true
+  }
+}

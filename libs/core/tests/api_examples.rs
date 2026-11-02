@@ -47,7 +47,9 @@ fn params(method: &str, params: Value, file: &str) {
         "get_proxy" => check::<GetProxyParams>(params, file),
         "new_setup_code" => check::<NewSetupCodeParams>(params, file),
         "set_phone_device" => check::<SetPhoneDeviceParams>(params, file),
-        "status" | "list_script_rules" | "list_routes" | "get_config" | "reset_ca" | "reset_inspect_ca" => {
+        "get_app_traffic" => check::<GetAppTrafficParams>(params, file),
+        "status" | "list_script_rules" | "list_routes" | "get_config" | "reset_ca" | "reset_inspect_ca" | "update_geo_db"
+        | "clear_traffic_history" => {
             check::<Empty>(params, file)
         }
         other => panic!("{file}: unknown method {other}"),
@@ -73,6 +75,9 @@ fn result(method: &str, result: Value, file: &str) {
         "list_script_rules" => check::<ListScriptRulesResult>(result, file),
         "new_setup_code" => check::<NewSetupCodeResult>(result, file),
         "set_phone_device" => check::<SetPhoneDeviceResult>(result, file),
+        "get_app_traffic" => check::<AppTrafficResult>(result, file),
+        "update_geo_db" => check::<UpdateGeoDbResult>(result, file),
+        "clear_traffic_history" => check::<ClearTrafficHistoryResult>(result, file),
         other => panic!("{file}: unknown method {other}"),
     }
 }

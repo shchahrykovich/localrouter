@@ -8,8 +8,9 @@
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -73,10 +74,11 @@ impl Upstream {
     /// `tls` must verify server certificates: production passes
     /// [`platform_tls`], tests a root store with a test CA.
     pub fn new(tls: Arc<rustls::ClientConfig>, resolver: Arc<dyn Resolve>) -> Self {
+        let addrs: Arc<Mutex<HashMap<(String, u16), SocketAddr>>> = Arc::default();
         let with_alpn = |alpn: &[&[u8]]| {
             let mut config = (*tls).clone();
             config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-            Connector { resolver: resolver.clone(), tls: Arc::new(config) }
+            Connector { resolver: resolver.clone(), tls: Arc::new(config), addrs: addrs.clone() }
         };
         let connector = with_alpn(&[b"h2", b"http/1.1"]);
         let h1_connector = with_alpn(&[b"http/1.1"]);
@@ -97,6 +99,13 @@ impl Upstream {
     /// use: the phone port checks them before it sends (ADR 10, I5).
     pub async fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
         self.connector.resolver.resolve(host, port).await
+    }
+
+    /// The address the last connection to `host:port` went to: the traffic
+    /// sampler shows proxy bytes under it (ADR 11, 1.4). Remembered for at
+    /// most 4,096 names.
+    pub fn last_address(&self, host: &str, port: u16) -> Option<SocketAddr> {
+        self.connector.addrs.lock().unwrap().get(&(host.to_string(), port)).copied()
     }
 
     /// A TCP connection for a tunnel.
@@ -124,6 +133,8 @@ fn describe(e: &(dyn std::error::Error + 'static)) -> String {
 struct Connector {
     resolver: Arc<dyn Resolve>,
     tls: Arc<rustls::ClientConfig>,
+    /// The address each `host:port` last connected to.
+    addrs: Arc<Mutex<HashMap<(String, u16), SocketAddr>>>,
 }
 
 impl Connector {
@@ -139,6 +150,11 @@ impl Connector {
                 match TcpStream::connect(addr).await {
                     Ok(tcp) => {
                         let _ = tcp.set_nodelay(true);
+                        let mut addrs = self.addrs.lock().unwrap();
+                        if addrs.len() >= 4096 {
+                            addrs.clear();
+                        }
+                        addrs.insert((host.to_string(), port), addr);
                         return Ok(tcp);
                     }
                     Err(e) => last = io::Error::new(e.kind(), format!("cannot connect to {host}:{port}: {e}")),

@@ -158,6 +158,10 @@ fn fixed_status() -> StatusResult {
         proxy: None,
         network: None,
         notes: vec![],
+        traffic: None,
+        traffic_error: None,
+        traffic_history_bytes: None,
+        geo_db: None,
     }
 }
 
@@ -178,6 +182,7 @@ async fn harness(routes: Vec<Route>) -> Harness {
         status: Some(Arc::new(|| Box::pin(async { Some(fixed_status()) }))),
         scripts: localrouter_core::scripts::Scripts::new(),
         har: None,
+        peers: None,
     });
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -672,6 +677,7 @@ mod proxy_log {
             status: None,
             scripts: localrouter_core::scripts::Scripts::new(),
             har: Some(har.clone()),
+            peers: None,
         });
         let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http = http_listener.local_addr().unwrap();

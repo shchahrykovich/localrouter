@@ -20,6 +20,7 @@ final class ApiContractTests: XCTestCase {
         "hello", "status", "register_route", "unregister_route", "list_routes", "find_free_port",
         "get_logs", "subscribe_logs", "get_config", "set_config", "reset_ca", "get_proxy", "reset_inspect_ca",
         "set_script_rule", "remove_script_rule", "list_script_rules", "new_setup_code", "set_phone_device",
+        "get_app_traffic", "update_geo_db", "clear_traffic_history",
     ]
 
     /// Decode, encode again, and compare with the file (nulls and default
@@ -65,7 +66,9 @@ final class ApiContractTests: XCTestCase {
         case "get_proxy": try roundTrip(GetProxyParams.self, json, file)
         case "new_setup_code": try roundTrip(NewSetupCodeParams.self, json, file)
         case "set_phone_device": try roundTrip(SetPhoneDeviceParams.self, json, file)
-        case "status", "list_routes", "get_config", "reset_ca", "reset_inspect_ca", "list_script_rules":
+        case "get_app_traffic": try roundTrip(GetAppTrafficParams.self, json, file)
+        case "status", "list_routes", "get_config", "reset_ca", "reset_inspect_ca", "list_script_rules", "update_geo_db",
+             "clear_traffic_history":
             try roundTrip(Empty.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
@@ -90,6 +93,9 @@ final class ApiContractTests: XCTestCase {
         case "list_script_rules": try roundTrip(ListScriptRulesResult.self, json, file)
         case "new_setup_code": try roundTrip(NewSetupCodeResult.self, json, file)
         case "set_phone_device": try roundTrip(SetPhoneDeviceResult.self, json, file)
+        case "get_app_traffic": try roundTrip(AppTrafficResult.self, json, file)
+        case "update_geo_db": try roundTrip(UpdateGeoDbResult.self, json, file)
+        case "clear_traffic_history": try roundTrip(ClearTrafficHistoryResult.self, json, file)
         default: XCTFail("\(file): unknown method \(method)")
         }
     }

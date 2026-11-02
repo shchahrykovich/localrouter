@@ -1,7 +1,8 @@
 # ADR 11: Traffic by app, a traffic map, and app checks
 
-**Status:** Proposed, 2026-11-02. Not built. This ADR is the spec for the
-coding agent that builds it. The design is the canvas
+**Status:** Built, 2026-11-02; manual tests M0 to M8 not done yet. See
+[11-build-notes.md](11-build-notes.md) for what M0 answered and where the
+build differs from this text. The design is the canvas
 <https://claude.ai/artifact/FsPnM9uRe3Ev3xG8sfkujT> (artboards
 `TrafficApps`, `Traffic`, `Map`, `AppInfo`, `Menu`, `SettingsTraffic`).
 
@@ -70,6 +71,7 @@ real VirusTotal key.
 | 8 | What exists and happens afterwards | manifest | [08-semantic-change-manifest.md](08-semantic-change-manifest.md) |
 | 9 | The tests that prove it | test plan | [09-test-plan.md](09-test-plan.md) |
 | 10 | The order of work | build plan | [10-tasks.md](10-tasks.md) |
+| 11 | What the build found, and where it differs | build notes | [11-build-notes.md](11-build-notes.md) |
 
 The map dots generator is in [tools/](tools/README.md).
 
@@ -112,7 +114,7 @@ list: [05](05-ui.md), 5.1.
 ## Notable artifacts
 
 - Config: `traffic`, `traffic_history_days`, `traffic_places`.
-- Socket API 1.9: `get_app_traffic`, `update_geo_db`, `status.traffic`.
+- Socket API 1.9: `get_app_traffic`, `update_geo_db`, `clear_traffic_history`, `status.traffic`.
 - `<data>/traffic/YYYY-MM-DD.ndjson`, `<data>/geo/dbip-*-lite.mmdb`.
 - App: `app-checks.json` in Caches, one Keychain item, a trusted list.
 - `libs/core/src/traffic/`, `apps/daemon/src/traffic.rs`,

@@ -30,6 +30,8 @@ use localrouter_core::scripts::rules::{self as script_rules, RuleHost};
 use localrouter_core::scripts::{Scripts, bodies};
 use localrouter_core::tcp::{self, TcpRouteInfo};
 use localrouter_core::tls::{CaKind, CaLoad, CertStore, LocalCa};
+use localrouter_core::traffic::attribute::Ports;
+use localrouter_core::traffic::peers::PeerTable;
 use localrouter_core::upstream::Upstream;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::listen::{self, RefusalLog};
 use crate::network::{self, Network};
 use crate::pidwatch::{self, PidWatch};
+use crate::traffic::Traffic;
 use crate::{store, tcp_listen};
 
 pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -129,6 +132,8 @@ pub struct Daemon {
     pub scripts: Arc<Scripts>,
     /// The proxy log (ADR 08); the router and the forward proxy share it.
     pub har: Arc<HarLog>,
+    /// The traffic sampler, its history and places (ADR 11).
+    pub traffic: Arc<Traffic>,
     pub shutdown: CancellationToken,
     pids: PidWatch,
     tcp: Mutex<HashMap<String, TcpHandle>>,
@@ -269,6 +274,9 @@ impl Daemon {
                 }
             }
         }
+        // The router's and the forward proxy's client ports (ADR 11, 1.4).
+        let peers = PeerTable::new();
+        let traffic = Traffic::new(&paths.data, peers.clone());
         let daemon = Arc::new_cyclic(|this: &Weak<Self>| {
             let this_for_scripts = this.clone();
             let this_for_setup = this.clone();
@@ -285,6 +293,7 @@ impl Daemon {
                 })),
                 scripts: scripts.clone(),
                 har: Some(har.clone()),
+                peers: Some(peers.clone()),
             });
             let forward = Arc::new(ForwardProxy {
                 instance: instance.clone(),
@@ -322,6 +331,7 @@ impl Daemon {
                 forward,
                 scripts,
                 har,
+                traffic,
                 shutdown: CancellationToken::new(),
                 pids,
                 tcp: Mutex::new(HashMap::new()),
@@ -730,6 +740,7 @@ impl Daemon {
         let listen_failed = problems.listen_failed.clone();
         let mut notes: Vec<String> = problems.lan_note.iter().cloned().collect();
         drop(problems);
+        let (traffic, traffic_error) = self.traffic.state();
         // A route `proxy` saved before ADR 08 wins over the viewer (I11).
         if self.shared.routes.read().unwrap().routes_of(PROXY_LOG_HOST).next().is_some() {
             let help = localrouter_core::instance::help_url(self.routes_http_port(), self.routes_https_port());
@@ -756,6 +767,10 @@ impl Daemon {
             proxy: Some(proxy),
             network,
             notes,
+            traffic: Some(traffic),
+            traffic_error,
+            traffic_history_bytes: self.traffic.history_bytes(),
+            geo_db: self.traffic.geo_info(),
         }
     }
 
@@ -1107,6 +1122,16 @@ impl Daemon {
         if let Some(list) = &p.proxy_clients {
             new.proxy_clients = list.clone();
         }
+        if let Some(v) = p.traffic {
+            new.traffic = v;
+        }
+        if let Some(v) = p.traffic_history_days {
+            Config::check_traffic_history_days(v).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
+            new.traffic_history_days = v;
+        }
+        if let Some(v) = p.traffic_places {
+            new.traffic_places = v;
+        }
         check_clients(&new).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
 
         // The proxy port: bind the new pair before anything is written, so a
@@ -1216,8 +1241,49 @@ impl Daemon {
             }
         }
         self.refresh_proxy_ports();
+        self.start_traffic();
         let restart_needed = (new.http_port, new.https_port) != self.start_ports;
         Ok(SetConfigResult { config: new, restart_needed })
+    }
+
+    // ---- traffic by app (ADR 11)
+
+    /// Start or stop the sampler to match the config (I1).
+    pub fn start_traffic(self: &Arc<Self>) {
+        let config = self.config();
+        let weak = Arc::downgrade(self);
+        let ports = Arc::new(move || weak.upgrade().map(|d| d.traffic_ports()).unwrap_or_default());
+        self.traffic.apply(config.traffic, config.traffic_places, config.traffic_history_days, ports, &self.shutdown);
+    }
+
+    /// The ports that make a connection `router` or `proxy` (I3).
+    fn traffic_ports(&self) -> Ports {
+        let mut ports = Ports::default();
+        ports.http.extend(self.routes_http_port());
+        ports.http.extend(self.routes_https_port());
+        for (host, handle) in self.tcp.lock().unwrap().iter() {
+            ports.tcp_routes.insert(handle.port, format!("{host}.{}", localrouter_core::TLD));
+        }
+        ports.proxy.extend(self.shared.proxy_ports.read().unwrap().iter().copied());
+        ports
+    }
+
+    pub async fn get_app_traffic(&self, p: api::GetAppTrafficParams) -> api::AppTrafficResult {
+        self.traffic.query(p).await
+    }
+
+    /// Download the DB-IP databases (ADR 11, 2.2): only on this call, only
+    /// with the verifying TLS settings (I11).
+    pub async fn update_geo_db(&self) -> Result<api::UpdateGeoDbResult, ApiError> {
+        let upstream = upstream();
+        let places = self.config().traffic_places;
+        self.traffic.update_geo_db(&upstream, places).await.map_err(|why| err(ErrorCode::Io, why))
+    }
+
+    pub fn clear_traffic_history(&self) -> api::ClearTrafficHistoryResult {
+        let removed = self.traffic.clear();
+        tracing::info!("traffic history cleared: {removed} day files");
+        api::ClearTrafficHistoryResult { removed }
     }
 
     pub async fn reset_ca(&self) -> Result<ResetCaResult, ApiError> {

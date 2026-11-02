@@ -100,6 +100,13 @@ impl ForwardProxy {
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        // The client's port joins nettop's view of the app to the hosts it
+        // asked for (ADR 11, 1.4). Only a client on this Mac: nettop sees
+        // only this Mac's sockets.
+        let _peer = match &self.router.peers {
+            Some(peers) if peer.ip().to_canonical().is_loopback() => Some(peers.open(peer.port(), at.client.as_deref())),
+            _ => None,
+        };
         let this = self.clone();
         let child = cancel.clone();
         let service = hyper::service::service_fn(move |req| {
@@ -176,7 +183,18 @@ impl ForwardProxy {
         let base = format!("http://{authority}");
         let ctx = Ctx { source: "proxy", route: None, scheme: "http", host: host.clone(), port };
         let (resp, scripts) = self.through_scripts(req, &base, &host, ctx).await;
+        self.note_target(peer, &host, port);
         self.log_sent(&method, &host, &path, resp, start, ProxyMode::Http, scripts, rec)
+    }
+
+    /// The host a client connection asked for and the server the request
+    /// went to, for the traffic sampler (ADR 11, 1.4).
+    fn note_target(&self, peer: SocketAddr, host: &str, port: u16) {
+        if let Some(peers) = &self.router.peers
+            && peer.ip().to_canonical().is_loopback()
+        {
+            peers.set_target(peer.port(), host, self.upstream.last_address(host, port));
+        }
     }
 
     /// A phone port (ADR 10). First the setup paths, for any peer, never
@@ -482,7 +500,7 @@ impl ForwardProxy {
                     let session = session.clone();
                     let host = host.clone();
                     let at = at.clone();
-                    async move { Ok::<_, Infallible>(session.inspected(req, &host, port, &at).await) }
+                    async move { Ok::<_, Infallible>(session.inspected(req, &host, port, &at, peer).await) }
                 });
                 let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
                 let conn = builder.serve_connection_with_upgrades(TokioIo::new(tls), service);
@@ -497,7 +515,14 @@ impl ForwardProxy {
         // A tunnel: connect first, so a server that does not answer is a 502
         // the client can show.
         let server = match self.upstream.connect(&host, port).await {
-            Ok(server) => server,
+            Ok(server) => {
+                if let Some(peers) = &self.router.peers
+                    && peer.ip().to_canonical().is_loopback()
+                {
+                    peers.set_target(peer.port(), &host, server.peer_addr().ok());
+                }
+                server
+            }
             Err(e) => {
                 let resp = bad_gateway(&host, &e);
                 let millis = start.elapsed().as_millis() as u64;
@@ -559,7 +584,7 @@ impl ForwardProxy {
 
     /// One request inside an inspected `CONNECT`: sent to the same host and
     /// port over a new, verified TLS connection.
-    async fn inspected(&self, req: Request<Incoming>, host: &str, port: u16, at: &ClientPort) -> Response<Body> {
+    async fn inspected(&self, req: Request<Incoming>, host: &str, port: u16, at: &ClientPort, peer: SocketAddr) -> Response<Body> {
         let start = Instant::now();
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
@@ -570,6 +595,7 @@ impl ForwardProxy {
         let (req, rec) = self.recording(seen, req);
         let ctx = Ctx { source: "proxy", route: None, scheme: "https", host: host.to_string(), port };
         let (resp, scripts) = self.through_scripts(req, &format!("https://{authority}"), host, ctx).await;
+        self.note_target(peer, host, port);
         self.log_sent(&method, host, &path, resp, start, ProxyMode::Inspect, scripts, rec)
     }
 

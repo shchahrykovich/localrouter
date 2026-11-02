@@ -110,6 +110,10 @@ struct SettingsView: View {
                 Circle().fill(model.running ? Theme.online : Theme.warning).frame(width: 6, height: 6)
                     .accessibilityLabel(model.running ? "running" : "not running")
             }
+            if page == .traffic && !model.traffic.appsToReview.isEmpty {
+                Spacer()
+                Circle().fill(Theme.dangerText).frame(width: 6, height: 6).accessibilityLabel("an app needs review")
+            }
         }
         .badge(page == .updates && updateAvailable ? 1 : 0)
         .tag(page)
@@ -157,6 +161,7 @@ struct SettingsView: View {
         case .proxy: proxyPage
         case .inspection: inspectionPage
         case .scripts: scriptsPage
+        case .traffic: TrafficSettings()
         case .daemon: daemonPage
         case .updates: updatesPage
         case .help: EmptyView() // HelpView, outside the Form

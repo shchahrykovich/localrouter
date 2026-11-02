@@ -3,7 +3,7 @@ import Foundation
 /// One page of the Settings window. The window shows the pages as a tree on
 /// the left, with a search field above it, and the selected page on the right.
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
-    case general, routing, certificates, proxy, inspection, scripts, daemon, updates, help
+    case general, routing, certificates, proxy, inspection, scripts, traffic, daemon, updates, help
 
     public var id: String { rawValue }
 
@@ -15,6 +15,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
         case .proxy: "Proxy"
         case .inspection: "Inspection"
         case .scripts: "Scripts"
+        case .traffic: "Traffic"
         case .daemon: "Daemon"
         case .updates: "Updates"
         case .help: "Help"
@@ -30,6 +31,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
         case .proxy: "network"
         case .inspection: "eye"
         case .scripts: "scroll"
+        case .traffic: "chart.bar"
         case .daemon: "server.rack"
         case .updates: "arrow.down.circle"
         case .help: "questionmark.circle"
@@ -46,6 +48,8 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
         case .proxy: ["forward proxy", "address", "port", "chrome", "proxy log", "har", "requests per file", "mb per file", "viewer"]
         case .inspection: ["inspect host", "https", "inspection ca", "trust", "untrust", "decrypt"]
         case .scripts: ["lua", "script rules", "intercept", "log"]
+        case .traffic: ["traffic", "apps", "nettop", "history", "map", "places", "db-ip", "virustotal", "api key", "code signature",
+                        "notarized", "trusted", "ask ai", "claude", "chatgpt"]
         case .daemon: ["version", "http port", "https port", "config.json", "restart", "errors"]
         case .updates: ["check for updates", "automatically", "version"]
         case .help: ["coding agent", "mcp", "claude", "codex", "command line tool", "terminal", "firefox", "node.js", "python"]
@@ -75,6 +79,7 @@ public enum SettingsTree {
         SettingsNode(.routing),
         SettingsNode(.certificates),
         SettingsNode(.proxy, [SettingsNode(.inspection), SettingsNode(.scripts)]),
+        SettingsNode(.traffic),
         SettingsNode(.daemon),
         SettingsNode(.updates),
         SettingsNode(.help),

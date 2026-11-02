@@ -1,9 +1,31 @@
 import LocalRouterKit
 import SwiftUI
 
-/// The Traffic tab: the requests of the routes and of the forward proxy, in
-/// columns, newest first.
+/// The Traffic tab: Apps (ADR 11), every program's traffic, or Requests,
+/// the requests of the routes and of the forward proxy.
 struct TrafficView: View {
+    @Environment(AppModel.self) private var model
+    @Binding var scope: TrafficScope
+    let perform: (AppMenu.Action) -> Void
+
+    var body: some View {
+        @Bindable var model = model
+        VStack(spacing: 10) {
+            Segments(items: TrafficMode.allCases, selection: $model.trafficMode, fill: false) { mode, _ in Text(mode.rawValue) }
+                .fixedSize()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+            switch model.trafficMode {
+            case .apps: AppsView(perform: perform)
+            case .requests: RequestsView(scope: $scope)
+            }
+        }
+    }
+}
+
+/// The requests of the routes and of the forward proxy, in columns, newest
+/// first.
+struct RequestsView: View {
     @Environment(AppModel.self) private var model
     @Binding var scope: TrafficScope
     @State private var filter = ""

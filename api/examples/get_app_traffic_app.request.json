@@ -1,0 +1,8 @@
+{
+  "id": 31,
+  "method": "get_app_traffic",
+  "params": {
+    "range": "7d",
+    "app": "/Applications/Google Chrome.app"
+  }
+}

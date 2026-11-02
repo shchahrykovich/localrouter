@@ -18,15 +18,18 @@ use crate::logs::LogEntry;
 use crate::routes::Route;
 use crate::scripts::engine::{LastError, ScriptKind};
 use crate::scripts::rules::ScriptRule;
+use crate::traffic::Via;
+use crate::traffic::attribute::AppKind;
+use crate::traffic::nettop::Proto;
 
 /// Major.minor. A client stops when the major number differs (invariant I14).
-pub const API_VERSION: &str = "1.8";
+pub const API_VERSION: &str = "1.9";
 
 pub fn api_major(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
 }
 
-pub const METHODS: [&str; 18] = [
+pub const METHODS: [&str; 21] = [
     "hello",
     "status",
     "register_route",
@@ -45,6 +48,9 @@ pub const METHODS: [&str; 18] = [
     "list_script_rules",
     "new_setup_code",
     "set_phone_device",
+    "get_app_traffic",
+    "update_geo_db",
+    "clear_traffic_history",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -188,6 +194,19 @@ pub struct StatusResult {
     /// route that hides a built-in name, LAN access that now works per network.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// The traffic sampler (ADR 11). Absent from daemons before API 1.9.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<SamplerState>,
+    /// Why the sampler is restarting: nettop failed or its output was not
+    /// understood.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_error: Option<String>,
+    /// Bytes of history on disk, `<data>/traffic/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_history_bytes: Option<u64>,
+    /// The places databases, when they are on this Mac.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_db: Option<GeoDbInfo>,
 }
 
 /// The network the Mac is on, as LAN access sees it (ADR 08, change 4).
@@ -349,6 +368,208 @@ pub struct SubscribeLogsResult {
     pub subscribed: bool,
 }
 
+// ---- traffic by app (ADR 11)
+
+/// The time a `get_app_traffic` reply covers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TrafficRange {
+    #[default]
+    #[serde(rename = "1h")]
+    Hour,
+    #[serde(rename = "24h")]
+    Day,
+    #[serde(rename = "7d")]
+    Week,
+    #[serde(rename = "30d")]
+    Month,
+}
+
+impl TrafficRange {
+    pub fn secs(self) -> u64 {
+        match self {
+            Self::Hour => 3600,
+            Self::Day => 86_400,
+            Self::Week => 7 * 86_400,
+            Self::Month => 30 * 86_400,
+        }
+    }
+
+    /// 60 buckets of a minute for an hour, 96 for the longer ranges.
+    pub fn buckets(self) -> u64 {
+        if self == Self::Hour { 60 } else { 96 }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GetAppTrafficParams {
+    #[serde(default)]
+    pub range: TrafficRange,
+    /// Only this app: its key, as in [`AppTraffic::app`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SamplerState {
+    /// `traffic` is off: no nettop process runs.
+    Off,
+    Running,
+    /// nettop exited or its output was not understood; it starts again
+    /// after 1, 2, 4 … up to 60 seconds.
+    Restarting,
+}
+
+/// Bytes received and sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InOut {
+    #[serde(rename = "in")]
+    pub bytes_in: u64,
+    #[serde(rename = "out")]
+    pub bytes_out: u64,
+}
+
+impl InOut {
+    pub fn add(&mut self, bytes_in: u64, bytes_out: u64) {
+        self.bytes_in += bytes_in;
+        self.bytes_out += bytes_out;
+    }
+}
+
+/// Bytes by how they reached the network.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByVia {
+    pub router: InOut,
+    pub proxy: InOut,
+    pub direct: InOut,
+}
+
+impl ByVia {
+    pub fn get_mut(&mut self, via: Via) -> &mut InOut {
+        match via {
+            Via::Router => &mut self.router,
+            Via::Proxy => &mut self.proxy,
+            Via::Direct => &mut self.direct,
+        }
+    }
+}
+
+/// One bar of the histogram: the bytes from `t` (Unix seconds) for
+/// `bucket_secs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficBucket {
+    pub t: u64,
+    #[serde(rename = "in")]
+    pub bytes_in: u64,
+    #[serde(rename = "out")]
+    pub bytes_out: u64,
+}
+
+/// One row of the Apps view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppTraffic {
+    /// The key: the app path (`/Applications/Google Chrome.app`), the
+    /// executable path, `macOS services`, or `exited:<name>`.
+    pub app: String,
+    pub name: String,
+    pub kind: AppKind,
+    /// The executables seen under this app, for the app checks.
+    pub paths: Vec<String>,
+    /// Its processes seen in the last 30 seconds.
+    pub pids: Vec<u32>,
+    #[serde(rename = "in")]
+    pub bytes_in: u64,
+    #[serde(rename = "out")]
+    pub bytes_out: u64,
+    pub by_via: ByVia,
+    /// Different remote addresses.
+    pub addresses: usize,
+    /// In and out together, in 12 equal parts of the range, oldest first.
+    pub spark: Vec<u64>,
+}
+
+/// Where a place lookup put an address. City-level guesses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// `GB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// The bytes of one app to one remote through one `via`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteTraffic {
+    pub app: String,
+    /// `None` for an unconnected UDP socket, or a proxy connection the
+    /// proxy has no record of.
+    pub address: Option<String>,
+    pub port: Option<u16>,
+    pub proto: Proto,
+    /// The route's name for `router`, the host for `proxy`. nettop has no
+    /// host names for `direct`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The network owner from the ASN database: `GitHub, Inc.`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asn_org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
+    pub via: Via,
+    #[serde(rename = "in")]
+    pub bytes_in: u64,
+    #[serde(rename = "out")]
+    pub bytes_out: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficTotals {
+    #[serde(rename = "in")]
+    pub bytes_in: u64,
+    #[serde(rename = "out")]
+    pub bytes_out: u64,
+    pub by_via: ByVia,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppTrafficResult {
+    pub range: TrafficRange,
+    pub sampler: SamplerState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub bucket_secs: u64,
+    pub buckets: Vec<TrafficBucket>,
+    /// Sorted by bytes in, most first.
+    pub apps: Vec<AppTraffic>,
+    /// Sorted by bytes in and out, most first; at most 2,000.
+    pub remotes: Vec<RemoteTraffic>,
+    pub totals: TrafficTotals,
+    /// `traffic_places` is on and the databases are on this Mac.
+    pub places: bool,
+}
+
+/// The DB-IP Lite databases on this Mac.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoDbInfo {
+    /// The month of the databases: `2026-11`.
+    pub date: String,
+    /// Both files together.
+    pub bytes: u64,
+}
+
+pub type UpdateGeoDbResult = GeoDbInfo;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClearTrafficHistoryResult {
+    /// Day files deleted.
+    pub removed: usize,
+}
+
 // ---- config
 
 pub type GetConfigResult = Config;
@@ -388,6 +609,15 @@ pub struct SetConfigParams {
     /// on, a new or moved port binds before anything is written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_clients: Option<Vec<crate::config::ProxyClient>>,
+    /// Run the traffic sampler (ADR 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<bool>,
+    /// 1, 7 or 30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_history_days: Option<u32>,
+    /// Look up places; turning it on does not download: `update_geo_db` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_places: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

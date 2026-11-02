@@ -13,6 +13,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
     private let settings: SettingsWindowController
+    /// Traffic by app (ADR 11): the details of one app, and the map.
+    private let details: AppDetailsWindowController
+    private var map: TrafficMapWindowController!
     /// When the popover last closed. A click on the icon first closes a
     /// transient popover, then reaches `clicked`; without this check the same
     /// click would open it again.
@@ -21,7 +24,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     init(model: AppModel) {
         self.model = model
         settings = SettingsWindowController(model: model)
+        details = AppDetailsWindowController(model: model)
         super.init()
+        map = TrafficMapWindowController(model: model) { [weak self] app in self?.details.show(app: app) }
         popover.behavior = .transient
         popover.delegate = self
         let main = MainView(
@@ -45,7 +50,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Orange icon: a local build, or any instance that is not the release.
     private let isDev = BuildKind.current == .dev || !Instance.current.isRelease
 
-    /// Redraw the icon whenever `model.running` changes.
+    /// Redraw the icon whenever `model.running` or the apps to review change.
     private func trackIcon() {
         withObservationTracking {
             let name = model.running ? "point.3.filled.connected.trianglepath.dotted" : "point.3.connected.trianglepath.dotted"
@@ -57,12 +62,38 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 image = image?.withSymbolConfiguration(.init(paletteColors: [.systemOrange]))
                 image?.isTemplate = false
             }
+            // An app needs review (ADR 11, 3.4): a red dot on the icon.
+            if model.traffic.showRedDot, let base = image {
+                image = Self.withRedDot(base, template: !isDev)
+            }
             item.button?.image = image
         } onChange: { [weak self] in
             // Weak in both closures: the outer one would otherwise hold self
             // strongly to hand it to the inner one.
             Task { @MainActor [weak self] in self?.trackIcon() }
         }
+    }
+
+    /// The icon with a red dot at its top right. Drawn at display time, so a
+    /// template symbol still follows the menu bar's light or dark look.
+    private static func withRedDot(_ base: NSImage, template: Bool) -> NSImage {
+        let size = base.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            if template {
+                NSColor.labelColor.set()
+                base.draw(in: rect)
+                rect.fill(using: .sourceIn)
+            } else {
+                base.draw(in: rect)
+            }
+            let d = size.height * 0.42
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: NSRect(x: size.width - d, y: size.height - d, width: d, height: d)).fill()
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = "LocalRouter: an app needs review"
+        return image
     }
 
     @objc private func clicked() {
@@ -176,6 +207,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             if fromWindow { Task { @MainActor in await model.checkForUpdates(manual: true) } } else { checkForUpdates() }
         case .settings: DispatchQueue.main.async { self.showSettings() }
         case .quit: NSApp.terminate(nil)
+        case .showApps:
+            model.tab = .traffic
+            model.trafficMode = .apps
+            DispatchQueue.main.async { self.showWindow() }
+        case .openTrafficMap:
+            popover.performClose(nil)
+            DispatchQueue.main.async { self.map.show() }
+        case let .reviewApp(app):
+            popover.performClose(nil)
+            DispatchQueue.main.async { self.details.show(app: app) }
         }
     }
 

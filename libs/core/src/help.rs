@@ -232,6 +232,10 @@ mod tests {
             proxy: None,
             network: None,
             notes: vec![],
+            traffic: None,
+            traffic_error: None,
+            traffic_history_bytes: None,
+            geo_db: None,
         }
     }
 

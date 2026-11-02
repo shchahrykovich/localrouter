@@ -87,6 +87,8 @@ if [[ ! -f "$icon_cache" || "$ROOT/scripts/make-icon.swift" -nt "$icon_cache" ]]
     rm -rf "$tmp"
 fi
 cp "$icon_cache" "$APP/Contents/Resources/AppIcon.icns"
+# The land dots of the traffic map (ADR 11), read with Bundle.main.
+cp "$ROOT/apps/menubar/Sources/LocalRouter/TrafficMap/land-dots.json" "$APP/Contents/Resources/land-dots.json"
 # The note that Install Claude Code Instructions… links into ~/.claude. The
 # bundled CLI prints it, filled in for this instance (ADR 04).
 # The CLI writes to a temp file first: writing from it straight into the new

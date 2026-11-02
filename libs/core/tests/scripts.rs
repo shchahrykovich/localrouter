@@ -243,6 +243,7 @@ async fn harness_with(limits: Limits) -> Harness {
         status: None,
         scripts: scripts.clone(),
         har: None,
+        peers: None,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http = listener.local_addr().unwrap();
@@ -813,6 +814,7 @@ async fn proxy_traffic_in_absolute_form_runs_rules_for_its_host() {
         status: None,
         scripts: h.scripts.clone(),
         har: None,
+        peers: None,
     });
     let dir = tempfile::Builder::new().prefix("lr").tempdir().unwrap();
     let paths = localrouter_core::paths::Paths::under(dir.path().to_path_buf());

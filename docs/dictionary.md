@@ -12,7 +12,7 @@ the code exists, each entry also points to the file that defines it.
 
 | Use | Do not use | Why |
 |---|---|---|
-| **route** | router, mapping, domain, binding | A route is one name-to-port entry. "Router" is the whole app. |
+| **route** | router, mapping, domain, binding | A route is one name-to-port entry. "Router" is the whole app. The one other use of "router" is the `via` value `router` of an app connection (below). |
 | **path route** | subroute, mount, prefix route | A route with a `path`. |
 | **default route** | root route, catch-all, fallback route | The route of a host without a `path`. "Fallback" means something else (see Behaviour). |
 | **host** (of a route) | domain, subdomain, name | The route field is `host`. "Domain" is fine in UI text for users. |
@@ -350,6 +350,40 @@ request log does not change: it still has no headers and no query.
 The read-only page at `proxy.localhost` (and `router.localhost/proxy-log/`)
 that shows the HAR files. The daemon serves it from files compiled into the
 binary, to this Mac only. `proxy` is a reserved host key for new routes.
+
+### Traffic by app, sampler
+
+**Traffic by app** ([ADR 11](adr/11-traffic-by-app-2026-11-02/README.md)) is
+what every program on this Mac sends and receives, read by the **sampler**:
+the daemon runs `/usr/bin/nettop` as a child process while the config field
+`traffic` is on (off by default). nettop is a tool that comes with macOS,
+not an API: its text can change with macOS, and the daemon then reports
+"nettop output not understood". The daemon's own sockets are never an app.
+
+An **app** is the outermost `.app` of a process's executable, or the
+executable itself (`/opt/homebrew/bin/node`). The programs under `/System/`,
+`/usr/libexec/`, `/usr/sbin/` and `/sbin/` are one row, **macOS services**.
+A process that ended before its path was read is **exited**.
+
+### via (of an app connection)
+
+How one connection of an app reached the network. The user chose the words.
+
+| `via` | Meaning |
+|---|---|
+| `router` | a loopback connection to the HTTP or HTTPS port, or to a TCP route's listen port: it went through a `.localhost` route |
+| `proxy` | a loopback connection to a proxy port: it went through the forward proxy |
+| `direct` | everything else: the app talked to the server itself |
+
+"router" is allowed only as this value; a route is still a **route**.
+
+### App checks
+
+What the app (not the daemon) finds out about an executable: its **code
+signature** (`apple`, `developerID`, `adhoc`, `unsigned`, `broken`), and,
+with the user's own key, what VirusTotal knows about its SHA-256. An app
+**needs review** when an executable is unsigned or broken, or two or more
+VirusTotal engines flag it. A **trusted** mark is for one SHA-256.
 
 ### LAN network, network id
 

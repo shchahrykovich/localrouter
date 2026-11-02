@@ -160,6 +160,15 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, write: &Arc<Mutex<OwnedWri
             let _: Empty = params(req.params)?;
             json(daemon.list_script_rules())
         }
+        "get_app_traffic" => json(daemon.get_app_traffic(params(req.params)?).await),
+        "update_geo_db" => {
+            let _: Empty = params(req.params)?;
+            json(daemon.update_geo_db().await?)
+        }
+        "clear_traffic_history" => {
+            let _: Empty = params(req.params)?;
+            json(daemon.clear_traffic_history())
+        }
         other => Err(ApiError::new(ErrorCode::UnknownMethod, format!("unknown method {other}"))),
     }
 }

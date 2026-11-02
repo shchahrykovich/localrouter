@@ -19,7 +19,10 @@ in the log, `proxy.localhost/<client>`) and
 `libs/core/src/phone.rs`: no password, a device is allowed by its address after
 it opens the QR setup page or the user presses Allow; the setup page shows only
 the next step. Built differently from its text, which still describes a Wi-Fi
-profile and needs a rewrite).
+profile and needs a rewrite) and
+`docs/adr/11-traffic-by-app-2026-11-02/` (traffic by app: a `nettop` sampler in
+the daemon, `libs/core/src/traffic/`, `apps/daemon/src/traffic.rs`; the Apps
+view, the map window and the app checks in the menu bar app).
 Use the words defined in `docs/dictionary.md` (route, host key, target, listen
 port, owned/session/persistent route) in code, docs and UI text.
 
@@ -191,6 +194,21 @@ list, so a new tool needs that test changed on purpose.
   but a saved route `proxy` still loads and wins (`validate_saved`). Headers
   are written as they are, cookies and API keys too; only
   `Proxy-Authorization` is left out.
+- **Traffic by app (ADR 11)**: nettop is a tool, not an API. The parser
+  (`traffic/nettop.rs`) must report a sample it cannot read
+  ("nettop output not understood"), never return an empty list. nettop
+  writes to a pipe with full buffering: a sample ends only at the next
+  header line, never at a pause. The daemon drops its own pid from every
+  sample, or every route and proxy byte counts twice. `traffic` is off by
+  default: then no nettop child runs and nothing is written to
+  `<data>/traffic/` (I1). The router and the forward proxy note each
+  client connection's host in the `PeerTable` (`traffic/peers.rs`), a plain
+  mutex never held across an `.await`. Place lookups never use the network;
+  only `update_geo_db` downloads, through `upstream::platform_tls()`. The
+  app checks (signature, VirusTotal) run in the app: the VirusTotal key is
+  only in the Keychain, a lookup sends only the hash, and an upload needs
+  the `UploadConfirmation` that only the confirm dialog in
+  `AppDetailsView.swift` makes. Debug builds read `LOCALROUTER_TEST_NETTOP`.
 - **LAN access per network (ADR 08)**: `allow_lan` lets another machine in
   only when its network id (the router's MAC address, `apps/daemon/src/network.rs`)
   is in `lan_networks`. The id comes from the System Configuration store, not

@@ -3,7 +3,7 @@
 ## 1. Manifest status
 
 ```text
-Manifest status: PLANNED
+Manifest status: PLANNED (built 2026-11-02; differences in 11-build-notes.md)
 ```
 
 ## 2. Semantic change summary

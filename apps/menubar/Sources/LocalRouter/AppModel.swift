@@ -28,6 +28,14 @@ final class AppModel {
     var update: UpdateState = .idle
     var message: String?
     var busy = false
+    /// Traffic by app (ADR 11): the last hour, the app checks.
+    let traffic = TrafficModel()
+    /// The tab of the window; the menu's Show Apps selects Traffic.
+    var tab: Tab = .routes
+    /// Apps or Requests in the Traffic tab, remembered (ADR 11, 5).
+    var trafficMode: TrafficMode = TrafficMode.load() {
+        didSet { trafficMode.save() }
+    }
 
     private var logSubscription: LogSubscription?
     private var refreshTask: Task<Void, Never>?
@@ -129,12 +137,20 @@ final class AppModel {
             routes = r
             // The trust check behind get_proxy is cached by the daemon for 10 s.
             proxy = s.proxy == nil ? nil : try? await client.proxy()
+            // The last hour of traffic by app, while the sampler runs. A 1.8
+            // daemon has no such method (I16): the view says so.
+            if let state = s.traffic, state != .off, appsAvailability == .available {
+                traffic.update(try? await client.appTraffic(), inBundle: inBundle)
+            } else {
+                traffic.update(nil, inBundle: inBundle)
+            }
             daemonProblem = nil
             if logSubscription == nil { startLogs() }
         } catch {
             status = nil
             proxy = nil
             routes = []
+            traffic.update(nil, inBundle: inBundle)
             daemonProblem = error.localizedDescription
             stopLogs()
         }
@@ -189,6 +205,48 @@ final class AppModel {
 
     func setFallback(_ on: Bool) async { await setConfig(SetConfigParams(fallback: on)) }
     func setAllowLan(_ on: Bool) async { await setConfig(SetConfigParams(allowLan: on)) }
+
+    // MARK: Traffic by app (ADR 11)
+
+    /// Whether the daemon answers `get_app_traffic` (I16).
+    var appsAvailability: AppsAvailability {
+        AppsAvailability(apiVersion: status?.apiVersion ?? apiVersion)
+    }
+
+    var samplerState: SamplerState { status?.traffic ?? .off }
+
+    func setTraffic(_ on: Bool) async { await setConfig(SetConfigParams(traffic: on)) }
+
+    func setTrafficHistoryDays(_ days: UInt32) async { await setConfig(SetConfigParams(trafficHistoryDays: days)) }
+
+    /// Places on: download the databases when they are not here yet.
+    func setTrafficPlaces(_ on: Bool) async {
+        await setConfig(SetConfigParams(trafficPlaces: on))
+        if on, status?.geoDb == nil { await updateGeoDb() }
+    }
+
+    func updateGeoDb() async {
+        busy = true
+        message = "Downloading the DB-IP databases…"
+        do {
+            let info = try await client.updateGeoDb()
+            message = "Places database \(info.date) is on this Mac (\(TrafficFormat.bytes(info.bytes)))."
+        } catch {
+            message = "Could not download the places database: \(error.localizedDescription)"
+        }
+        busy = false
+        await refresh()
+    }
+
+    func clearTrafficHistory() async {
+        do {
+            let r = try await client.clearTrafficHistory()
+            message = r.removed == 1 ? "Deleted 1 day of history." : "Deleted \(r.removed) days of history."
+        } catch {
+            message = error.localizedDescription
+        }
+        await refresh()
+    }
 
     // MARK: Forward proxy (ADR 06)
 
@@ -563,7 +621,9 @@ final class AppModel {
             agentApps: AgentApp.allCases.filter(\.isInstalled),
             cliInstalled: cliInstalled,
             agentHelpHost: agentHelpURL.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: ""),
-            onlineSummary: running ? "\(online) of \(routes.count) online" : nil)
+            onlineSummary: running ? "\(online) of \(routes.count) online" : nil,
+            trafficSummary: samplerState == .off ? nil : traffic.hour.map { AppTrafficText.summary($0.totals) } ?? "Reading traffic…",
+            appsToReview: traffic.appsToReview.map { AppMenu.AppReview(app: $0.app, name: $0.name) })
     }
 
     // MARK: Agent instructions

@@ -1,0 +1,7 @@
+{
+  "id": 30,
+  "method": "get_app_traffic",
+  "params": {
+    "range": "1h"
+  }
+}

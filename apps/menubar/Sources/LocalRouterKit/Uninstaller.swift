@@ -11,12 +11,20 @@ public struct Uninstaller {
     public var cli: CLIInstaller
     public var claude: ClaudeInstaller
     public var codex: CodexInstaller?
+    /// The app checks of ADR 11: the cache folder, the VirusTotal key and the
+    /// trusted programs. Nil leaves them alone (tests).
+    public var appChecksFolder: URL?
+    public var virusTotalKey: KeychainStore?
+    public var trusted: TrustedPrograms?
 
     /// The running instance's folders and links.
     public init(instance: Instance = .current) {
         self.init(dataDir: Paths.dataDir, logsDir: Paths.logsDir,
                   cli: CLIInstaller(instance: instance), claude: ClaudeInstaller(instance: instance),
                   codex: CodexInstaller(instance: instance))
+        appChecksFolder = AppChecksCache.defaultFolder(instance)
+        virusTotalKey = .virusTotal(instance)
+        trusted = TrustedPrograms()
     }
 
     public init(dataDir: URL, logsDir: URL, cli: CLIInstaller, claude: ClaudeInstaller, codex: CodexInstaller? = nil) {
@@ -34,5 +42,8 @@ public struct Uninstaller {
         cli.uninstall()
         claude.uninstall()
         codex?.uninstall()
+        if let appChecksFolder { try? fm.removeItem(at: appChecksFolder.appendingPathComponent(AppChecksCache.fileName)) }
+        try? virusTotalKey?.delete()
+        trusted?.removeAll()
     }
 }

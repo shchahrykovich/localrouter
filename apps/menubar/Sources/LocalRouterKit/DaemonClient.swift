@@ -193,6 +193,15 @@ public final class DaemonClient: Sendable {
     public func setConfig(_ p: SetConfigParams) async throws -> SetConfigResult { try await call("set_config", p) }
     public func proxy() async throws -> GetProxyResult { try await call("get_proxy", Empty()) }
     public func resetInspectCa() async throws -> ResetCaResult { try await call("reset_inspect_ca", Empty()) }
+    /// Traffic by app (ADR 11). A daemon before API 1.9 answers "unknown
+    /// method": check `AppsAvailability` first.
+    public func appTraffic(range: TrafficRange = .hour, app: String? = nil) async throws -> AppTrafficResult {
+        try await call("get_app_traffic", GetAppTrafficParams(range: range, app: app))
+    }
+    public func updateGeoDb() async throws -> UpdateGeoDbResult { try await call("update_geo_db", Empty()) }
+    public func clearTrafficHistory() async throws -> ClearTrafficHistoryResult {
+        try await call("clear_traffic_history", Empty())
+    }
     /// ADR 07: set or replace a script rule.
     public func setScriptRule(_ rule: ScriptRule) async throws -> SetScriptRuleResult {
         try await call("set_script_rule", SetScriptRuleParams(rule: rule))

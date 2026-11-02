@@ -1,0 +1,160 @@
+{
+  "id": 30,
+  "result": {
+    "range": "1h",
+    "sampler": "running",
+    "bucket_secs": 60,
+    "buckets": [
+      {
+        "t": 1793613600,
+        "in": 96000,
+        "out": 9100
+      },
+      {
+        "t": 1793613660,
+        "in": 3400,
+        "out": 600
+      }
+    ],
+    "apps": [
+      {
+        "app": "/Applications/Google Chrome.app",
+        "name": "Google Chrome",
+        "kind": "app",
+        "paths": [
+          "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        ],
+        "pids": [
+          5120
+        ],
+        "in": 99400,
+        "out": 9700,
+        "by_via": {
+          "router": {
+            "in": 3400,
+            "out": 600
+          },
+          "proxy": {
+            "in": 96000,
+            "out": 9100
+          },
+          "direct": {
+            "in": 0,
+            "out": 0
+          }
+        },
+        "addresses": 2,
+        "spark": [
+          1200,
+          800,
+          0,
+          0,
+          4500,
+          98000,
+          12000,
+          0,
+          0,
+          300,
+          0,
+          7000
+        ]
+      },
+      {
+        "app": "exited:curl",
+        "name": "curl",
+        "kind": "exited",
+        "paths": [],
+        "pids": [],
+        "in": 0,
+        "out": 120,
+        "by_via": {
+          "router": {
+            "in": 0,
+            "out": 0
+          },
+          "proxy": {
+            "in": 0,
+            "out": 0
+          },
+          "direct": {
+            "in": 0,
+            "out": 120
+          }
+        },
+        "addresses": 1,
+        "spark": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          120
+        ]
+      }
+    ],
+    "remotes": [
+      {
+        "app": "/Applications/Google Chrome.app",
+        "address": "203.0.113.4",
+        "port": 443,
+        "proto": "tcp",
+        "host": "github.com",
+        "asn_org": "GitHub, Inc.",
+        "place": {
+          "city": "London",
+          "country": "United Kingdom",
+          "country_code": "GB",
+          "lat": 51.5085,
+          "lon": -0.1257
+        },
+        "via": "proxy",
+        "in": 96000,
+        "out": 9100
+      },
+      {
+        "app": "/Applications/Google Chrome.app",
+        "address": "::1",
+        "port": 443,
+        "proto": "tcp",
+        "host": "shop.localhost",
+        "via": "router",
+        "in": 3400,
+        "out": 600
+      },
+      {
+        "app": "exited:curl",
+        "address": "198.51.100.7",
+        "port": 443,
+        "proto": "tcp",
+        "via": "direct",
+        "in": 0,
+        "out": 120
+      }
+    ],
+    "totals": {
+      "in": 99400,
+      "out": 9820,
+      "by_via": {
+        "router": {
+          "in": 3400,
+          "out": 600
+        },
+        "proxy": {
+          "in": 96000,
+          "out": 9100
+        },
+        "direct": {
+          "in": 0,
+          "out": 120
+        }
+      }
+    },
+    "places": true
+  }
+}

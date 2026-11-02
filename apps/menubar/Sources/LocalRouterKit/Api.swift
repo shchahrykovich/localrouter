@@ -5,7 +5,7 @@
 
 import Foundation
 
-public let apiVersion = "1.8"
+public let apiVersion = "1.9"
 
 public func apiMajor(_ version: String) -> Int? {
     version.split(separator: ".").first.flatMap { Int($0) }
@@ -188,6 +188,14 @@ public struct StatusResult: Codable, Equatable, Sendable {
     public var network: NetworkStatus?
     /// Plain sentences for the user (ADR 08). Nil when there are none.
     public var notes: [String]?
+    /// The traffic sampler (ADR 11). Nil from daemons before API 1.9.
+    public var traffic: SamplerState?
+    /// Why the sampler is restarting.
+    public var trafficError: String?
+    /// Bytes of traffic history on disk; nil when there is none.
+    public var trafficHistoryBytes: UInt64?
+    /// The places databases, when they are on this Mac.
+    public var geoDb: GeoDbInfo?
 }
 
 /// The network the Mac is on, known by its router's MAC address (ADR 08).
@@ -510,6 +518,11 @@ public struct Config: Codable, Equatable, Sendable {
     public var lanNetworks: [LanNetwork]?
     /// More proxy ports, one per client (ADR 09). Nil from a daemon before 1.6.
     public var proxyClients: [ProxyClient]?
+    /// Traffic by app (ADR 11). Left out of the file while unset: nil means
+    /// off, 7 days, no places.
+    public var traffic: Bool?
+    public var trafficHistoryDays: UInt32?
+    public var trafficPlaces: Bool?
 }
 
 public struct SetConfigParams: Codable, Equatable, Sendable {
@@ -530,10 +543,19 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     public var lanNetworks: [LanNetwork]?
     /// Replaces the whole list of proxy clients (ADR 09).
     public var proxyClients: [ProxyClient]?
+    /// Traffic by app (ADR 11).
+    public var traffic: Bool?
+    /// 1, 7 or 30.
+    public var trafficHistoryDays: UInt32?
+    public var trafficPlaces: Bool?
     public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
                 inspectHosts: [String]? = nil, proxyLog: Bool? = nil,
                 proxyLogFileMb: UInt64? = nil, proxyLogFileRequests: UInt64? = nil, lanNetworks: [LanNetwork]? = nil,
-                proxyClients: [ProxyClient]? = nil) {
+                proxyClients: [ProxyClient]? = nil, traffic: Bool? = nil, trafficHistoryDays: UInt32? = nil,
+                trafficPlaces: Bool? = nil) {
+        self.traffic = traffic
+        self.trafficHistoryDays = trafficHistoryDays
+        self.trafficPlaces = trafficPlaces
         self.fallback = fallback
         self.allowLan = allowLan
         self.proxyEnabled = proxyEnabled
@@ -822,4 +844,190 @@ public struct RemoveScriptRuleResult: Codable, Equatable, Sendable {
 
 public struct ListScriptRulesResult: Codable, Equatable, Sendable {
     public var rules: [ScriptRuleView]
+}
+
+// MARK: - Traffic by app (ADR 11)
+
+/// The time a `get_app_traffic` reply covers.
+public enum TrafficRange: String, Codable, CaseIterable, Identifiable, Sendable {
+    case hour = "1h"
+    case day = "24h"
+    case week = "7d"
+    case month = "30d"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .hour: "1 hour"
+        case .day: "24 hours"
+        case .week: "7 days"
+        case .month: "30 days"
+        }
+    }
+}
+
+public enum SamplerState: String, Codable, Sendable {
+    case off, running, restarting
+}
+
+/// How an app's connection reached the network: through a `.localhost`
+/// route, through the LocalRouter proxy, or neither.
+public enum TrafficVia: String, Codable, CaseIterable, Sendable {
+    case router, proxy, direct
+}
+
+public enum TrafficProto: String, Codable, Sendable {
+    case tcp, udp
+}
+
+public enum AppKind: String, Codable, Sendable {
+    /// An `.app` bundle.
+    case app
+    /// An executable outside a bundle.
+    case program
+    /// The programs of macOS itself, in one row.
+    case services
+    /// The process ended before its path was read.
+    case exited
+}
+
+public struct GetAppTrafficParams: Codable, Equatable, Sendable {
+    public var range: TrafficRange
+    public var app: String?
+    public init(range: TrafficRange = .hour, app: String? = nil) {
+        self.range = range
+        self.app = app
+    }
+}
+
+public struct InOut: Codable, Equatable, Sendable {
+    public var bytesIn: UInt64
+    public var bytesOut: UInt64
+    enum CodingKeys: String, CodingKey {
+        case bytesIn = "in", bytesOut = "out"
+    }
+    public init(bytesIn: UInt64 = 0, bytesOut: UInt64 = 0) {
+        self.bytesIn = bytesIn
+        self.bytesOut = bytesOut
+    }
+    public var total: UInt64 { bytesIn + bytesOut }
+}
+
+public struct ByVia: Codable, Equatable, Sendable {
+    public var router: InOut
+    public var proxy: InOut
+    public var direct: InOut
+    public init(router: InOut = InOut(), proxy: InOut = InOut(), direct: InOut = InOut()) {
+        self.router = router
+        self.proxy = proxy
+        self.direct = direct
+    }
+    public subscript(via: TrafficVia) -> InOut {
+        switch via {
+        case .router: router
+        case .proxy: proxy
+        case .direct: direct
+        }
+    }
+}
+
+public struct TrafficBucket: Codable, Equatable, Sendable {
+    /// Unix seconds of the bucket's start.
+    public var t: UInt64
+    public var bytesIn: UInt64
+    public var bytesOut: UInt64
+    enum CodingKeys: String, CodingKey {
+        case t, bytesIn = "in", bytesOut = "out"
+    }
+}
+
+/// One row of the Apps view.
+public struct AppTraffic: Codable, Equatable, Sendable, Identifiable {
+    /// The app path, the executable path, `macOS services`, or `exited:<name>`.
+    public var app: String
+    public var name: String
+    public var kind: AppKind
+    /// The executables seen under the app, for the app checks.
+    public var paths: [String]
+    /// Its processes seen in the last 30 seconds.
+    public var pids: [UInt32]
+    public var bytesIn: UInt64
+    public var bytesOut: UInt64
+    public var byVia: ByVia
+    /// Different remote addresses.
+    public var addresses: Int
+    /// In and out together, in 12 parts of the range, oldest first.
+    public var spark: [UInt64]
+
+    public var id: String { app }
+
+    enum CodingKeys: String, CodingKey {
+        case app, name, kind, paths, pids, bytesIn = "in", bytesOut = "out", byVia, addresses, spark
+    }
+}
+
+/// Where an address is, from the DB-IP database on this Mac. A guess.
+public struct Place: Codable, Equatable, Sendable {
+    public var city: String?
+    public var country: String?
+    public var countryCode: String?
+    public var lat: Double
+    public var lon: Double
+}
+
+public struct RemoteTraffic: Codable, Equatable, Sendable {
+    public var app: String
+    public var address: String?
+    public var port: UInt16?
+    public var proto: TrafficProto
+    /// The route's name for `router`, the host for `proxy`; nil for `direct`.
+    public var host: String?
+    /// The network owner: `GitHub, Inc.`.
+    public var asnOrg: String?
+    public var place: Place?
+    public var via: TrafficVia
+    public var bytesIn: UInt64
+    public var bytesOut: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case app, address, port, proto, host, asnOrg, place, via, bytesIn = "in", bytesOut = "out"
+    }
+}
+
+public struct TrafficTotals: Codable, Equatable, Sendable {
+    public var bytesIn: UInt64
+    public var bytesOut: UInt64
+    public var byVia: ByVia
+    enum CodingKeys: String, CodingKey {
+        case bytesIn = "in", bytesOut = "out", byVia
+    }
+}
+
+public struct AppTrafficResult: Codable, Equatable, Sendable {
+    public var range: TrafficRange
+    public var sampler: SamplerState
+    public var error: String?
+    public var bucketSecs: UInt64
+    public var buckets: [TrafficBucket]
+    /// Sorted by bytes in, most first.
+    public var apps: [AppTraffic]
+    /// Sorted by bytes, most first; at most 2,000.
+    public var remotes: [RemoteTraffic]
+    public var totals: TrafficTotals
+    /// Places are on and the databases are on this Mac.
+    public var places: Bool
+}
+
+/// The DB-IP Lite databases on this Mac.
+public struct GeoDbInfo: Codable, Equatable, Sendable {
+    /// `2026-11`.
+    public var date: String
+    public var bytes: UInt64
+}
+
+public typealias UpdateGeoDbResult = GeoDbInfo
+
+public struct ClearTrafficHistoryResult: Codable, Equatable, Sendable {
+    public var removed: Int
 }

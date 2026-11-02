@@ -31,6 +31,7 @@ use crate::instance::Instance;
 use crate::logs::{LogEntry, ProxyMode, RequestLog};
 use crate::routes::{HELP_HOST, PROXY_LOG_HOST, PROXY_LOG_PATH, Route, Scheme, host_key};
 use crate::scripts::{Ctx, Scripts};
+use crate::traffic::peers::PeerTable;
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -67,6 +68,9 @@ pub struct Proxy {
     /// The proxy log (ADR 08): records `.localhost` requests that came
     /// through the forward proxy, and serves the viewer. Shared with it.
     pub har: Option<Arc<HarLog>>,
+    /// The host each client connection asked for, by the client's port, for
+    /// the traffic sampler (ADR 11, 1.4). Shared with the forward proxy.
+    pub peers: Option<Arc<PeerTable>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +112,11 @@ impl Proxy {
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        // A connection through the forward proxy is in the table already.
+        let _peer = match (&self.peers, &via) {
+            (Some(peers), None) if peer.ip().to_canonical().is_loopback() => Some(peers.open(peer.port(), None)),
+            _ => None,
+        };
         let service = hyper::service::service_fn(move |req| {
             let proxy = self.clone();
             let via = via.clone();
@@ -133,6 +142,11 @@ impl Proxy {
         let method = req.method().to_string();
         let path = req.uri().path_and_query().map_or("/".to_string(), |p| p.to_string());
         let key = host_key(&host);
+        if let (Some(peers), Some(_)) = (&self.peers, &key)
+            && peer.ip().to_canonical().is_loopback()
+        {
+            peers.set_target(peer.port(), &bare_host(&host), None);
+        }
 
         // The proxy log viewer: before the route lookup, never logged, no
         // scripts (ADR 08, I7).

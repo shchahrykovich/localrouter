@@ -18,6 +18,7 @@ pub mod routes;
 pub mod scripts;
 pub mod tcp;
 pub mod tls;
+pub mod traffic;
 pub mod upstream;
 
 /// The top-level domain every route lives under.

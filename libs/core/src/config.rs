@@ -43,6 +43,22 @@ pub struct Config {
     /// They bind and close with the main proxy port; the log marks each
     /// request with the name of the port that carried it.
     pub proxy_clients: Vec<ProxyClient>,
+    /// Read every app's traffic with nettop (ADR 11). Off by default; the
+    /// three traffic fields are left out of `config.json` while unset.
+    #[serde(skip_serializing_if = "is_false")]
+    pub traffic: bool,
+    /// Days of traffic history kept: 1, 7 or 30.
+    #[serde(skip_serializing_if = "is_default_history_days")]
+    pub traffic_history_days: u32,
+    /// Look up places of remote addresses in the DB-IP databases.
+    #[serde(skip_serializing_if = "is_false")]
+    pub traffic_places: bool,
+}
+
+pub const DEFAULT_TRAFFIC_HISTORY_DAYS: u32 = 7;
+
+fn is_default_history_days(v: &u32) -> bool {
+    *v == DEFAULT_TRAFFIC_HISTORY_DAYS
 }
 
 /// The name of the main proxy port in the log and the viewer (ADR 09).
@@ -106,6 +122,11 @@ pub struct LanNetwork {
 }
 
 impl Config {
+    /// `traffic_history_days` is 1, 7 or 30.
+    pub fn check_traffic_history_days(days: u32) -> Result<(), String> {
+        if [1, 7, 30].contains(&days) { Ok(()) } else { Err(format!("traffic_history_days must be 1, 7 or 30, not {days}")) }
+    }
+
     /// Range checks for the proxy log limits; the message names the range.
     pub fn check_proxy_log_limits(file_mb: u64, file_requests: u64) -> Result<(), String> {
         use crate::har::{FILE_MB_MAX, FILE_MB_MIN, FILE_REQUESTS_MAX, FILE_REQUESTS_MIN};
@@ -160,6 +181,9 @@ impl Default for Config {
             proxy_log_file_requests: crate::har::DEFAULT_FILE_REQUESTS,
             lan_networks: vec![],
             proxy_clients: vec![],
+            traffic: false,
+            traffic_history_days: DEFAULT_TRAFFIC_HISTORY_DAYS,
+            traffic_places: false,
         }
     }
 }
@@ -241,6 +265,25 @@ mod tests {
         c.proxy_clients = vec![ProxyClient { name: "chrome".into(), port: 7878, lan: false, paused: false }];
         let text = serde_json::to_string(&c).unwrap();
         assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
+    }
+
+    // ADR 11: the traffic fields are off by default, left out of the file
+    // while unset, and round-trip.
+    #[test]
+    fn traffic_fields_default_are_left_out_and_round_trip() {
+        let old = Config::parse(r#"{"version":1}"#, &dev()).unwrap();
+        assert_eq!((old.traffic, old.traffic_history_days, old.traffic_places), (false, 7, false));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("traffic"), "{text}");
+        let mut c = Config::defaults_for(&dev());
+        c.traffic = true;
+        c.traffic_history_days = 30;
+        c.traffic_places = true;
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains(r#""traffic":true"#) && text.contains(r#""traffic_history_days":30"#), "{text}");
+        assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
+        assert!(Config::check_traffic_history_days(7).is_ok());
+        assert!(Config::check_traffic_history_days(2).unwrap_err().contains("1, 7 or 30"));
     }
 
     #[test]

@@ -11,7 +11,6 @@ enum Tab: String, CaseIterable, Identifiable {
 /// The window of the menu bar icon: the header, the tabs, the footer.
 struct MainView: View {
     @Environment(AppModel.self) private var model
-    @State private var tab: Tab = .routes
     @State private var trafficScope: TrafficScope = .all
     /// Opens the Settings window (SettingsWindowController), at a page or
     /// at the last one shown.
@@ -20,18 +19,20 @@ struct MainView: View {
     let perform: (AppMenu.Action) -> Void
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 0) {
             header
-            Segments(items: Tab.allCases, selection: $tab) { tab, _ in tabLabel(tab) }
+            Segments(items: Tab.allCases, selection: $model.tab) { tab, _ in tabLabel(tab) }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
             Group {
-                switch tab {
+                switch model.tab {
                 case .routes: RoutesView()
-                case .traffic: TrafficView(scope: $trafficScope)
+                case .traffic: TrafficView(scope: $trafficScope, perform: perform)
                 case .proxy: ProxyView(openSettings: openSettings) {
                         trafficScope = .proxy
-                        tab = .traffic
+                        model.trafficMode = .requests
+                        model.tab = .traffic
                     }
                 }
             }
@@ -71,6 +72,8 @@ struct MainView: View {
                 Text("\(model.routes.count)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             case .proxy where model.proxy?.enabled == true:
                 Circle().fill(Theme.online).frame(width: 6, height: 6).accessibilityLabel("on")
+            case .traffic where !model.traffic.appsToReview.isEmpty:
+                Circle().fill(Theme.dangerText).frame(width: 6, height: 6).accessibilityLabel("an app needs review")
             default:
                 EmptyView()
             }

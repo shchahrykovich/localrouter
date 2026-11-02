@@ -31,6 +31,9 @@
         "name": "agent-1",
         "port": 8879
       }
-    ]
+    ],
+    "traffic": true,
+    "traffic_history_days": 30,
+    "traffic_places": true
   }
 }

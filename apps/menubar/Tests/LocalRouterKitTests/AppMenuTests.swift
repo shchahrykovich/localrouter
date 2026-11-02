@@ -92,4 +92,21 @@ final class AppMenuTests: XCTestCase {
         XCTAssertEqual(items.first { $0.action == .settings }?.shortcut, ",")
         XCTAssertEqual(items.first { $0.action == .quit }?.title, "Quit LocalRouter")
     }
+
+    // ADR 11, T15: the Traffic group is there only while the sampler is on,
+    // with at most three Review items.
+    func testTheTrafficGroupFollowsTheSampler() throws {
+        XCTAssertFalse(headers(AppMenu.entries(context(), window: true)).contains("Traffic"))
+        XCTAssertFalse(actions(AppMenu.entries(context(), window: true)).contains(.showApps))
+        var c = context()
+        c.trafficSummary = "↓ 431.0 MB, ↑ 96.5 MB last hour"
+        let entries = AppMenu.entries(c, window: true)
+        XCTAssertEqual(headers(entries).first, "Traffic")
+        XCTAssertTrue(actions(entries).contains(.showApps))
+        XCTAssertTrue(actions(entries).contains(.openTrafficMap))
+        XCTAssertFalse(actions(entries).contains { if case .reviewApp = $0 { true } else { false } })
+        c.appsToReview = (1...5).map { AppMenu.AppReview(app: "/p\($0)", name: "p\($0)") }
+        let reviews = actions(AppMenu.entries(c, window: true)).filter { if case .reviewApp = $0 { true } else { false } }
+        XCTAssertEqual(reviews, [.reviewApp("/p1"), .reviewApp("/p2"), .reviewApp("/p3")])
+    }
 }

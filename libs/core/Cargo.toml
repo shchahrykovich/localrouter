@@ -40,6 +40,7 @@ zstd = "0.13"
 libc.workspace = true
 # SHA-256 of a loaded script; ring is already in the tree through rustls.
 ring = "0.17"
+maxminddb = { version = "0.32", features = ["mmap"] }
 
 [dev-dependencies]
 tempfile = "3"

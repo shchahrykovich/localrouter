@@ -1645,3 +1645,305 @@ fn new_setup_code_keeps_the_devices() {
     assert!(r["setup_url"].as_str().unwrap().ends_with(&format!("/setup/{new}")));
     assert_eq!(phones(&d)["iphone"]["devices"], json!(["192.168.0.31"]));
 }
+
+// ---- ADR 11: traffic by app
+
+/// A fake nettop for `LOCALROUTER_TEST_NETTOP`: prints `<dir>/nettop.csv`
+/// once it exists, then stays alive as a shell process whose command line
+/// names the script, so `pgrep -f` finds it.
+fn fake_nettop(dir: &Path) -> PathBuf {
+    let script = dir.join("fake-nettop.sh");
+    let csv = dir.join("nettop.csv");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nwhile [ ! -f '{csv}' ]; do sleep 0.1; done\ncat '{csv}'\nwhile :; do sleep 1; done\n", csv = csv.display()),
+    )
+    .unwrap();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut std::fs::metadata(&script).unwrap().permissions(), 0o755);
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    script
+}
+
+/// The daemon with a fake nettop.
+fn traffic_daemon(extra: Value) -> (Daemon, PathBuf) {
+    let bin = tempfile::Builder::new().prefix("lrnt").tempdir().unwrap();
+    let script = fake_nettop(bin.path());
+    let script_env = script.display().to_string();
+    let d = Daemon::start_program_env(
+        Path::new(env!("CARGO_BIN_EXE_localrouterd")),
+        |dir| {
+            let mut config =
+                json!({"version":1,"http_port":0,"https_port":0,"fallback":true,"allow_lan":false,"log_size":100,"inspect_hosts":[]});
+            for (k, v) in extra.as_object().unwrap() {
+                config[k] = v.clone();
+            }
+            std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+        },
+        &[("LOCALROUTER_TEST_NETTOP", &script_env)],
+    );
+    // The script lives as long as the test.
+    std::mem::forget(bin);
+    (d, script)
+}
+
+fn nettop_running(script: &Path) -> bool {
+    Command::new("/usr/bin/pgrep").args(["-f", &script.display().to_string()]).output().unwrap().status.success()
+}
+
+fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ok() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Two samples: the first is only the starting point. A sample ends where
+/// the next starts, so a third header ends the second.
+fn two_samples(lines: &[String]) -> String {
+    let body = lines.join("\n");
+    format!(",bytes_in,bytes_out,\n{body}\n,bytes_in,bytes_out,\n{body}\n,bytes_in,bytes_out,\n")
+}
+
+// ADR 11, T7, I1: off by default: no nettop, no folder. The sampler starts
+// and stops with `traffic`.
+#[test]
+fn traffic_sampler_starts_and_stops_with_the_setting() {
+    let (d, script) = traffic_daemon(json!({}));
+    let mut c = d.client();
+    assert_eq!(c.call("status", json!({}))["traffic"], "off");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!nettop_running(&script));
+    assert!(!d.dir.path().join("traffic").exists());
+    assert!(!d.dir.path().join("geo").exists());
+
+    c.call("set_config", json!({"traffic": true}));
+    wait_until("nettop to start", || nettop_running(&script));
+    assert_eq!(c.call("status", json!({}))["traffic"], "running");
+    c.call("set_config", json!({"traffic": false}));
+    let stopped = Instant::now();
+    wait_until("nettop to stop", || !nettop_running(&script));
+    assert!(stopped.elapsed() < Duration::from_secs(2), "nettop ended after {:?}", stopped.elapsed());
+    assert_eq!(c.call("status", json!({}))["traffic"], "off");
+}
+
+// ADR 11, T6: the apps of a sample, sorted by bytes in, with `via`.
+#[test]
+fn get_app_traffic_returns_the_apps_of_the_samples() {
+    let (d, script) = traffic_daemon(json!({}));
+    let mut c = d.client();
+    let http = c.call("status", json!({}))["http"]["port"].as_u64().unwrap();
+    let me = std::process::id();
+    let gone = 999_999; // no such process: its row is marked exited
+    let csv = two_samples(&[
+        format!("api-test.{me},0,0,"),
+        format!("tcp6 ::1.61001<->::1.{http},3400,600,"),
+        "tcp4 192.0.2.155:61010<->203.0.113.4:443,96000,9100,".to_string(),
+        format!("curl.{gone},0,0,"),
+        "tcp4 192.0.2.155:61020<->198.51.100.7:443,10,120,".to_string(),
+        format!("localrouterd.{},0,0,", d.child.id()),
+        "tcp4 192.0.2.155:61030<->203.0.113.9:443,5000000,5000000,".to_string(),
+    ]);
+    std::fs::write(script.parent().unwrap().join("nettop.csv"), csv).unwrap();
+    c.call("set_config", json!({"traffic": true}));
+    let mut r = Value::Null;
+    wait_until("the second sample", || {
+        r = c.call("get_app_traffic", json!({"range": "1h"}));
+        r["apps"].as_array().unwrap().len() == 2
+    });
+    assert_eq!(r["sampler"], "running");
+    assert_eq!(r["buckets"].as_array().unwrap().len(), 60);
+    let apps = r["apps"].as_array().unwrap();
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    assert_eq!(apps[0]["app"], exe.display().to_string(), "{r}");
+    assert_eq!(apps[0]["pids"], json!([me]));
+    assert_eq!(apps[0]["in"], 99400);
+    assert_eq!(apps[0]["by_via"]["router"]["in"], 3400);
+    assert_eq!(apps[0]["by_via"]["direct"]["in"], 96000);
+    assert_eq!(apps[1]["app"], "exited:curl");
+    assert_eq!(apps[1]["kind"], "exited");
+    // I2: the daemon's own line is not an app, and not in the totals.
+    assert_eq!(r["totals"]["in"], 99410);
+    assert!(!r.to_string().contains("203.0.113.9"));
+    // Places off: no place, no geo folder (I11).
+    assert_eq!(r["places"], false);
+    assert!(r["remotes"].as_array().unwrap().iter().all(|x| x.get("place").is_none()));
+    assert!(!d.dir.path().join("geo").exists());
+    // One app only.
+    let one = c.call("get_app_traffic", json!({"range": "24h", "app": "exited:curl"}));
+    assert_eq!(one["apps"].as_array().unwrap().len(), 1);
+    assert_eq!(one["buckets"].as_array().unwrap().len(), 96);
+    assert!(one["remotes"].as_array().unwrap().iter().all(|x| x["app"] == "exited:curl"));
+}
+
+// ADR 11, T6: the three fields round-trip; unset fields stay out of the file.
+#[test]
+fn traffic_config_fields_round_trip() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    assert!(!std::fs::read_to_string(d.dir.path().join("config.json")).unwrap().contains("traffic"));
+    let r = c.call("set_config", json!({"traffic_history_days": 30, "traffic_places": true}));
+    assert_eq!((r["config"]["traffic_history_days"].clone(), r["config"]["traffic_places"].clone()), (json!(30), json!(true)));
+    let saved = read_config(&d);
+    assert_eq!((saved["traffic_history_days"].clone(), saved["traffic_places"].clone()), (json!(30), json!(true)));
+    assert!(saved.get("traffic").is_none());
+    assert_eq!(c.error_code("set_config", json!({"traffic_history_days": 3})), "invalid_request");
+    // Places on without a download: nothing is fetched, no folder.
+    assert!(!d.dir.path().join("geo").exists());
+    assert_eq!(c.call("clear_traffic_history", json!({}))["removed"], 0);
+}
+
+// ADR 11, T8, I5: a nettop whose output is not understood restarts with a
+// reason, and routes keep working.
+#[test]
+fn a_failing_sampler_restarts_and_routing_goes_on() {
+    let (d, script) = traffic_daemon(json!({"traffic": true}));
+    std::fs::write(script.parent().unwrap().join("nettop.csv"), "time;bytes\nsomething|new\n").unwrap();
+    let mut c = d.client();
+    let mut status = Value::Null;
+    wait_until("restarting", || {
+        status = c.call("status", json!({}));
+        status["traffic"] == "restarting"
+    });
+    assert!(status["traffic_error"].as_str().unwrap().contains("nettop output not understood"), "{status}");
+    // The traffic reply says so too, instead of an empty list.
+    assert_eq!(c.call("get_app_traffic", json!({}))["sampler"], "restarting");
+
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+        }
+    });
+    c.call("register_route", http_route("shop", port));
+    let http = status["http"]["port"].as_u64().unwrap() as u16;
+    let mut s = TcpStream::connect(("127.0.0.1", http)).unwrap();
+    write!(s, "GET / HTTP/1.1\r\nhost: shop.localhost\r\nconnection: close\r\n\r\n").unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+}
+
+// ADR 11, E1: the real nettop sees this test's router, proxy and direct
+// traffic. macOS only; skipped without /usr/bin/nettop or a LAN address.
+#[test]
+fn traffic_journey() {
+    if !Path::new("/usr/bin/nettop").exists() {
+        eprintln!("skipped: no /usr/bin/nettop");
+        return;
+    }
+    // This Mac's own LAN address: a UDP connect sends no packet.
+    let udp = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let lan = match udp.connect("198.51.100.1:9").and_then(|_| udp.local_addr()) {
+        Ok(a) if !a.ip().is_loopback() && !a.ip().is_unspecified() => a.ip(),
+        _ => {
+            eprintln!("skipped: no LAN address");
+            return;
+        }
+    };
+    // An echo server on all addresses: "the internet".
+    let echo = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in echo.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut s = s;
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = s.read(&mut buf) {
+                    if n == 0 || s.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    // A dev server for the route, keep-alive.
+    let web = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let web_port = web.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in web.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut s = s;
+                loop {
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if r.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    if s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1000\r\n\r\n").is_err() || s.write_all(&[b'x'; 1000]).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    let d = Daemon::start_with(|dir| {
+        std::fs::write(
+            dir.join("config.json"),
+            json!({"version":1,"http_port":0,"https_port":0,"log_size":100,"inspect_hosts":[],"proxy_port":0,"proxy_enabled":true,"traffic":true})
+                .to_string(),
+        )
+        .unwrap();
+    });
+    let mut c = d.client();
+    c.call("register_route", http_route("e1", web_port));
+    let status = c.call("status", json!({}));
+    let http = status["http"]["port"].as_u64().unwrap() as u16;
+    let proxy = status["proxy"]["port"].as_u64().unwrap() as u16;
+
+    let mut router = TcpStream::connect(("::1", http)).unwrap();
+    let mut tunnel = TcpStream::connect(("127.0.0.1", proxy)).unwrap();
+    write!(tunnel, "CONNECT {lan}:{echo_port} HTTP/1.1\r\nhost: {lan}:{echo_port}\r\n\r\n").unwrap();
+    let mut head = vec![];
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        tunnel.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&head));
+    let mut direct = TcpStream::connect((lan, echo_port)).unwrap();
+    let data = [b'y'; 2000];
+    let mut buf = vec![0u8; 4096];
+    let until = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < until {
+        write!(router, "GET / HTTP/1.1\r\nhost: e1.localhost\r\n\r\n").unwrap();
+        let mut got = 0;
+        let mut text = vec![];
+        while got == 0 || !text.ends_with(&[b'x'; 10]) {
+            let n = router.read(&mut buf).unwrap();
+            assert!(n > 0, "the route closed the connection");
+            text.extend_from_slice(&buf[..n]);
+            got += n;
+        }
+        for s in [&mut tunnel, &mut direct] {
+            s.write_all(&data).unwrap();
+            s.read_exact(&mut buf[..2000]).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+
+    let r = c.call("get_app_traffic", json!({"range": "1h"}));
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap().display().to_string();
+    let apps = r["apps"].as_array().unwrap();
+    let me = apps.iter().find(|a| a["app"] == exe).unwrap_or_else(|| panic!("no row for {exe}: {r}"));
+    for via in ["router", "proxy", "direct"] {
+        assert!(me["by_via"][via]["in"].as_u64().unwrap() > 0, "{via} is 0: {me}");
+    }
+    let proxied = r["remotes"].as_array().unwrap().iter().find(|x| x["app"] == exe && x["via"] == "proxy").unwrap();
+    assert_eq!(proxied["host"], lan.to_string(), "{proxied}");
+    let routed = r["remotes"].as_array().unwrap().iter().find(|x| x["app"] == exe && x["via"] == "router").unwrap();
+    assert_eq!(routed["host"], "e1.localhost", "{routed}");
+    // I2: the daemon is never an app.
+    assert!(!apps.iter().any(|a| a["app"].as_str().unwrap().ends_with("localrouterd")), "{r}");
+}

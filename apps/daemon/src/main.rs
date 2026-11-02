@@ -12,6 +12,7 @@ mod pidwatch;
 mod socket;
 mod store;
 mod tcp_listen;
+mod traffic;
 
 use std::process::ExitCode;
 
@@ -113,6 +114,7 @@ async fn run(paths: Paths, instance: Instance) -> anyhow::Result<()> {
     daemon.start_http_listeners()?;
     daemon.start_saved_tcp_routes();
     daemon.start_saved_proxy();
+    daemon.start_traffic();
     daemon.refresh_ca_bundle_if_old();
     let listener = socket::bind(&daemon)?;
     tokio::spawn(socket::serve(daemon.clone(), listener));
