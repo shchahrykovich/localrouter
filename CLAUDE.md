@@ -35,7 +35,8 @@ swift test --package-path apps/menubar                   # Swift tests
 swift build --package-path apps/menubar                  # build the menu bar app only
 scripts/build-app.sh                                     # build/LocalRouter.app, ad-hoc signed
 scripts/install.sh --user --launch                       # build and install LocalRouter-dev.app to ~/Applications
-scripts/publish.sh [--patch|--minor|--major|--set X.Y.Z] # release to GitHub (needs .env.notarize)
+scripts/publish.sh [--patch|--minor|--major|--set X.Y.Z] # release to GitHub (needs .env.notarize), then cleans build artifacts (LR_KEEP_BUILD=1 keeps them)
+scripts/clean.sh [--dry-run] [--keep-dmg <file>]         # remove target/, apps/menubar/.build, build/, dist/*.dmg
 ```
 
 Single tests:

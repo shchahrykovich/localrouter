@@ -56,6 +56,8 @@ ln -s /Applications "$staging/Applications"
 rm -f "$DMG"
 hdiutil create -quiet -volname "LocalRouter $new" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$DMG"
 rm -rf "$staging"
+# Only the newest image stays: the older ones are on the GitHub releases.
+find "$ROOT/dist" -maxdepth 1 -name 'localrouter-*.dmg' ! -name "$(basename "$DMG")" -delete
 
 if [[ $notarize == 1 ]]; then
     "$ROOT/scripts/notarize.sh" "$DMG"

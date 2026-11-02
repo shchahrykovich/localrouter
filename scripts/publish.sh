@@ -7,6 +7,9 @@
 # Needs: gh logged in, a Developer ID identity, notary credentials.
 # LR_ALLOW_UNNOTARIZED=1 publishes an image that failed stapler validation
 # (the updater will refuse it; only for testing the release page).
+# After the upload is checked, scripts/clean.sh removes the build artifacts
+# (Rust and Swift build caches, build/, older images) and keeps this image.
+# LR_KEEP_BUILD=1 skips the cleaning.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=release-lib.sh
@@ -41,3 +44,10 @@ remote_size="$(curl -sfIL "$url" | awk 'tolower($1) == "content-length:" { n = $
 local_size="$(stat -f %z "$image")"
 [[ "$remote_size" == "$local_size" ]] || lr_die "uploaded size $remote_size differs from $local_size"
 lr_say "Published $url"
+
+if [[ "${LR_KEEP_BUILD:-}" == "1" ]]; then
+    lr_say "LR_KEEP_BUILD=1: build artifacts kept"
+else
+    lr_say "Cleaning build artifacts"
+    "$ROOT/scripts/clean.sh" --keep-dmg "$image"
+fi

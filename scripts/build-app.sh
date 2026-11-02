@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 lr_check_suffix "$suffix"
+lr_check_space 3 "$ROOT"
 app_name="$(lr_app_name "$suffix")"
 bundle_id="$(lr_bundle_id "$suffix")"
 daemon_label="$(lr_daemon_label "$suffix")"

@@ -92,3 +92,13 @@ lr_app_name() { printf 'LocalRouter%s' "$1"; }
 lr_bundle_id() { printf '%s%s' "$LR_BUNDLE_ID" "$1"; }
 lr_daemon_label() { printf '%s%s.daemon' "$LR_BUNDLE_ID" "$1"; }
 lr_say() { printf '==> %s\n' "$*"; }
+
+# Stop before a build when the disk holding the repository has less than
+# $1 GB free: a full disk fails late, in the linker, with an unclear error.
+lr_check_space() {
+    local need_gb="$1" dir="$2" free_kb
+    free_kb="$(df -k "$dir" | awk 'NR == 2 { print $4 }')"
+    if [[ -n "$free_kb" && "$free_kb" -lt $((need_gb * 1024 * 1024)) ]]; then
+        lr_die "only $((free_kb / 1024)) MB free on the disk of $dir; a build needs about $need_gb GB. Free space, for example: scripts/clean.sh --dry-run"
+    fi
+}
