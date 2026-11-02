@@ -1,0 +1,29 @@
+...@_palette
+direction: down
+title: "New flows, from nettop to the screens" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+a: "A. Sample\nevery 5 s" { class: term }
+mem: "memory\nlast hour" { class: write }
+hist: "day files\nminute lines" { class: write }
+b: "B. Show traffic\nevery 2 or 5 s" { class: term }
+geo: "places\n.mmdb" { class: tbl }
+c: "C. Update places\non request" { class: term }
+d: "D. Check apps" { class: term }
+cache: "check cache" { class: write }
+vt: "VirusTotal" { class: ext }
+f: "F. Ask AI\non click" { class: term }
+chat: "chat service" { class: ext }
+
+a -> mem
+a -> hist
+mem -> b: "1 hour"
+hist -> b: "longer ranges"
+geo -> b: "places"
+c -> geo: "download, rename"
+b -> d: "new executables"
+d -> cache
+d -> vt: "hash"
+d -> f: "results"
+f -> chat: "question in the link"
+
+legend: "purple = written, navy = read, hexagon = a trigger or an outside service. E (upload) is D's path with the file, after a warning." { near: bottom-center; shape: text; style.font-size: 14 }

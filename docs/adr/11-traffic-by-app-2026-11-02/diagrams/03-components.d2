@@ -1,0 +1,36 @@
+...@_palette
+direction: right
+title: "What this ADR adds or grows" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+nettop: "nettop\n(macOS)" { class: skip }
+daemon: "localrouterd (Rust)" {
+  fwd: "forward proxy\ngrows: peer table" { class: upd }
+  sampler: "traffic sampler\nnew" { class: ins }
+  api: "socket API 1.9\ngrows" { class: upd }
+}
+store: "data folder" {
+  hist: "traffic/ day files" { class: write }
+  geo: "geo/ .mmdb" { class: write }
+}
+app: "LocalRouter.app (Swift)" {
+  views: "Apps view, map,\ndetails, Settings\nnew" { class: ins }
+  checks: "app checks, Ask AI\nnew" { class: ins }
+  sec: "Security.framework,\nKeychain (macOS)" { class: skip }
+}
+dbip: "download.db-ip.com" { class: ext }
+vt: "virustotal.com" { class: ext }
+chat: "claude.ai,\nchatgpt.com" { class: ext }
+
+nettop -> daemon.sampler: "CSV"
+daemon.fwd -> daemon.sampler: "peer ports"
+daemon.sampler -> store.hist: "append"
+daemon.sampler -> daemon.api
+daemon.api -> app.views: "Unix socket"
+daemon.api -> dbip: "on request"
+dbip -> store.geo
+app.views -> app.checks
+app.checks -> app.sec
+app.checks -> vt: "hash"
+app.checks -> chat: "link"
+
+legend: "green = new, blue = grows, grey = reused, hexagon = outside the Mac" { near: bottom-center; shape: text; style.font-size: 14 }

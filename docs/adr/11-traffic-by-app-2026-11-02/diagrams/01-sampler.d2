@@ -1,0 +1,26 @@
+...@_palette
+direction: right
+title: "One nettop sample becomes app traffic" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+nettop: "nettop sample\nevery 5 s" { class: ext }
+path: "Drop the daemon's\nown sockets.\nGroup by app:\noutermost .app" { class: step }
+port: "Where does it go?" { class: dec }
+router: "router\nroute port" { class: ins }
+proxy: "proxy\nproxy port" { class: ins }
+direct: "direct\nother remote" { class: ins }
+peers: "proxy peer table" { class: tbl }
+geo: "places database" { class: tbl }
+hist: "history\nday files" { class: write }
+
+nettop -> path
+path -> port
+port -> router: "loopback"
+port -> proxy: "loopback"
+port -> direct
+peers -> proxy: "host"
+geo -> direct: "place"
+router -> hist
+proxy -> hist
+direct -> hist
+
+legend: "green = a new kind of row, navy = read, purple = written. The daemon's sockets are dropped so no byte counts twice." { near: bottom-center; shape: text; style.font-size: 14 }

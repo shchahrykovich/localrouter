@@ -1,0 +1,22 @@
+...@_palette
+direction: down
+title: "The checks one executable goes through" { near: top-center; shape: text; style.font-size: 24; style.bold: true }
+
+check: "New executable:\ncode signature on this Mac" { class: step }
+apple: "Signed by Apple?" { class: dec }
+done: "No lookup" { class: skip }
+vt: "VirusTotal by hash\ncached 7 days" { class: ext }
+trusted: "trusted list\nby SHA-256" { class: tbl }
+rule: "Needs review?" { class: dec }
+ok: "Shield in the row" { class: ins }
+alert: "Banner, red dot,\nmenu item, notification" { class: del }
+
+check -> apple
+apple -> done: "yes"
+apple -> vt: "no"
+vt -> rule: "malicious count"
+trusted -> rule
+rule -> ok: "no"
+rule -> alert: "yes"
+
+legend: "Unsigned or broken needs review without a lookup.\nThe file is sent only by Upload, after a warning." { near: bottom-center; shape: text; style.font-size: 14 }
