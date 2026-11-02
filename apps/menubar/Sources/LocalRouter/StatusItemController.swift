@@ -27,6 +27,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         details = AppDetailsWindowController(model: model)
         super.init()
         map = TrafficMapWindowController(model: model) { [weak self] app in self?.details.show(app: app) }
+        model.openSettings = { [weak self] page in self?.showSettings(page) }
         popover.behavior = .transient
         popover.delegate = self
         let main = MainView(

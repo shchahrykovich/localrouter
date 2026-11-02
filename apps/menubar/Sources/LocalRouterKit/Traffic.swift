@@ -254,3 +254,152 @@ public enum AppTrafficText {
             .contains { $0.contains(q) }
     }
 }
+
+// MARK: - The tree of the Apps view
+
+/// One row under an app in the Apps view: a process, a domain, a connection
+/// or a request. Ids are unique in the whole tree.
+public struct TrafficNode: Identifiable, Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        /// One executable of an app with several (macOS services, helpers).
+        case process
+        /// A host, a network owner, or "IP Addresses".
+        case group
+        /// One remote address and port.
+        case address
+        /// One request of the request log to the group's host.
+        case request
+    }
+
+    public var id: String
+    public var kind: Kind
+    public var title: String
+    public var detail: String?
+    /// The `via` when every connection under the node has the same one.
+    public var via: TrafficVia?
+    public var bytesIn: UInt64 = 0
+    public var bytesOut: UInt64 = 0
+    /// The HTTP status of a request.
+    public var status: UInt16?
+    /// The executable of a process row, for its icon.
+    public var path: String?
+    public var children: [TrafficNode] = []
+}
+
+/// Builds the rows under an app, as Little Snitch shows them: the processes
+/// when there are several, then the domains, then the connections and, for
+/// a route's or the proxy's host, the requests the log holds.
+public enum TrafficTree {
+    /// The name of the group of connections with no host and no owner.
+    public static let ipAddresses = "IP Addresses"
+    /// Requests listed under one host at most.
+    public static let maxRequests = 50
+
+    public static func children(of app: AppTraffic, remotes: [RemoteTraffic], logs: [LogEntry]) -> [TrafficNode] {
+        let mine = remotes.filter { $0.app == app.app }
+        let exes = Set(mine.map { $0.exe ?? "" })
+        guard app.kind == .services || exes.count > 1 else {
+            return groups(mine, logs: logs, prefix: app.app)
+        }
+        var byExe: [String: [RemoteTraffic]] = [:]
+        for r in mine { byExe[r.exe ?? "", default: []].append(r) }
+        return sorted(byExe.map { exe, list in
+            let id = "\(app.app)|p|\(exe)"
+            var node = TrafficNode(id: id, kind: .process,
+                                   title: exe.isEmpty ? "unknown process" : URL(fileURLWithPath: exe).lastPathComponent,
+                                   detail: nil, via: commonVia(list), path: exe.isEmpty ? nil : exe,
+                                   children: groups(list, logs: logs, prefix: id))
+            add(list, to: &node)
+            return node
+        })
+    }
+
+    /// Connections grouped by host, else owner, else the network part of
+    /// the server name, else "IP Addresses".
+    static func groups(_ remotes: [RemoteTraffic], logs: [LogEntry], prefix: String) -> [TrafficNode] {
+        var byKey: [String: [RemoteTraffic]] = [:]
+        for r in remotes { byKey[groupKey(r), default: []].append(r) }
+        return sorted(byKey.map { key, list in
+            let id = "\(prefix)|g|\(key)"
+            let addresses = list.map(address(prefix: id)).sorted { ($0.bytesIn + $0.bytesOut) > ($1.bytesIn + $1.bytesOut) }
+            let host = list.first { $0.host != nil }?.host
+            let requests = host.map { requests(to: $0, logs: logs, prefix: id) } ?? []
+            let count = Set(list.compactMap(\.address)).count
+            var parts = [count == 1 ? "1 address" : "\(count) addresses"]
+            if !requests.isEmpty { parts.append(requests.count == 1 ? "1 request" : "\(requests.count) requests") }
+            var node = TrafficNode(id: id, kind: .group, title: key, detail: parts.joined(separator: " · "), via: commonVia(list),
+                                   children: addresses + requests)
+            add(list, to: &node)
+            return node
+        })
+    }
+
+    public static func groupKey(_ r: RemoteTraffic) -> String {
+        r.host ?? r.asnOrg ?? r.serverName.map(baseDomain) ?? ipAddresses
+    }
+
+    /// The network part of a server name: the last two labels, or three
+    /// after a short second-level label (`co.uk`).
+    /// `165.66.149.34.bc.googleusercontent.com` gives `googleusercontent.com`.
+    public static func baseDomain(_ name: String) -> String {
+        let labels = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count > 2 else { return name }
+        let short = labels[labels.count - 2].count <= 3 && labels[labels.count - 1].count == 2
+        return labels.suffix(short ? 3 : 2).joined(separator: ".")
+    }
+
+    static func address(prefix: String) -> (RemoteTraffic) -> TrafficNode {
+        { r in
+            var title = r.address.map { $0.contains(":") ? "[\($0)]" : $0 } ?? "no address"
+            if let port = r.port { title += ":\(port)" }
+            var detail = [r.proto.rawValue]
+            if let name = r.serverName { detail.append(name) }
+            if r.host != nil, let owner = r.asnOrg { detail.append(owner) }
+            if let place = r.place { detail.append(AppTrafficText.placeName(place)) }
+            return TrafficNode(id: "\(prefix)|a|\(title)|\(r.via.rawValue)|\(r.proto.rawValue)", kind: .address, title: title,
+                               detail: detail.joined(separator: " · "), via: r.via, bytesIn: r.bytesIn, bytesOut: r.bytesOut)
+        }
+    }
+
+    /// The log's requests to `host`, newest first. The log writes the port
+    /// with the host for some requests (`github.com:443`).
+    static func requests(to host: String, logs: [LogEntry], prefix: String) -> [TrafficNode] {
+        var out: [TrafficNode] = []
+        for (i, entry) in logs.sorted(by: { time($0) > time($1) }).enumerated() {
+            guard case let .http(time, method, logHost, path, status, duration, _, proxy, _) = entry, bare(logHost) == host else {
+                continue
+            }
+            let via: TrafficVia = proxy == nil ? .router : .proxy
+            out.append(TrafficNode(id: "\(prefix)|r|\(time)|\(i)", kind: .request, title: "\(method) \(path)",
+                                   detail: "\(status) · \(TrafficFormat.duration(ms: duration))", via: via, status: status))
+            if out.count == maxRequests { break }
+        }
+        return out
+    }
+
+    private static func time(_ entry: LogEntry) -> UInt64 {
+        switch entry {
+        case let .http(t, _, _, _, _, _, _, _, _), let .tcp(t, _, _, _, _, _, _): t
+        }
+    }
+
+    private static func bare(_ host: String) -> String {
+        if host.hasPrefix("["), let end = host.firstIndex(of: "]") { return String(host[host.index(after: host.startIndex)..<end]) }
+        if host.filter({ $0 == ":" }).count == 1, let colon = host.firstIndex(of: ":") { return String(host[..<colon]) }
+        return host
+    }
+
+    private static func commonVia(_ list: [RemoteTraffic]) -> TrafficVia? {
+        let vias = Set(list.map(\.via))
+        return vias.count == 1 ? vias.first : nil
+    }
+
+    private static func add(_ list: [RemoteTraffic], to node: inout TrafficNode) {
+        node.bytesIn = list.reduce(0) { $0 + $1.bytesIn }
+        node.bytesOut = list.reduce(0) { $0 + $1.bytesOut }
+    }
+
+    private static func sorted(_ nodes: [TrafficNode]) -> [TrafficNode] {
+        nodes.sorted { ($0.bytesIn + $0.bytesOut, $1.title) > ($1.bytesIn + $1.bytesOut, $0.title) }
+    }
+}

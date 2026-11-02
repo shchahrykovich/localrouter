@@ -1132,6 +1132,9 @@ impl Daemon {
         if let Some(v) = p.traffic_places {
             new.traffic_places = v;
         }
+        if let Some(v) = p.traffic_names {
+            new.traffic_names = v;
+        }
         check_clients(&new).map_err(|why| err(ErrorCode::InvalidRequest, why))?;
 
         // The proxy port: bind the new pair before anything is written, so a
@@ -1254,6 +1257,7 @@ impl Daemon {
         let weak = Arc::downgrade(self);
         let ports = Arc::new(move || weak.upgrade().map(|d| d.traffic_ports()).unwrap_or_default());
         self.traffic.apply(config.traffic, config.traffic_places, config.traffic_history_days, ports, &self.shutdown);
+        self.traffic.set_names(config.traffic_names);
     }
 
     /// The ports that make a connection `router` or `proxy` (I3).

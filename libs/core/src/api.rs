@@ -506,6 +506,10 @@ pub struct Place {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteTraffic {
     pub app: String,
+    /// The executable that made the connection; an app with several
+    /// processes (macOS services, a browser's helpers) splits by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
     /// `None` for an unconnected UDP socket, or a proxy connection the
     /// proxy has no record of.
     pub address: Option<String>,
@@ -518,6 +522,11 @@ pub struct RemoteTraffic {
     /// The network owner from the ASN database: `GitHub, Inc.`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asn_org: Option<String>,
+    /// How the server calls itself, by reverse DNS, while `traffic_names`
+    /// is on: `165.66.149.34.bc.googleusercontent.com`. Not the domain the
+    /// app asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<Place>,
     pub via: Via,
@@ -618,6 +627,9 @@ pub struct SetConfigParams {
     /// Look up places; turning it on does not download: `update_geo_db` does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traffic_places: Option<bool>,
+    /// Look up server names by reverse DNS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_names: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

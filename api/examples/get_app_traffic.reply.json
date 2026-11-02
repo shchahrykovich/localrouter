@@ -101,11 +101,13 @@
     "remotes": [
       {
         "app": "/Applications/Google Chrome.app",
+        "exe": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
         "address": "203.0.113.4",
         "port": 443,
         "proto": "tcp",
         "host": "github.com",
         "asn_org": "GitHub, Inc.",
+        "server_name": "lb-140-82-121-4-fra.github.com",
         "place": {
           "city": "London",
           "country": "United Kingdom",
@@ -119,6 +121,7 @@
       },
       {
         "app": "/Applications/Google Chrome.app",
+        "exe": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
         "address": "::1",
         "port": 443,
         "proto": "tcp",

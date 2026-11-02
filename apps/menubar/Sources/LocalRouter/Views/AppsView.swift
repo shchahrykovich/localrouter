@@ -1,3 +1,4 @@
+import AppKit
 import LocalRouterKit
 import SwiftUI
 
@@ -8,7 +9,10 @@ struct AppsView: View {
     @Environment(AppModel.self) private var model
     let perform: (AppMenu.Action) -> Void
     @State private var filter = ""
-    @State private var open: String?
+    /// Open rows: app keys and node ids.
+    @State private var expanded: Set<String> = []
+    /// Lists that show all their rows, not only the first five.
+    @State private var showAll: Set<String> = []
 
     var body: some View {
         VStack(spacing: 10) {
@@ -79,6 +83,8 @@ struct AppsView: View {
             } else if apps.isEmpty {
                 placeholder(filter.isEmpty ? "No traffic in the last hour." : "No apps match.")
             } else {
+                AppsHeader()
+                Divider()
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(apps) { app in
@@ -136,56 +142,194 @@ struct AppsView: View {
         .padding(.horizontal, 18)
     }
 
-    @ViewBuilder private func row(_ app: AppTraffic, result: AppTrafficResult) -> some View {
-        let expanded = open == app.app
-        HStack(spacing: 8) {
-            Button { open = expanded ? nil : app.app } label: {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold)).frame(width: 12, height: 20).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).foregroundStyle(.secondary).help(expanded ? "Hide addresses" : "Show addresses")
-            AppIconView(app: app, size: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(AppTrafficText.name(app)).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    ShieldView(verdict: model.traffic.verdict(app))
+    private func row(_ app: AppTraffic, result: AppTrafficResult) -> some View {
+        let open = expanded.contains(app.app)
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Disclosure(open: open) { toggle(app.app) }
+                AppIconView(app: app, size: 26)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(AppTrafficText.name(app)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        ShieldView(verdict: model.traffic.verdict(app))
+                    }
+                    Text(AppTrafficText.subline(app)).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(AppTrafficText.subline(app)).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 4)
+                SparkBars(values: app.spark, width: 46)
+                BytesColumns(bytesIn: app.bytesIn, bytesOut: app.bytesOut)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(open ? Theme.rowHover : .clear)
+            .contentShape(Rectangle())
+            .onTapGesture { if app.kind != .exited { perform(.reviewApp(app.app)) } }
+            .help(app.kind == .exited ? "The process ended before its path was read." : "Open the details of \(app.name)")
+            if open {
+                TrafficNodeList(nodes: TrafficTree.children(of: app, remotes: result.remotes, logs: model.logs), depth: 1,
+                                parent: app.app, expanded: $expanded, showAll: $showAll)
+                    .background(Theme.field.opacity(0.35))
+            }
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    }
+}
+
+/// The list header: the columns of the rows below it.
+struct AppsHeader: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("App").frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 46)
+            Text("Now").frame(width: 46, alignment: .leading)
+            Text("↓ In").frame(width: BytesColumns.width, alignment: .trailing)
+            Text("↑ Out").frame(width: BytesColumns.width, alignment: .trailing)
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .textCase(.uppercase)
+        .kerning(0.3)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+}
+
+/// Bytes in and out, one line each, never wrapped.
+struct BytesColumns: View {
+    static let width: CGFloat = 62
+    let bytesIn: UInt64
+    let bytesOut: UInt64
+
+    var body: some View {
+        Text(TrafficFormat.bytes(bytesIn)).frame(width: Self.width, alignment: .trailing)
+            .font(.system(size: 11).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.8)
+        Text(TrafficFormat.bytes(bytesOut)).frame(width: Self.width, alignment: .trailing)
+            .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+    }
+}
+
+/// The chevron of a row that opens.
+struct Disclosure: View {
+    let open: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: open ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .semibold)).frame(width: 12, height: 20).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(open ? "Close" : "Open")
+    }
+}
+
+/// The rows under an app or a node: five at first, then "N more…".
+struct TrafficNodeList: View {
+    static let shown = 5
+    let nodes: [TrafficNode]
+    let depth: Int
+    let parent: String
+    @Binding var expanded: Set<String>
+    @Binding var showAll: Set<String>
+
+    var body: some View {
+        let all = showAll.contains(parent)
+        VStack(spacing: 0) {
+            ForEach(all ? nodes : Array(nodes.prefix(Self.shown))) { node in
+                Divider().opacity(0.4)
+                TrafficNodeRow(node: node, depth: depth, open: expanded.contains(node.id)) {
+                    if expanded.contains(node.id) { expanded.remove(node.id) } else { expanded.insert(node.id) }
+                }
+                if expanded.contains(node.id), !node.children.isEmpty {
+                    // AnyView: a view type cannot contain itself.
+                    AnyView(TrafficNodeList(nodes: node.children, depth: depth + 1, parent: node.id,
+                                            expanded: $expanded, showAll: $showAll))
+                }
+            }
+            if !all && nodes.count > Self.shown {
+                Divider().opacity(0.4)
+                Button("\(nodes.count - Self.shown) more…") { showAll.insert(parent) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 10 + CGFloat(depth) * 16 + 20)
+                    .padding(.vertical, 4)
+            }
+        }
+    }
+}
+
+/// One process, domain, connection or request under an app.
+struct TrafficNodeRow: View {
+    let node: TrafficNode
+    let depth: Int
+    let open: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if node.children.isEmpty {
+                Color.clear.frame(width: 12, height: 18)
+            } else {
+                Disclosure(open: open, action: toggle)
+            }
+            icon.frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 5) {
+                    Text(node.title)
+                        .font(node.kind == .address || node.kind == .request ? .system(size: 11, design: .monospaced) : .system(size: 11.5, weight: .medium))
+                        .lineLimit(1).truncationMode(.middle)
+                    if let via = node.via, node.kind != .address {
+                        Chip(text: via.rawValue, kind: via == .router ? .accent : via == .proxy ? .proxy : .outline)
+                    }
+                }
+                if let detail = node.detail {
+                    Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
             }
             Spacer(minLength: 4)
-            SparkBars(values: app.spark)
-            Text("↓ \(TrafficFormat.bytes(app.bytesIn))").frame(width: 66, alignment: .trailing)
-            Text("↑ \(TrafficFormat.bytes(app.bytesOut))").foregroundStyle(.secondary).frame(width: 62, alignment: .trailing)
-        }
-        .font(.system(size: 11, design: .monospaced))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
-        .onTapGesture { if app.kind != .exited { perform(.reviewApp(app.app)) } }
-        .help(app.kind == .exited ? "The process ended before its path was read." : "Open the details of \(app.name)")
-        if expanded {
-            let remotes = AppTrafficText.remotes(of: app.app, in: result)
-            VStack(spacing: 0) {
-                ForEach(Array(remotes.prefix(30).enumerated()), id: \.offset) { _, r in
-                    HStack(spacing: 6) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(AppTrafficText.label(r)).lineLimit(1).truncationMode(.middle)
-                            Text(AppTrafficText.detail(r)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }
-                        Spacer()
-                        Chip(text: r.via.rawValue, kind: r.via == .router ? .accent : r.via == .proxy ? .proxy : .outline)
-                        Text("↓ \(TrafficFormat.bytes(r.bytesIn))").frame(width: 66, alignment: .trailing)
-                        Text("↑ \(TrafficFormat.bytes(r.bytesOut))").foregroundStyle(.secondary).frame(width: 62, alignment: .trailing)
-                    }
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .padding(.leading, 40).padding(.trailing, 10).padding(.vertical, 3)
-                }
-                if remotes.count > 30 {
-                    Text("and \(remotes.count - 30) more: open the map for all of them").font(.caption).foregroundStyle(.secondary)
-                        .padding(.vertical, 3)
-                }
+            if node.kind == .request {
+                if let status = node.status { Chip(text: "\(status)", kind: kind(status), mono: true) }
+            } else {
+                BytesColumns(bytesIn: node.bytesIn, bytesOut: node.bytesOut)
             }
-            .background(Theme.field.opacity(0.5))
+        }
+        .padding(.leading, 10 + CGFloat(depth) * 16)
+        .padding(.trailing, 10)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { if !node.children.isEmpty { toggle() } }
+    }
+
+    @ViewBuilder private var icon: some View {
+        switch node.kind {
+        case .process:
+            if let path = node.path {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable()
+            } else {
+                Image(systemName: "gearshape").foregroundStyle(.secondary)
+            }
+        case .group:
+            Image(systemName: node.title == TrafficTree.ipAddresses ? "desktopcomputer"
+                  : node.via == .router ? "house" : "globe")
+                .font(.system(size: 15)).foregroundStyle(.secondary)
+        case .address:
+            Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(.tertiary)
+        case .request:
+            Image(systemName: "arrow.left.arrow.right").font(.system(size: 9)).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func kind(_ status: UInt16) -> Chip.Kind {
+        switch StatusKind(status: status) {
+        case .success: .success
+        case .neutral: .neutral
+        case .clientError: .warning
+        case .serverError: .danger
         }
     }
 }

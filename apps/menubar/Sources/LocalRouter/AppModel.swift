@@ -217,6 +217,12 @@ final class AppModel {
 
     func setTraffic(_ on: Bool) async { await setConfig(SetConfigParams(traffic: on)) }
 
+    func setTrafficNames(_ on: Bool) async { await setConfig(SetConfigParams(trafficNames: on)) }
+
+    /// Opens the Settings window at a page; set by StatusItemController, so
+    /// a window other than Settings can link to a page.
+    var openSettings: ((SettingsPage?) -> Void)?
+
     func setTrafficHistoryDays(_ days: UInt32) async { await setConfig(SetConfigParams(trafficHistoryDays: days)) }
 
     /// Places on: download the databases when they are not here yet.

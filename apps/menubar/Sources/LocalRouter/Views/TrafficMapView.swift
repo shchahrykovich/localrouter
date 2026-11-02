@@ -14,9 +14,9 @@ struct TrafficMapView: View {
     @State private var selected: String?
     @State private var result: AppTrafficResult?
     @State private var problem: String?
-    @State private var zoom: CGFloat = 1
-    @State private var pan: CGSize = .zero
-    @State private var dragStart: CGSize = .zero
+    /// The zoom and pan now, and when the current gesture began.
+    @State private var viewport = MapViewport()
+    @State private var gestureStart = MapViewport()
 
     private static let dots: [CGPoint] = {
         var url = Bundle.main.url(forResource: "land-dots", withExtension: "json")
@@ -85,6 +85,12 @@ struct TrafficMapView: View {
         }
     }
 
+    /// The + and − buttons zoom around the center of the view.
+    private func zoomBy(_ factor: CGFloat, in size: CGSize) {
+        viewport = viewport.zoomed(to: viewport.zoom * factor, anchor: CGPoint(x: size.width / 2, y: size.height / 2), in: size)
+        gestureStart = viewport
+    }
+
     // MARK: Toolbar
 
     private var toolbar: some View {
@@ -116,7 +122,7 @@ struct TrafficMapView: View {
                 .tag("")
                 ForEach(apps) { app in
                     HStack(spacing: 6) {
-                        AppIconView(app: app, size: 16)
+                        AppIconView(app: app, size: 20)
                         Text(AppTrafficText.name(app)).lineLimit(1)
                         if model.traffic.verdict(app) == .needsReview { ShieldView(verdict: .needsReview) }
                         Spacer()
@@ -144,27 +150,45 @@ struct TrafficMapView: View {
         let places = AppTrafficText.places(remotes, appNames: appNames)
         return VStack(spacing: 10) {
             ZStack(alignment: .bottomTrailing) {
-                MapCanvas(dots: Self.dots, places: places, home: model.traffic.thisMac?.coordinate, zoom: zoom, pan: pan)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line, lineWidth: 0.5))
-                    .gesture(DragGesture()
-                        .onChanged { g in pan = CGSize(width: dragStart.width + g.translation.width, height: dragStart.height + g.translation.height) }
-                        .onEnded { _ in dragStart = pan })
-                VStack(spacing: 4) {
-                    IconButton(symbol: "plus", help: "Zoom in") { zoom = min(zoom * 1.5, 6) }
-                    IconButton(symbol: "minus", help: "Zoom out") {
-                        zoom = max(zoom / 1.5, 1)
-                        if zoom == 1 { pan = .zero; dragStart = .zero }
-                    }
+                GeometryReader { geo in
+                    MapCanvas(dots: Self.dots, places: places, home: model.traffic.thisMac?.coordinate, viewport: viewport)
+                        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line, lineWidth: 0.5))
+                        .contentShape(Rectangle())
+                        // Pinch on the trackpad zooms around the fingers; a
+                        // drag moves the map.
+                        .gesture(SimultaneousGesture(
+                            MagnifyGesture()
+                                .onChanged { g in
+                                    viewport = gestureStart.zoomed(to: gestureStart.zoom * g.magnification, anchor: g.startLocation, in: geo.size)
+                                }
+                                .onEnded { _ in gestureStart = viewport },
+                            DragGesture()
+                                .onChanged { g in viewport = gestureStart.panned(by: g.translation) }
+                                .onEnded { _ in gestureStart = viewport }))
+                        .onTapGesture(count: 2) { location in
+                            viewport = viewport.zoomed(to: viewport.zoom * 2, anchor: location, in: geo.size)
+                            gestureStart = viewport
+                        }
+                        .onChange(of: geo.size) { _, _ in
+                            viewport = MapViewport()
+                            gestureStart = viewport
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            VStack(spacing: 4) {
+                                IconButton(symbol: "plus", help: "Zoom in") { zoomBy(1.5, in: geo.size) }
+                                IconButton(symbol: "minus", help: "Zoom out") { zoomBy(1 / 1.5, in: geo.size) }
+                            }
+                            .padding(6)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .padding(8)
+                        }
                 }
-                .padding(6)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                .padding(8)
             }
             .frame(minHeight: 280)
-            if result?.places == false {
-                Text("Places are off. Turn on Show places on the map in Settings › Traffic to put addresses on the map.")
-                    .font(.caption).foregroundStyle(.secondary)
+            .help("Pinch or double-click to zoom, drag to move")
+            .overlay {
+                if result?.places == false { placesOff }
             }
             if let buckets = result?.buckets {
                 TrafficHistogram(buckets: buckets, height: 44).padding(.horizontal, 4)
@@ -177,6 +201,27 @@ struct TrafficMapView: View {
             }
         }
         .padding(12)
+    }
+
+    /// Without the places database there is nothing to draw arcs to: say so
+    /// on the map, with the button that downloads it.
+    private var placesOff: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("No places yet", systemImage: "mappin.slash").font(.system(size: 13, weight: .semibold))
+            Text("The map needs to know where each address is. \(Instance.current.appName) looks it up in the free DB-IP database on this Mac. It downloads once, about 65 MB (about 135 MB unpacked). After that no lookup leaves this Mac.")
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button(model.busy ? "Downloading…" : "Turn On Places") { Task { await model.setTrafficPlaces(true) } }
+                    .buttonStyle(.borderedProminent).disabled(model.busy)
+                if let m = model.message, model.busy || m.contains("places database") {
+                    Text(m).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: 420)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line, lineWidth: 0.5))
     }
 
     private func placesTable(_ places: [AppTrafficText.MapPlace]) -> some View {
@@ -286,14 +331,12 @@ private struct MapCanvas: View {
     let dots: [CGPoint]
     let places: [AppTrafficText.MapPlace]
     let home: Coordinate?
-    let zoom: CGFloat
-    let pan: CGSize
+    let viewport: MapViewport
 
     var body: some View {
         Canvas { ctx, size in
-            let scale = min(size.width / MapProjection.width, size.height / MapProjection.height) * zoom
-            let origin = CGPoint(x: (size.width - MapProjection.width * scale) / 2 + pan.width,
-                                 y: (size.height - MapProjection.height * scale) / 2 + pan.height)
+            let scale = viewport.scale(in: size)
+            let origin = viewport.origin(in: size)
             func at(_ p: CGPoint) -> CGPoint { CGPoint(x: origin.x + p.x * scale, y: origin.y + p.y * scale) }
 
             let dot = max(1.2, 1.6 * scale)
@@ -319,9 +362,21 @@ private struct MapCanvas: View {
                 let r = 2.5 + 4 * weight
                 ctx.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)), with: .color(Theme.accent))
             }
-            for place in places.prefix(6) where !place.name.isEmpty {
+            // Names of the largest places first; a name that would cover one
+            // already drawn is left out (zoom in to see it).
+            var taken: [CGRect] = []
+            if let h = homePoint { taken.append(CGRect(x: h.x + 7, y: h.y + 2, width: 60, height: 14)) }
+            for place in places.prefix(12) where !place.name.isEmpty {
                 let p = at(MapProjection.point(lat: place.lat, lon: place.lon))
-                ctx.draw(Text(place.name).font(.system(size: 10, weight: .medium)), at: CGPoint(x: p.x + 6, y: p.y - 8), anchor: .leading)
+                let label = ctx.resolve(Text(place.name).font(.system(size: 10, weight: .medium)))
+                let s = label.measure(in: CGSize(width: 400, height: 40))
+                let rect = CGRect(x: p.x + 6, y: p.y - 8 - s.height / 2, width: s.width, height: s.height).insetBy(dx: -2, dy: -1)
+                guard !taken.contains(where: { $0.intersects(rect) }) else { continue }
+                taken.append(rect)
+                let pill = rect.insetBy(dx: -3, dy: -1)
+                ctx.fill(Path(roundedRect: pill, cornerRadius: pill.height / 2), with: .color(Theme.card.opacity(0.92)))
+                ctx.stroke(Path(roundedRect: pill, cornerRadius: pill.height / 2), with: .color(Theme.line), lineWidth: 0.5)
+                ctx.draw(label, at: CGPoint(x: p.x + 6, y: p.y - 8), anchor: .leading)
             }
             if let h = homePoint {
                 ctx.fill(Path(ellipseIn: CGRect(x: h.x - 5, y: h.y - 5, width: 10, height: 10)), with: .color(Theme.proxyText))

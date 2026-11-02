@@ -45,6 +45,9 @@ changed format, gap G2).
 | D13 | `land-dots.json` as a resource | Committed at `apps/menubar/Sources/LocalRouter/TrafficMap/`, excluded from SwiftPM, copied by `scripts/build-app.sh` to `Contents/Resources/`, read with `Bundle.main`. Generator in `scripts/map/`. | A SwiftPM resource bundle at the `.app` root breaks code signing. |
 | D14 | The question shortens the hash | The whole hash, shortened only when the URL would pass 2,000 characters | Rule 3 of [04](04-ask-ai.md). |
 | D15 | — | The VirusTotal limiter's counts are saved in `app-checks.json` | "Lookups today" stays right after a restart. |
+| D16 | One row per app opens to its addresses | A tree, as in Little Snitch: app → process (when the app has several) → domain group (host, else owner, else the network part of the server name, else "IP Addresses") → connections and, for a route's or the proxy's host, the requests of the request log. Five rows per level, then "N more…". `RemoteTraffic` gains `exe`. | The user asked to open rows down to the requests. |
+| D17 | Direct traffic shows the owner only | Also the **server name** by reverse DNS (`getnameinfo`, `NI_NAMEREQD`), in the background, cached an hour, at most 10,000 addresses and 8 lookups at once (`traffic/names.rs`). New config field `traffic_names` (off by default: each new address sends one DNS query), new field `server_name`. Debug builds read `LOCALROUTER_TEST_REVERSE_DNS`. | The user wants all three sources of names: owner (A), server name (B), and the real domain (C, a network filter, a later ADR). |
+| D18 | "Places are off" under the map | A card on the map with **Turn On Places** | The line under the map was missed. |
 
 ## Tests that ran
 

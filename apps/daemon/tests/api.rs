@@ -1650,13 +1650,19 @@ fn new_setup_code_keeps_the_devices() {
 
 /// A fake nettop for `LOCALROUTER_TEST_NETTOP`: prints `<dir>/nettop.csv`
 /// once it exists, then stays alive as a shell process whose command line
-/// names the script, so `pgrep -f` finds it.
+/// names the script, so `pgrep -f` finds it, until the daemon ends.
 fn fake_nettop(dir: &Path) -> PathBuf {
     let script = dir.join("fake-nettop.sh");
     let csv = dir.join("nettop.csv");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\nwhile [ ! -f '{csv}' ]; do sleep 0.1; done\ncat '{csv}'\nwhile :; do sleep 1; done\n", csv = csv.display()),
+        // It ends with its parent, as the real nettop does on its next
+        // write: a test kills the daemon with SIGKILL, which skips
+        // kill_on_drop.
+        format!(
+            "#!/bin/sh\nwhile [ ! -f '{csv}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.1; done\ncat '{csv}'\nwhile kill -0 $PPID 2>/dev/null; do sleep 1; done\n",
+            csv = csv.display()
+        ),
     )
     .unwrap();
     std::os::unix::fs::PermissionsExt::set_mode(&mut std::fs::metadata(&script).unwrap().permissions(), 0o755);
@@ -1679,7 +1685,7 @@ fn traffic_daemon(extra: Value) -> (Daemon, PathBuf) {
             }
             std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
         },
-        &[("LOCALROUTER_TEST_NETTOP", &script_env)],
+        &[("LOCALROUTER_TEST_NETTOP", &script_env), ("LOCALROUTER_TEST_REVERSE_DNS", "203.0.113.4=lb-1.example.net")],
     );
     // The script lives as long as the test.
     std::mem::forget(bin);
@@ -1774,6 +1780,32 @@ fn get_app_traffic_returns_the_apps_of_the_samples() {
     assert_eq!(one["apps"].as_array().unwrap().len(), 1);
     assert_eq!(one["buckets"].as_array().unwrap().len(), 96);
     assert!(one["remotes"].as_array().unwrap().iter().all(|x| x["app"] == "exited:curl"));
+}
+
+// Server names by reverse DNS: only with `traffic_names` on, and never for
+// this Mac's own addresses.
+#[test]
+fn server_names_come_from_reverse_dns_when_on() {
+    let (d, script) = traffic_daemon(json!({}));
+    let mut c = d.client();
+    let csv = two_samples(&[
+        format!("api-test.{},0,0,", std::process::id()),
+        "tcp4 192.0.2.155:61010<->203.0.113.4:443,500,50,".to_string(),
+        "tcp4 127.0.0.1:61011<->127.0.0.1:5173,10,10,".to_string(),
+    ]);
+    std::fs::write(script.parent().unwrap().join("nettop.csv"), csv).unwrap();
+    c.call("set_config", json!({"traffic": true}));
+    let remote = |c: &mut Client, address: &str| -> Value {
+        let r = c.call("get_app_traffic", json!({}));
+        r["remotes"].as_array().unwrap().iter().find(|x| x["address"] == address).cloned().unwrap_or(Value::Null)
+    };
+    wait_until("the sample", || !remote(&mut c, "203.0.113.4").is_null());
+    // Off: no name.
+    assert!(remote(&mut c, "203.0.113.4").get("server_name").is_none());
+    c.call("set_config", json!({"traffic_names": true}));
+    // The first reply queues the lookup; a later one has the name.
+    wait_until("the server name", || remote(&mut c, "203.0.113.4")["server_name"] == "lb-1.example.net");
+    assert!(remote(&mut c, "127.0.0.1").get("server_name").is_none());
 }
 
 // ADR 11, T6: the three fields round-trip; unset fields stay out of the file.

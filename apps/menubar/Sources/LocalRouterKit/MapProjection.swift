@@ -190,3 +190,57 @@ public enum LandDots {
         return file.dots.compactMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
     }
 }
+
+/// The zoom and pan of the map view. The map is drawn at
+/// `scale(in:)` from `origin(in:)`; both follow from these two values and
+/// the view's size.
+public struct MapViewport: Equatable, Sendable {
+    public static let zoomRange: ClosedRange<CGFloat> = 1...8
+
+    public var zoom: CGFloat = 1
+    /// Offset of the map's center from the view's center, in points.
+    public var pan: CGSize = .zero
+
+    public init(zoom: CGFloat = 1, pan: CGSize = .zero) {
+        self.zoom = zoom
+        self.pan = pan
+    }
+
+    /// Points per map unit: the whole map fits at zoom 1.
+    public func scale(in size: CGSize) -> CGFloat {
+        min(size.width / MapProjection.width, size.height / MapProjection.height) * zoom
+    }
+
+    /// Where the map's (0, 0) is drawn.
+    public func origin(in size: CGSize) -> CGPoint {
+        let scale = scale(in: size)
+        return CGPoint(x: (size.width - MapProjection.width * scale) / 2 + pan.width,
+                       y: (size.height - MapProjection.height * scale) / 2 + pan.height)
+    }
+
+    /// A map point on the screen.
+    public func screen(_ p: CGPoint, in size: CGSize) -> CGPoint {
+        let o = origin(in: size), s = scale(in: size)
+        return CGPoint(x: o.x + p.x * s, y: o.y + p.y * s)
+    }
+
+    /// The viewport at `newZoom`, with the map point under `anchor` (a point
+    /// in the view, such as the place of a pinch) still under it. Back at
+    /// zoom 1 the map is centered again.
+    public func zoomed(to newZoom: CGFloat, anchor: CGPoint, in size: CGSize) -> MapViewport {
+        let z = min(max(newZoom, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
+        if z == 1 { return MapViewport() }
+        let o = origin(in: size), s = scale(in: size)
+        let mapPoint = CGPoint(x: (anchor.x - o.x) / s, y: (anchor.y - o.y) / s)
+        var next = MapViewport(zoom: z, pan: .zero)
+        let s2 = next.scale(in: size)
+        let centered = next.origin(in: size)
+        next.pan = CGSize(width: anchor.x - mapPoint.x * s2 - centered.x, height: anchor.y - mapPoint.y * s2 - centered.y)
+        return next
+    }
+
+    /// Moved by a drag of `translation` from this viewport.
+    public func panned(by translation: CGSize) -> MapViewport {
+        MapViewport(zoom: zoom, pan: CGSize(width: pan.width + translation.width, height: pan.height + translation.height))
+    }
+}

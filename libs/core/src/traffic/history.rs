@@ -135,8 +135,8 @@ struct Agg {
     remotes: HashMap<RemoteKey, InOut>,
 }
 
-/// app, remote, port, protocol, via, host.
-type RemoteKey = (String, Option<String>, Option<u16>, Proto, Via, Option<String>);
+/// app, executable, remote, port, protocol, via, host.
+type RemoteKey = (String, Option<String>, Option<String>, Option<u16>, Proto, Via, Option<String>);
 
 #[derive(Debug, Clone, Default)]
 struct AppAgg {
@@ -189,7 +189,7 @@ impl Agg {
         a.buckets[i].add(l.bytes_in, l.bytes_out);
         a.spark[spark.min(11)] += l.bytes_in + l.bytes_out;
         self.remotes
-            .entry((l.app.clone(), l.remote.clone(), l.port, l.proto, l.via, l.host.clone()))
+            .entry((l.app.clone(), l.exe.clone(), l.remote.clone(), l.port, l.proto, l.via, l.host.clone()))
             .or_default()
             .add(l.bytes_in, l.bytes_out);
     }
@@ -374,13 +374,15 @@ impl History {
             .remotes
             .into_iter()
             .filter(|((app, ..), _)| wanted(app))
-            .map(|((app, address, port, proto, via, host), v)| RemoteTraffic {
+            .map(|((app, exe, address, port, proto, via, host), v)| RemoteTraffic {
                 app,
+                exe,
                 address,
                 port,
                 proto,
                 host,
                 asn_org: None,
+                server_name: None,
                 place: None,
                 via,
                 bytes_in: v.bytes_in,
@@ -578,6 +580,8 @@ mod tests {
         assert_eq!(r.apps[0].pids, vec![42]);
         assert_eq!(r.apps[0].spark.iter().sum::<u64>(), 142);
         assert_eq!(r.buckets.iter().map(|b| b.bytes_in).sum::<u64>(), 125);
+        // Each remote names its executable, so an app splits by process.
+        assert!(r.remotes.iter().all(|x| x.exe.as_deref() == Some("/bin/a")));
     }
 
     #[test]

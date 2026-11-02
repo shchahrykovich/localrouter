@@ -147,8 +147,12 @@ struct AppDetailsView: View {
                     if check.status == .apple {
                         Text("Apple programs are not looked up.").foregroundStyle(.secondary)
                     } else if !traffic.keySaved {
-                        Text("Save your free VirusTotal API key in Settings › Traffic to look this file up by its hash.")
+                        Text("Save your free VirusTotal API key to look this file up by its hash. Only the hash is sent, never the file.")
                             .foregroundStyle(.secondary)
+                        HStack {
+                            Button("Open Settings › Traffic") { model.openSettings?(.traffic) }
+                            Link("Get a free key", destination: VirusTotal.keyPage)
+                        }
                     } else if let (vt, at) = traffic.report(for: check.sha256) {
                         if vt.state == .unknown {
                             Text("VirusTotal does not know this file.")
@@ -212,7 +216,7 @@ struct AppDetailsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         ForEach(traffic.askServices, id: \.self) { service in
-                            Button("Ask \(service.title)") { note = traffic.ask(service, question: question) }
+                            Button(service.title) { note = traffic.ask(service, question: question) }
                         }
                         Button("Copy Question") { model.copy(question) }
                         Spacer()
@@ -243,8 +247,7 @@ struct AppDetailsView: View {
                         }
                         Spacer()
                         Chip(text: r.via.rawValue, kind: r.via == .router ? .accent : r.via == .proxy ? .proxy : .outline)
-                        Text("↓ \(TrafficFormat.bytes(r.bytesIn))").frame(width: 70, alignment: .trailing)
-                        Text("↑ \(TrafficFormat.bytes(r.bytesOut))").foregroundStyle(.secondary).frame(width: 66, alignment: .trailing)
+                        BytesColumns(bytesIn: r.bytesIn, bytesOut: r.bytesOut)
                     }
                     .font(.system(size: 11, design: .monospaced))
                     .padding(.horizontal, 12)

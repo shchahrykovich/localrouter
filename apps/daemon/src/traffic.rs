@@ -21,6 +21,7 @@ use localrouter_core::api::{AppTrafficResult, GeoDbInfo, GetAppTrafficParams, Sa
 use localrouter_core::traffic::attribute::{self, PeerInfo, Ports};
 use localrouter_core::traffic::geo::{self, Places};
 use localrouter_core::traffic::history::{self, History};
+use localrouter_core::traffic::names::ServerNames;
 use localrouter_core::traffic::nettop::{self, Splitter};
 use localrouter_core::traffic::peers::PeerTable;
 use localrouter_core::traffic::SAMPLE_SECS;
@@ -46,6 +47,8 @@ pub struct Traffic {
     history: Arc<Mutex<History>>,
     places: RwLock<Option<Arc<Places>>>,
     sampler: Mutex<Option<CancellationToken>>,
+    /// Server names by reverse DNS, while `traffic_names` is on.
+    names: RwLock<Option<Arc<ServerNames>>>,
     /// `traffic_history_days`, for the hourly retention pass.
     days: AtomicU32,
 }
@@ -62,6 +65,7 @@ impl Traffic {
             history: Arc::new(Mutex::new(history)),
             places: RwLock::new(None),
             sampler: Mutex::new(None),
+            names: RwLock::new(None),
             // 0 is never a setting: the first `apply` always runs retention.
             days: AtomicU32::new(0),
         })
@@ -106,6 +110,16 @@ impl Traffic {
             self.reload_places();
         } else if !places && open {
             *self.places.write().unwrap() = None;
+        }
+    }
+
+    /// Turn the reverse DNS lookups on or off. Off drops the cache.
+    pub fn set_names(&self, on: bool) {
+        let mut names = self.names.write().unwrap();
+        match (on, names.is_some()) {
+            (true, false) => *names = Some(ServerNames::new(Arc::new(reverse_lookup))),
+            (false, true) => *names = None,
+            _ => {}
         }
     }
 
@@ -155,9 +169,19 @@ impl Traffic {
     pub async fn query(&self, p: GetAppTrafficParams) -> AppTrafficResult {
         let history = self.history.clone();
         let places = self.places.read().unwrap().clone();
+        let names = self.names.read().unwrap().clone();
         let (state, error) = self.state();
         let mut result = tokio::task::spawn_blocking(move || {
             let mut r = history.lock().unwrap().query(unix_now(), p.range, p.app.as_deref());
+            if let Some(names) = &names {
+                let ips = r.remotes.iter().filter_map(|x| x.address.as_deref()?.parse::<IpAddr>().ok());
+                let known = names.names(ips);
+                for remote in &mut r.remotes {
+                    if let Some(ip) = remote.address.as_deref().and_then(|a| a.parse::<IpAddr>().ok()) {
+                        remote.server_name = known.get(&ip).cloned();
+                    }
+                }
+            }
             if let Some(places) = &places {
                 for remote in &mut r.remotes {
                     let Some(ip) = remote.address.as_deref().and_then(|a| a.parse::<IpAddr>().ok()) else { continue };
@@ -300,6 +324,35 @@ fn nettop_program() -> PathBuf {
         return PathBuf::from(p);
     }
     PathBuf::from(NETTOP)
+}
+
+/// The name of an address by reverse DNS (`getnameinfo` with
+/// `NI_NAMEREQD`): blocking, through the Mac's own resolver. Debug builds
+/// read `LOCALROUTER_TEST_REVERSE_DNS=<ip>=<name>,…` instead, so tests need
+/// no DNS.
+fn reverse_lookup(ip: IpAddr) -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Ok(test) = std::env::var("LOCALROUTER_TEST_REVERSE_DNS") {
+        return test.split(',').find_map(|pair| {
+            let (addr, name) = pair.split_once('=')?;
+            (addr.parse::<IpAddr>().ok()? == ip).then(|| name.to_string())
+        });
+    }
+    let addr = std::net::SocketAddr::new(ip, 0);
+    let sock = socket2::SockAddr::from(addr);
+    let mut host = vec![0 as libc::c_char; libc::NI_MAXHOST as usize];
+    // SAFETY: the address and its length come from SockAddr; the buffer is
+    // as large as the length passed.
+    let rc = unsafe {
+        libc::getnameinfo(sock.as_ptr().cast(), sock.len(), host.as_mut_ptr(), host.len() as libc::socklen_t, std::ptr::null_mut(), 0, libc::NI_NAMEREQD)
+    };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: getnameinfo wrote a NUL-terminated string into the buffer.
+    let name = unsafe { std::ffi::CStr::from_ptr(host.as_ptr()) }.to_string_lossy().into_owned();
+    // A resolver that returns the address itself has no name for it.
+    (name.parse::<IpAddr>().is_err()).then_some(name)
 }
 
 /// The executable of a process (`proc_pidpath`), or `None` when it ended.

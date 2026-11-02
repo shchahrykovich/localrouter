@@ -523,6 +523,7 @@ public struct Config: Codable, Equatable, Sendable {
     public var traffic: Bool?
     public var trafficHistoryDays: UInt32?
     public var trafficPlaces: Bool?
+    public var trafficNames: Bool?
 }
 
 public struct SetConfigParams: Codable, Equatable, Sendable {
@@ -548,11 +549,14 @@ public struct SetConfigParams: Codable, Equatable, Sendable {
     /// 1, 7 or 30.
     public var trafficHistoryDays: UInt32?
     public var trafficPlaces: Bool?
+    /// Look up server names by reverse DNS.
+    public var trafficNames: Bool?
     public init(fallback: Bool? = nil, allowLan: Bool? = nil, proxyEnabled: Bool? = nil, proxyPort: UInt16? = nil,
                 inspectHosts: [String]? = nil, proxyLog: Bool? = nil,
                 proxyLogFileMb: UInt64? = nil, proxyLogFileRequests: UInt64? = nil, lanNetworks: [LanNetwork]? = nil,
                 proxyClients: [ProxyClient]? = nil, traffic: Bool? = nil, trafficHistoryDays: UInt32? = nil,
-                trafficPlaces: Bool? = nil) {
+                trafficPlaces: Bool? = nil, trafficNames: Bool? = nil) {
+        self.trafficNames = trafficNames
         self.traffic = traffic
         self.trafficHistoryDays = trafficHistoryDays
         self.trafficPlaces = trafficPlaces
@@ -978,6 +982,8 @@ public struct Place: Codable, Equatable, Sendable {
 
 public struct RemoteTraffic: Codable, Equatable, Sendable {
     public var app: String
+    /// The executable that made the connection.
+    public var exe: String?
     public var address: String?
     public var port: UInt16?
     public var proto: TrafficProto
@@ -985,13 +991,33 @@ public struct RemoteTraffic: Codable, Equatable, Sendable {
     public var host: String?
     /// The network owner: `GitHub, Inc.`.
     public var asnOrg: String?
+    /// How the server calls itself, by reverse DNS: not the domain the app
+    /// asked for. Only while `traffic_names` is on.
+    public var serverName: String?
     public var place: Place?
     public var via: TrafficVia
     public var bytesIn: UInt64
     public var bytesOut: UInt64
 
+    public init(app: String, exe: String? = nil, address: String?, port: UInt16?, proto: TrafficProto, host: String? = nil,
+                asnOrg: String? = nil, serverName: String? = nil, place: Place? = nil, via: TrafficVia, bytesIn: UInt64,
+                bytesOut: UInt64) {
+        self.serverName = serverName
+        self.app = app
+        self.exe = exe
+        self.address = address
+        self.port = port
+        self.proto = proto
+        self.host = host
+        self.asnOrg = asnOrg
+        self.place = place
+        self.via = via
+        self.bytesIn = bytesIn
+        self.bytesOut = bytesOut
+    }
+
     enum CodingKeys: String, CodingKey {
-        case app, address, port, proto, host, asnOrg, place, via, bytesIn = "in", bytesOut = "out"
+        case app, exe, address, port, proto, host, asnOrg, serverName, place, via, bytesIn = "in", bytesOut = "out"
     }
 }
 

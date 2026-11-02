@@ -9,6 +9,7 @@ struct TrafficSettings: View {
     @State private var on = false
     @State private var days: UInt32 = 7
     @State private var places = false
+    @State private var names = false
     @State private var loaded = false
     @State private var key = ""
     @State private var keyNote: String?
@@ -34,6 +35,7 @@ struct TrafficSettings: View {
                 on = c.traffic ?? false
                 days = c.trafficHistoryDays ?? 7
                 places = c.trafficPlaces ?? false
+                names = c.trafficNames ?? false
             }
             loaded = true
         }
@@ -79,6 +81,11 @@ struct TrafficSettings: View {
                     Link("IP geolocation by DB-IP", destination: URL(string: "https://db-ip.com")!).font(.caption)
                 }
             }
+            Toggle(isOn: $names) {
+                Text("Look up server names")
+                Text("Asks DNS for the name of each new address (reverse DNS), for example 165.66.149.34.bc.googleusercontent.com. This is how the server calls itself, not the site the app opened. Sends one DNS query per address.")
+            }
+            .onChange(of: names) { _, v in if loaded { Task { await model.setTrafficNames(v) } } }
             Picker(selection: $thisMac) {
                 Text("Time zone: \(MapProjection.place(forTimeZone: TimeZone.current.identifier)?.name ?? "unknown")").tag("")
                 ForEach(MapProjection.knownPlaces.sorted { $0.name < $1.name }, id: \.name) { p in Text(p.name).tag(p.name) }

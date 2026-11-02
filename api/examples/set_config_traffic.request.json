@@ -4,6 +4,7 @@
   "params": {
     "traffic": true,
     "traffic_history_days": 30,
-    "traffic_places": true
+    "traffic_places": true,
+    "traffic_names": true
   }
 }

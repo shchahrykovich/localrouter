@@ -53,6 +53,10 @@ pub struct Config {
     /// Look up places of remote addresses in the DB-IP databases.
     #[serde(skip_serializing_if = "is_false")]
     pub traffic_places: bool,
+    /// Look up server names of remote addresses by reverse DNS: one DNS
+    /// query per new address, so off by default.
+    #[serde(skip_serializing_if = "is_false")]
+    pub traffic_names: bool,
 }
 
 pub const DEFAULT_TRAFFIC_HISTORY_DAYS: u32 = 7;
@@ -184,6 +188,7 @@ impl Default for Config {
             traffic: false,
             traffic_history_days: DEFAULT_TRAFFIC_HISTORY_DAYS,
             traffic_places: false,
+            traffic_names: false,
         }
     }
 }
@@ -279,7 +284,9 @@ mod tests {
         c.traffic = true;
         c.traffic_history_days = 30;
         c.traffic_places = true;
+        c.traffic_names = true;
         let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains(r#""traffic_names":true"#), "{text}");
         assert!(text.contains(r#""traffic":true"#) && text.contains(r#""traffic_history_days":30"#), "{text}");
         assert_eq!(Config::parse(&text, &dev()).unwrap(), c);
         assert!(Config::check_traffic_history_days(7).is_ok());

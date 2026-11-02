@@ -53,4 +53,32 @@ final class MapProjectionTests: XCTestCase {
         // London is on land.
         XCTAssertTrue(dots.contains { abs($0.x - 340) <= 4 && abs($0.y - 137) <= 4 })
     }
+
+    // A pinch zooms around the point under the fingers.
+    func testZoomKeepsThePointUnderTheAnchor() {
+        let size = CGSize(width: 1000, height: 600)
+        let london = MapProjection.point(lat: 51.5, lon: -0.12)
+        let start = MapViewport()
+        let anchor = start.screen(london, in: size)
+        let zoomed = start.zoomed(to: 3, anchor: anchor, in: size)
+        XCTAssertEqual(zoomed.zoom, 3)
+        let after = zoomed.screen(london, in: size)
+        XCTAssertEqual(after.x, anchor.x, accuracy: 0.001)
+        XCTAssertEqual(after.y, anchor.y, accuracy: 0.001)
+        // Again from a zoomed and panned view.
+        let moved = zoomed.panned(by: CGSize(width: 40, height: -25))
+        let a2 = CGPoint(x: 300, y: 200)
+        let mapUnder = CGPoint(x: (a2.x - moved.origin(in: size).x) / moved.scale(in: size),
+                               y: (a2.y - moved.origin(in: size).y) / moved.scale(in: size))
+        let z2 = moved.zoomed(to: 5, anchor: a2, in: size)
+        XCTAssertEqual(z2.screen(mapUnder, in: size).x, a2.x, accuracy: 0.001)
+        XCTAssertEqual(z2.screen(mapUnder, in: size).y, a2.y, accuracy: 0.001)
+    }
+
+    func testZoomStaysInItsRangeAndZoomOneRecenters() {
+        let size = CGSize(width: 1000, height: 600)
+        let v = MapViewport(zoom: 4, pan: CGSize(width: 80, height: 10))
+        XCTAssertEqual(v.zoomed(to: 100, anchor: .zero, in: size).zoom, MapViewport.zoomRange.upperBound)
+        XCTAssertEqual(v.zoomed(to: 0.2, anchor: CGPoint(x: 10, y: 10), in: size), MapViewport())
+    }
 }

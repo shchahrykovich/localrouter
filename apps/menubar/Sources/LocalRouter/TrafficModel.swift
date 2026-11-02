@@ -258,7 +258,11 @@ final class TrafficModel {
     /// The question about one executable, shown before any button is pressed.
     func question(app: AppTraffic, check: SignatureCheck) -> String {
         let remotes = hour.map { AppTrafficText.remotes(of: app.app, in: $0) } ?? []
-        let addresses = remotes.filter { $0.via != .router && $0.address != nil }.prefix(20).map {
+        // Addresses of this Mac tell a chat nothing.
+        let addresses = remotes.filter { r in
+            guard r.via != .router, let a = r.address else { return false }
+            return !(a.hasPrefix("127.") || a == "::1" || a.hasPrefix("::ffff:127."))
+        }.prefix(20).map {
             AskAI.Address(address: $0.address ?? "", place: $0.place.map { $0.country ?? AppTrafficText.placeName($0) }, bytesOut: $0.bytesOut)
         }
         let subject = AskAI.Subject(name: app.name, path: check.path, signature: check.status, signer: check.signer,

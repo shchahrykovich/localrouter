@@ -9,12 +9,14 @@
 //!   active pair in `<data>/traffic/`, reading back, retention.
 //! - [`geo`]: places from DB-IP Lite databases on this Mac; the download
 //!   rule.
+//! - [`names`]: server names by reverse DNS, in the background, cached.
 //! - [`peers`]: what the router and the forward proxy know about a client
 //!   connection, by its port.
 
 pub mod attribute;
 pub mod geo;
 pub mod history;
+pub mod names;
 pub mod nettop;
 pub mod peers;
 
